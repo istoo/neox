@@ -1,0 +1,399 @@
+// FILE: SyncKeyPairingPanel.tsx
+// Purpose: The two-device Sync-Key transfer flow inside Connections settings.
+// Layer: Settings UI components
+
+import { useId, useReducer, useRef } from "react";
+
+import { ShortCodeField } from "~/components/hosts/ShortCodeField";
+import { Button } from "~/components/ui/button";
+import { DisclosureRegion } from "~/components/ui/DisclosureRegion";
+import { Textarea } from "~/components/ui/textarea";
+import { toastManager } from "~/components/ui/toast";
+import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
+import { accountErrorMessage } from "~/lib/accountLogic";
+import { ensureHostsApi } from "~/lib/hosts/api";
+import { useTranslation } from "~/i18n";
+import {
+  SYNC_KEY_PAIRING_CODE_GROUP_SIZE,
+  SYNC_KEY_PAIRING_CODE_LENGTH,
+  SYNC_KEY_PAIRING_INITIAL_STATE,
+  decodeSyncKeyPairingRequest,
+  encodeSyncKeyPairingRequest,
+  syncKeyPairingReducer,
+} from "~/lib/hosts/syncKeyPairing";
+import { NEOLIX_SYNC_KEY_UI_ENABLED } from "~/neolixFeatures";
+import { SettingsListRow } from "./SettingsPanelPrimitives";
+
+function PairingRequestField({
+  value,
+  readOnly,
+  disabled,
+  invalid,
+  describedBy,
+  onValueChange,
+}: {
+  value: string;
+  readOnly: boolean;
+  disabled: boolean;
+  invalid?: boolean;
+  describedBy?: string;
+  onValueChange?: (value: string) => void;
+}) {
+  const id = useId();
+  const { t } = useTranslation();
+  return (
+    <div className="space-y-2">
+      <label htmlFor={id} className="block text-ui-sm font-medium text-foreground">
+        {t("settings:syncKeyPairing_request")}
+      </label>
+      <Textarea
+        id={id}
+        value={value}
+        readOnly={readOnly}
+        disabled={disabled}
+        aria-invalid={invalid || undefined}
+        aria-describedby={describedBy}
+        autoCapitalize="off"
+        autoCorrect="off"
+        autoComplete="off"
+        spellCheck={false}
+        className="[&_textarea]:min-h-24 [&_textarea]:break-all [&_textarea]:font-mono [&_textarea]:text-ui-xs"
+        onChange={onValueChange ? (event) => onValueChange(event.target.value) : undefined}
+      />
+    </div>
+  );
+}
+
+function VerificationCode({ children }: { children: string }) {
+  return (
+    <code
+      className="block font-mono text-lg tracking-[0.25em] text-foreground"
+      aria-label={children}
+    >
+      {children}
+    </code>
+  );
+}
+
+export function SyncKeyPairingPanel() {
+  const { t } = useTranslation();
+  const [state, dispatch] = useReducer(syncKeyPairingReducer, SYNC_KEY_PAIRING_INITIAL_STATE);
+  // Cancelling/restarting invalidates any in-flight RPC so a late response
+  // cannot reopen a flow the user already left.
+  const operationRef = useRef(0);
+  const statusId = useId();
+  const { copyToClipboard, isCopied } = useCopyToClipboard({
+    onError: (error) =>
+      toastManager.add({
+        type: "error",
+        title: t("settings:syncKeyPairing_copyFailed"),
+        description: error.message,
+      }),
+  });
+
+  // Neox 无 sync key 配对后端：面板不渲染，也不发起 beginSyncKeyPairing。
+  if (!NEOLIX_SYNC_KEY_UI_ENABLED) return null;
+
+  const reset = () => {
+    operationRef.current += 1;
+    dispatch({ type: "reset" });
+  };
+
+  const beginNewDevice = async () => {
+    const operation = ++operationRef.current;
+    dispatch({ type: "new-started" });
+    try {
+      const request = await ensureHostsApi().beginSyncKeyPairing();
+      if (operationRef.current !== operation) return;
+      dispatch({
+        type: "new-request-ready",
+        transferableRequest: encodeSyncKeyPairingRequest(request),
+      });
+    } catch (cause) {
+      if (operationRef.current !== operation) return;
+      dispatch({
+        type: "new-start-failed",
+        message: accountErrorMessage(cause, t("settings:syncKeyPairing_startFailed")),
+      });
+    }
+  };
+
+  const receiveSyncKey = async () => {
+    if (state.phase !== "new-request" || state.pending) return;
+    const operation = ++operationRef.current;
+    dispatch({ type: "receive-started" });
+    try {
+      const result = await ensureHostsApi().receiveSyncKey();
+      if (operationRef.current !== operation) return;
+      dispatch({ type: "receive-succeeded", verificationCode: result.verificationCode });
+    } catch (cause) {
+      if (operationRef.current !== operation) return;
+      dispatch({
+        type: "receive-failed",
+        message: accountErrorMessage(cause, t("settings:syncKeyPairing_noOffer")),
+      });
+    }
+  };
+
+  const offerSyncKey = async () => {
+    if (state.phase !== "existing-request" || state.pending) return;
+    let request;
+    try {
+      request = decodeSyncKeyPairingRequest(state.transferableRequest);
+    } catch (cause) {
+      dispatch({
+        type: "offer-failed",
+        message:
+          cause instanceof Error ? cause.message : t("settings:syncKeyPairing_invalidRequest"),
+      });
+      return;
+    }
+
+    const operation = ++operationRef.current;
+    dispatch({ type: "offer-started" });
+    try {
+      const result = await ensureHostsApi().offerSyncKey(request);
+      if (operationRef.current !== operation) return;
+      dispatch({ type: "offer-succeeded", verificationCode: result.verificationCode });
+    } catch (cause) {
+      if (operationRef.current !== operation) return;
+      dispatch({
+        type: "offer-failed",
+        message: accountErrorMessage(cause, t("settings:syncKeyPairing_approveFailed")),
+      });
+    }
+  };
+
+  const confirmSyncKey = async () => {
+    if (
+      state.phase !== "new-confirm" ||
+      state.pending ||
+      state.enteredVerificationCode.length !== SYNC_KEY_PAIRING_CODE_LENGTH
+    ) {
+      return;
+    }
+    const operation = ++operationRef.current;
+    const verificationCode = state.enteredVerificationCode;
+    dispatch({ type: "confirm-started" });
+    try {
+      await ensureHostsApi().confirmSyncKey({ verificationCode });
+      if (operationRef.current !== operation) return;
+      dispatch({ type: "confirm-succeeded" });
+    } catch (cause) {
+      if (operationRef.current !== operation) return;
+      dispatch({
+        type: "confirm-failed",
+        error: cause,
+        message: accountErrorMessage(cause, t("settings:syncKeyPairing_confirmFailed")),
+      });
+    }
+  };
+
+  const open = state.phase !== "start";
+  const startBusy = state.phase === "new-starting";
+
+  return (
+    <>
+      <SettingsListRow
+        align="start"
+        title={t("settings:syncKeyPairing_title")}
+        description={
+          <span className="flex flex-col gap-1 text-muted-foreground">
+            <span>{t("settings:syncKeyPairing_description")}</span>
+            {state.phase === "start" && state.warning ? (
+              <span role="alert" className="text-foreground">
+                {state.warning}
+              </span>
+            ) : null}
+            {state.phase === "start" && state.error ? (
+              <span role="alert" className="text-destructive">
+                {state.error}
+              </span>
+            ) : null}
+          </span>
+        }
+        actions={
+          state.phase === "start" ? (
+            <>
+              <Button size="xs" variant="outline" onClick={() => void beginNewDevice()}>
+                {t("settings:syncKeyPairing_setUpHere")}
+              </Button>
+              <Button
+                size="xs"
+                variant="outline"
+                onClick={() => {
+                  operationRef.current += 1;
+                  dispatch({ type: "existing-started" });
+                }}
+              >
+                {t("settings:syncKeyPairing_approveDevice")}
+              </Button>
+            </>
+          ) : (
+            <Button size="xs" variant="ghost" onClick={reset}>
+              {t("common:form_cancel")}
+            </Button>
+          )
+        }
+      />
+
+      <DisclosureRegion
+        open={open}
+        contentClassName="space-y-4 border-t border-border/70 px-3 py-3"
+      >
+        {startBusy ? (
+          <p role="status" className="text-ui text-muted-foreground">
+            {t("settings:syncKeyPairing_creating")}
+          </p>
+        ) : null}
+
+        {state.phase === "new-request" ? (
+          <div className="space-y-4">
+            <div className="space-y-1">
+              <h3 className="text-ui font-medium text-foreground">
+                {t("settings:syncKeyPairing_sendTitle")}
+              </h3>
+              <p className="text-ui-sm text-muted-foreground">
+                {t("settings:syncKeyPairing_sendBody", {
+                  action: t("settings:syncKeyPairing_approveDevice"),
+                })}
+              </p>
+            </div>
+            <PairingRequestField
+              value={state.transferableRequest}
+              readOnly
+              disabled={state.pending}
+            />
+            {state.message ? (
+              <p id={statusId} role="alert" className="text-ui-xs text-destructive">
+                {state.message}
+              </p>
+            ) : null}
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                size="xs"
+                variant="outline"
+                disabled={state.pending}
+                onClick={() => copyToClipboard(state.transferableRequest, undefined)}
+              >
+                {isCopied
+                  ? t("settings:syncKeyPairing_copied")
+                  : t("settings:syncKeyPairing_copyRequest")}
+              </Button>
+              <Button size="xs" disabled={state.pending} onClick={() => void receiveSyncKey()}>
+                {state.pending
+                  ? t("settings:syncKeyPairing_checking")
+                  : t("settings:syncKeyPairing_approved")}
+              </Button>
+            </div>
+          </div>
+        ) : null}
+
+        {state.phase === "existing-request" ? (
+          <div className="space-y-4">
+            <div className="space-y-1">
+              <h3 className="text-ui font-medium text-foreground">
+                {t("settings:syncKeyPairing_pasteTitle")}
+              </h3>
+              <p className="text-ui-sm text-muted-foreground">
+                {t("settings:syncKeyPairing_pasteBody")}
+              </p>
+            </div>
+            <PairingRequestField
+              value={state.transferableRequest}
+              readOnly={false}
+              disabled={state.pending}
+              invalid={state.message !== null}
+              describedBy={statusId}
+              onValueChange={(value) => dispatch({ type: "request-changed", value })}
+            />
+            {state.message ? (
+              <p id={statusId} role="alert" className="text-ui-xs text-destructive">
+                {state.message}
+              </p>
+            ) : null}
+            <Button
+              size="xs"
+              disabled={state.pending || state.transferableRequest.trim().length === 0}
+              onClick={() => void offerSyncKey()}
+            >
+              {state.pending
+                ? t("settings:syncKeyPairing_approving")
+                : t("settings:syncKeyPairing_approve")}
+            </Button>
+          </div>
+        ) : null}
+
+        {state.phase === "existing-code" ? (
+          <div className="space-y-3">
+            <div className="space-y-1">
+              <h3 className="text-ui font-medium text-foreground">
+                {t("settings:syncKeyPairing_typeCodeTitle")}
+              </h3>
+              <p className="text-ui-sm text-muted-foreground">
+                {t("settings:syncKeyPairing_typeCodeBody")}
+              </p>
+            </div>
+            <VerificationCode>{state.ownVerificationCode}</VerificationCode>
+            <Button size="xs" variant="outline" onClick={reset}>
+              {t("settings:syncKeyPairing_done")}
+            </Button>
+          </div>
+        ) : null}
+
+        {state.phase === "new-confirm" ? (
+          <div className="space-y-4">
+            <div className="space-y-1">
+              <h3 className="text-ui font-medium text-foreground">
+                {t("settings:syncKeyPairing_compareTitle")}
+              </h3>
+              <p className="text-ui-sm text-muted-foreground">
+                {t("settings:syncKeyPairing_thisDeviceShows")}
+              </p>
+              <VerificationCode>{state.ownVerificationCode}</VerificationCode>
+            </div>
+            <ShortCodeField
+              label={t("settings:syncKeyPairing_codeLabel")}
+              value={state.enteredVerificationCode}
+              codeLength={SYNC_KEY_PAIRING_CODE_LENGTH}
+              groupSize={SYNC_KEY_PAIRING_CODE_GROUP_SIZE}
+              placeholder="ABC-234"
+              disabled={state.pending}
+              describedBy={statusId}
+              onValueChange={(value) => dispatch({ type: "verification-changed", value })}
+              onSubmit={() => void confirmSyncKey()}
+            />
+            {state.message ? (
+              <p id={statusId} role="alert" className="text-ui-xs text-destructive">
+                {state.message}
+              </p>
+            ) : null}
+            <Button
+              size="xs"
+              disabled={
+                state.pending ||
+                state.enteredVerificationCode.length !== SYNC_KEY_PAIRING_CODE_LENGTH
+              }
+              onClick={() => void confirmSyncKey()}
+            >
+              {state.pending
+                ? t("settings:syncKeyPairing_confirming")
+                : t("settings:syncKeyPairing_confirmCodes")}
+            </Button>
+          </div>
+        ) : null}
+
+        {state.phase === "new-success" ? (
+          <div className="space-y-3">
+            <p role="status" className="text-ui-xs text-foreground">
+              {t("settings:syncKeyPairing_synced")}
+            </p>
+            <Button size="xs" variant="outline" onClick={reset}>
+              {t("settings:syncKeyPairing_done")}
+            </Button>
+          </div>
+        ) : null}
+      </DisclosureRegion>
+    </>
+  );
+}

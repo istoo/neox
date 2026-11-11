@@ -1,0 +1,29 @@
+{
+  "name": "@neolix/plugin-example-modal-ui",
+  "version": "0.1.1",
+  "description": "Interactive Neolix plugin example for modal forms, scrolling, and clipboard actions",
+  "homepage": "https://github.com/istoo/neox/tree/main/public-docs/plugins",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/istoo/neox.git",
+    "directory": "plugin-examples/modal-ui"
+  },
+  "files": [
+    "neox-plugin.json",
+    "index.client.tsx",
+    "client/",
+    "screenshots/",
+    "LICENSE"
+  ],
+  "type": "module",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org"
+  },
+  "peerDependencies": {
+    "@neolix/plugin": ">=0.8.0",
+    "react": ">=19",
+    "react-native": ">=0.81"
+  }
+}

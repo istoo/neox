@@ -1,0 +1,6 @@
+{
+  "id": "myna-tools-calc",
+  "name": "Calc (myna port)",
+  "description": "Exact arithmetic, unit conversion and calendar date math, ported from @magpie-community/tools-calc.",
+  "requirements": { "neolix": ">=0.15.0" }
+}

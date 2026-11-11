@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+IMAGE_HOME="/home/neolix"
+
+: "${HOME:=$IMAGE_HOME}"
+: "${NEOLIX_HOME:=${HOME}/.neox}"
+: "${NEOLIX_LISTEN:=0.0.0.0:6868}"
+: "${NEOLIX_WEB_UI_ENABLED:=true}"
+: "${NEOLIX_LOG_LEVEL:=info}"
+: "${NEOLIX_LOG_FORMAT:=json}"
+: "${CLAUDE_CONFIG_DIR:=${HOME}/.claude}"
+: "${CODEX_HOME:=${HOME}/.codex}"
+: "${XDG_CONFIG_HOME:=${HOME}/.config}"
+: "${XDG_DATA_HOME:=${HOME}/.local/share}"
+: "${XDG_STATE_HOME:=${HOME}/.local/state}"
+: "${XDG_CACHE_HOME:=${HOME}/.cache}"
+
+export HOME
+export NEOLIX_HOME
+export NEOLIX_LISTEN
+export NEOLIX_WEB_UI_ENABLED
+export NEOLIX_LOG_LEVEL
+export NEOLIX_LOG_FORMAT
+export CLAUDE_CONFIG_DIR
+export CODEX_HOME
+export XDG_CONFIG_HOME
+export XDG_DATA_HOME
+export XDG_STATE_HOME
+export XDG_CACHE_HOME
+
+ensure_dir() {
+  local dir="$1"
+  mkdir -p "$dir"
+  if [[ "$(id -u)" == "0" ]]; then
+    local owner
+    owner="$(stat -c "%u" "$dir")"
+    if [[ "$owner" == "0" ]]; then
+      chown neolix:neolix "$dir"
+    fi
+  fi
+}
+
+ensure_dir "$HOME"
+ensure_dir "$NEOLIX_HOME"
+ensure_dir "$CLAUDE_CONFIG_DIR"
+ensure_dir "$CODEX_HOME"
+ensure_dir "$XDG_CONFIG_HOME"
+ensure_dir "$XDG_DATA_HOME"
+ensure_dir "$XDG_STATE_HOME"
+ensure_dir "$XDG_CACHE_HOME"
+
+if [[ "$#" -gt 0 ]]; then
+  if [[ "$(id -u)" == "0" ]]; then
+    exec gosu neolix "$@"
+  fi
+  exec "$@"
+fi
+
+if [[ -z "${NEOLIX_PASSWORD:-}" ]]; then
+  {
+    echo "[neolix] WARNING: NEOLIX_PASSWORD is not set."
+    echo "[neolix] The daemon accepts unauthenticated control connections from any client that can reach it."
+    echo "[neolix] Set NEOLIX_PASSWORD for any published port or network-reachable deployment."
+  } >&2
+fi
+
+if [[ ! -f /etc/neolix-server-entry ]]; then
+  echo "[neolix] FATAL: /etc/neolix-server-entry is missing." >&2
+  exit 1
+fi
+
+entry="$(cat /etc/neolix-server-entry)"
+echo "[neolix] starting daemon on ${NEOLIX_LISTEN} with web UI ${NEOLIX_WEB_UI_ENABLED}"
+if [[ "$(id -u)" == "0" ]]; then
+  exec gosu neolix node "$entry"
+fi
+exec node "$entry"

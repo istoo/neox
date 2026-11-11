@@ -1,0 +1,5 @@
+appId: com.istoo.neox
+---
+- launchApp:
+    clearState: true
+- runFlow: flows/dev-client.yaml

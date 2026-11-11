@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Web View 示例</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #071a24;
+        --fg: #e6f7ff;
+        --muted: #8fb4c4;
+        --border: #17475c;
+        --accent: #38bdf8;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        padding: 20px;
+        background: var(--bg);
+        color: var(--fg);
+        font:
+          14px/1.5 system-ui,
+          -apple-system,
+          "Segoe UI",
+          sans-serif;
+      }
+      h1 {
+        margin: 0 0 6px;
+        font-size: 18px;
+      }
+      p {
+        margin: 0 0 16px;
+        color: var(--muted);
+      }
+      .row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-bottom: 14px;
+      }
+      button {
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 7px 12px;
+        background: transparent;
+        color: var(--fg);
+        font: inherit;
+        cursor: pointer;
+      }
+      button:hover {
+        border-color: var(--accent);
+        color: var(--accent);
+      }
+      output {
+        display: block;
+        min-height: 40px;
+        padding: 10px 12px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.03);
+        white-space: pre-wrap;
+        color: var(--muted);
+      }
+      code {
+        color: var(--accent);
+      }
+    </style>
+  </head>
+  <body>
+    <h1>插件 Web View</h1>
+    <p>这个界面运行在 <code>sandbox="allow-scripts"</code> 的 iframe 中，没有同源权限。</p>
+    <div class="row">
+      <button id="greet" type="button">调用插件 RPC</button>
+      <button id="navigate" type="button">打开同一视图（带参数）</button>
+      <button id="resize" type="button">切换高度</button>
+    </div>
+    <output id="output">等待宿主上下文…</output>
+    <script src="main.js"></script>
+  </body>
+</html>

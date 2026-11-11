@@ -1,0 +1,1 @@
+{ "id": "host-agents", "requirements": { "neolix": ">=0.8.0" } }

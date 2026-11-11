@@ -1,0 +1,15 @@
+# Changelog
+
+## 0.16.0 - 2026-11-11
+
+First Neox release published from [istoo/neox](https://github.com/istoo/neox). Desktop builds for macOS (Apple Silicon and Intel), Windows and Linux, with updates delivered through GitHub Releases.
+
+The macOS app is not signed with an Apple Developer ID yet. The first time you open it, macOS may refuse to start it: open System Settings › Privacy & Security and choose Open Anyway, or run `xattr -dr com.apple.quarantine /Applications/Neox.app`.
+
+Windows and the Linux AppImage download and install updates themselves. The macOS app, and Linux `.deb` and `.rpm` installs, tell you when a new version is out and open its download page instead.
+
+### Added
+
+- Neox desktop UI: threads, split views, kanban, review, browser, device and gateway panels
+- Model gateway with provider routing, failover, allowances and masking
+- GitHub Releases update feed for the desktop app

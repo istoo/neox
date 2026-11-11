@@ -1,0 +1,159 @@
+npmRebuild: false
+# Neox's own identity, so installs never share a bundle id or Squirrel's ShipIt
+# cache with another build (src/diagnostics/updater.ts SHIPIT_DIRECTORY_NAME follows it).
+appId: com.istoo.neox
+# productName names the bundle and its Electron helpers (Neox.app, "Neox Helper.app",
+# /opt/Neox, Programs\Neox). Electron finds its helpers by CFBundleName, so never
+# override CFBundleName in mac.extendInfo: a mismatch makes the app crash at launch.
+# after-pack.js, after-sign.js, the packaged smoke and `neox open` use the same name.
+productName: Neox
+executableName: Neox
+protocols:
+  - name: Neox agent link
+    schemes:
+      - neolix
+afterPack: ./scripts/after-pack.js
+afterSign: ./scripts/after-sign.js
+directories:
+  output: release
+files:
+  - dist/**/*
+  - "!**/*.map"
+  - "!node_modules/@neolix/*/src/**"
+  - "!node_modules/@neolix/**/*.test.*"
+  - "!node_modules/@neolix/**/*.spec.*"
+  - "!node_modules/@neolix/server/dist/server/web-ui/**"
+  - "!node_modules/@neolix/server/dist/server/builtin-plugins/**"
+  # Workspace packages are symlinked, so anything a dev generates inside them
+  # lands in the asar. CI never has these; a local .debug run adds gigabytes.
+  - "!node_modules/@neolix/*/.debug/**"
+  - "!node_modules/@neolix/*/.tasks/**"
+  - "!node_modules/@neolix/*/conversations/**"
+  - "!node_modules/@neolix/*/test-results/**"
+asarUnpack:
+  - dist/daemon/node-entrypoint-runner.js
+  - node_modules/@neolix/server/dist/server/terminal/shell-integration/**/*
+  # sharp's libvips ships as libvips-cpp.so.8.17.3 on Linux; smart unpack only recognises
+  # names ending in .so/.dll/.dylib, so the library stayed in app.asar and dlopen failed.
+  - node_modules/@img/**/*
+extraResources:
+  # Preserve physical compiler inputs, including .d.ts files omitted from packaged node_modules.
+  - from: ../server/dist/server/builtin-plugins
+    to: builtin-plugins
+  - from: ../app/dist
+    to: app-dist
+  # Forked web renderer served by the Node-compatible bridge bundle. The bridge
+  # runs under Electron's own binary with ELECTRON_RUN_AS_NODE, so no Bun runtime
+  # is shipped. Produced by `npm run build:desktop-web`.
+  - from: ../desktop-web/apps/bridge/dist/main.js
+    to: desktop-web/bridge/main.js
+  - from: ../desktop-web/apps/web/dist
+    to: desktop-web/web
+  - from: assets/editor-targets
+    to: editor-target-icons
+  # 16pt template marks the Mac menu bar draws beside the allowances.
+  - from: assets/provider-logos
+    to: provider-logos
+publish:
+  # electron-updater reads this (via the generated app-update.yml) as the update feed:
+  # installed Neox builds check istoo/neox Releases.
+  provider: github
+  owner: istoo
+  repo: neox
+mac:
+  artifactName: "Neox-${version}-${arch}.${ext}"
+  minimumSystemVersion: "13.0.0"
+  category: public.app-category.developer-tools
+  icon: assets/icon.icns
+  hardenedRuntime: true
+  notarize: true
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.inherit.plist
+  extraResources:
+    - from: bin/neolix
+      to: bin/neolix
+    - from: bin/neolix
+      to: bin/neox
+    - from: assets/icon.png
+      to: icon.png
+    # Tray icon (system/tray.ts resolveTrayIconPath).
+    - from: assets/tray
+      to: tray
+    # Appearance › App icon variants (features/app-icon-choice.ts).
+    - from: assets/app-icons
+      to: app-icons
+  target:
+    - dmg
+    - zip
+linux:
+  category: Development
+  icon: assets
+  desktop:
+    entry:
+      Name: Neox
+  artifactName: "Neox-${version}-${arch}.${ext}"
+  maintainer: "istoo <our.chao@gmail.com>"
+  vendor: "Neox"
+  extraResources:
+    - from: bin/neolix
+      to: bin/neolix
+    - from: bin/neolix
+      to: bin/neox
+    - from: assets/icon.png
+      to: icon.png
+    # Tray icon (system/tray.ts resolveTrayIconPath).
+    - from: assets/tray
+      to: tray
+    # Appearance › App icon variants (features/app-icon-choice.ts).
+    - from: assets/app-icons
+      to: app-icons
+  target:
+    - AppImage
+    - deb
+    - rpm
+    - tar.gz
+deb:
+  afterInstall: scripts/linux-sandbox/after-install.tpl
+rpm:
+  afterInstall: scripts/linux-sandbox/after-install.tpl
+appImage:
+  # A nonempty argument list replaces builder's hardcoded --no-sandbox default.
+  executableArgs: ["--class=Neox"]
+  # Keep the AppImage filename stable across versions (no ${version}) so
+  # electron-updater overwrites the file in place instead of renaming it to a new
+  # versioned path. A rename orphans the old binary, breaks desktop shortcuts, and
+  # dangles the ~/.local/bin/neolix CLI symlink, which points at $APPIMAGE. The
+  # version stays discoverable via the release tag and the in-app version.
+  artifactName: "Neox-${arch}.${ext}"
+win:
+  artifactName: "Neox-Setup-${version}-${arch}.${ext}"
+  icon: assets/icon.ico
+  extraResources:
+    - from: bin/neolix.cmd
+      to: bin/neolix.cmd
+    - from: bin/neolix.cmd
+      to: bin/neox.cmd
+    # Window icon (main.ts getWindowIconCandidates).
+    - from: assets/icon.ico
+      to: icon.ico
+    # Tray icon (system/tray.ts resolveTrayIconPath).
+    - from: assets/tray
+      to: tray
+    # Appearance › App icon variants (features/app-icon-choice.ts).
+    - from: assets/app-icons
+      to: app-icons
+  target:
+    - target: nsis
+      arch:
+        - x64
+        - arm64
+    - target: zip
+      arch:
+        - x64
+        - arm64
+nsis:
+  shortcutName: Neox
+  uninstallDisplayName: Neox
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true

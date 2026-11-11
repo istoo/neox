@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Product discussion on GitHub
+    url: https://github.com/istoo/neox/discussions
+    about: Product discussion, including feature requests
+  - name: Report a security vulnerability
+    url: https://github.com/istoo/neox/security/advisories/new
+    about: Report vulnerabilities privately, not as issues

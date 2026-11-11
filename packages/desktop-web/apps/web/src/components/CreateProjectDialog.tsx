@@ -1,0 +1,1008 @@
+import { readExecutionContext } from "../lib/hosts/executionContext";
+import { appHistory } from "../appNavigation";
+import { ComputerPicker, useWorkspaceComputers } from "./hosts/ComputerPicker";
+import { showExecutionFolderPicker } from "../lib/hosts/ExecutionFolderPicker";
+import { readWorkspaceSessions, type WorkspaceSession } from "../lib/hosts/workspaceSessions";
+import { workspaceRoute } from "../lib/hosts/workspaceFrame";
+// FILE: CreateProjectDialog.tsx
+// Purpose: Single entry point for adding a project — typed path, source folders
+//          (drag/drop or native browse; extra folders make a multi-folder project),
+//          and destination Space.
+// Layer: Web UI dialog
+// Exports: CreateProjectDialog, CreateProjectSubmitValue
+
+import { type GitHubProjectProvisionProgressEvent, type SpaceId } from "@synara/contracts";
+import { parseGitHubRepositoryInput } from "@synara/shared/githubRepository";
+import { findProjectFolderProblem } from "@synara/shared/projectFolders";
+import { normalizeProjectDirectoryName } from "@synara/shared/projectDirectoryName";
+import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
+
+import { isElectron } from "../env";
+import { useWindowFolderDrop } from "../hooks/useWindowFolderDrop";
+import { VOID_SPACE_KEY, spaceKey, toSpaceIconName } from "../lib/spaceGrouping";
+import { createSpace } from "../lib/spaces";
+import {
+  NEOLIX_PROJECT_FOLDERS_UI_ENABLED,
+  NEOLIX_SPACE_EDITING_UI_ENABLED,
+} from "../neolixFeatures";
+import { readNativeApi } from "../nativeApi";
+import { randomUUID } from "../lib/utils";
+import { joinProjectPath } from "../lib/projectPaths";
+import type { Space } from "../types";
+import { useVoidSpace } from "../voidSpaceStore";
+import { cn } from "~/lib/utils";
+
+import { FolderAddIcon, FolderIcon } from "~/lib/icons";
+import {
+  CreateGitHubProjectFields,
+  PROJECT_DIALOG_FIELD_CONTROL_CLASS_NAME,
+} from "./CreateGitHubProjectFields";
+import { ProjectFolderList } from "./ProjectFolderList";
+import { ProjectSourceSegmentedPicker } from "./ProjectSourceSegmentedPicker";
+import { describeAddProjectError } from "./Sidebar.logic";
+import { SpaceEditorDialog, type SpaceEditorValue } from "./SpaceEditorDialog";
+import { SpaceIcon } from "./SpaceIcon";
+import { Button } from "./ui/button";
+import {
+  Dialog,
+  DialogFooter,
+  DialogHeader,
+  DialogPanel,
+  DialogPopup,
+  DialogTitle,
+  dialogFieldLabelClassName,
+} from "./ui/dialog";
+import { ComposerPickerSelectPopup } from "./chat/ComposerPickerMenuPopup";
+import { InputGroup, InputGroupAddon, InputGroupInput } from "./ui/input-group";
+import { Select, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
+import { CentralIcon } from "~/lib/central-icons";
+import { useTranslation } from "~/i18n";
+
+interface CreateLocalProjectSubmitValue {
+  readonly source: "local";
+  readonly name: string;
+  readonly workspaceRoot: string;
+  /** Extra source folders of a multi-folder project; `workspaceRoot` is the primary one. */
+  readonly additionalFolders: ReadonlyArray<string>;
+  /** Destination Space; `null` is Void (unassigned). */
+  readonly spaceId: SpaceId | null;
+  /** True when the path was typed/edited by hand, so a missing folder may be created. */
+  readonly createIfMissing: boolean;
+}
+
+interface CreateGitHubProjectSubmitValue {
+  readonly source: "github";
+  readonly operationId: string;
+  readonly repository: string;
+  readonly destinationParent: string;
+  readonly directoryName: string;
+  readonly spaceId: SpaceId | null;
+}
+
+export type CreateProjectSubmitValue =
+  | CreateLocalProjectSubmitValue
+  | CreateGitHubProjectSubmitValue;
+
+export interface CreateProjectSubmitOptions {
+  readonly signal: AbortSignal;
+}
+
+interface BrowseForFolderOptions {
+  readonly api: NonNullable<ReturnType<typeof readNativeApi>>;
+  readonly remote: boolean;
+  readonly isElectron: boolean;
+  readonly label: string;
+  readonly navigation: WorkspaceSession["navigation"];
+  readonly remoteSession: WorkspaceSession | undefined;
+  readonly generation: number;
+  readonly dialogGeneration: { current: number };
+  readonly mode: "primary" | "additional";
+  readonly source: "local" | "github";
+  readonly addAdditionalFolder: (folder: string) => boolean;
+  readonly applyDestinationParent: (picked: string) => void;
+  readonly applyPickedFolder: (picked: string) => void;
+  readonly setFormError: (message: string | null) => void;
+  readonly setIsPickingFolder: (picking: boolean) => void;
+  readonly fallbackError: string;
+}
+
+async function browseForFolder({
+  api,
+  remote,
+  isElectron,
+  label,
+  navigation,
+  remoteSession,
+  generation,
+  dialogGeneration,
+  mode,
+  source,
+  addAdditionalFolder,
+  applyDestinationParent,
+  applyPickedFolder,
+  setFormError,
+  setIsPickingFolder,
+  fallbackError,
+}: BrowseForFolderOptions): Promise<void> {
+  try {
+    const picked =
+      !remote && isElectron
+        ? await api.dialogs.pickFolder()
+        : await showExecutionFolderPicker({
+            label,
+            browse: remote ? navigation!.browseFolders : (input) => api.filesystem.browse(input),
+          });
+    if (generation !== dialogGeneration.current) return;
+    if (
+      remote &&
+      !readWorkspaceSessions().some(
+        (entry) => entry.host === remoteSession?.host && entry.navigation === navigation,
+      )
+    )
+      throw new Error("The connection changed. Choose the folder again.");
+    if (picked) {
+      if (mode === "additional") addAdditionalFolder(picked);
+      else if (source === "github") applyDestinationParent(picked);
+      else applyPickedFolder(picked);
+    }
+  } catch (error) {
+    setFormError(error instanceof Error ? error.message : fallbackError);
+  }
+  setIsPickingFolder(false);
+}
+
+interface SubmitProjectOptions {
+  readonly onSubmit: (
+    value: CreateProjectSubmitValue,
+    options: CreateProjectSubmitOptions,
+  ) => Promise<void>;
+  readonly onOpenChange: (open: boolean) => void;
+  readonly submitAbortRef: { current: AbortController | null };
+  readonly activeOperationIdRef: { current: string | null };
+  readonly source: "local" | "github";
+  readonly spaces: ReadonlyArray<Space>;
+  readonly selectedSpaceKey: string;
+  readonly parsedRepository: ReturnType<typeof parseGitHubRepositoryInput>;
+  readonly repositoryInput: string;
+  readonly trimmedDestinationParent: string;
+  readonly normalizedDirectoryName: ReturnType<typeof normalizeProjectDirectoryName>;
+  readonly trimmedDirectoryName: string;
+  readonly remote: boolean;
+  readonly remoteSession: WorkspaceSession | undefined;
+  readonly name: string;
+  readonly trimmedPath: string;
+  readonly additionalFolders: ReadonlyArray<string>;
+  readonly computerId: string;
+  readonly navigate: (path: string) => void;
+  readonly setFormError: (message: string | null) => void;
+  readonly setProvisionProgress: (progress: string | null) => void;
+  readonly setSubmitting: (submitting: boolean) => void;
+  readonly translate: ReturnType<typeof useTranslation>["t"];
+}
+
+async function submitProject({
+  onSubmit,
+  onOpenChange,
+  submitAbortRef,
+  activeOperationIdRef,
+  source,
+  spaces,
+  selectedSpaceKey,
+  parsedRepository,
+  repositoryInput,
+  trimmedDestinationParent,
+  normalizedDirectoryName,
+  trimmedDirectoryName,
+  remote,
+  remoteSession,
+  name,
+  trimmedPath,
+  additionalFolders,
+  computerId,
+  navigate,
+  setFormError,
+  setProvisionProgress,
+  setSubmitting,
+  translate,
+}: SubmitProjectOptions): Promise<void> {
+  setSubmitting(true);
+  setFormError(null);
+  setProvisionProgress(source === "github" ? "Validating repository" : null);
+  const abortController = new AbortController();
+  submitAbortRef.current = abortController;
+  try {
+    const spaceId = spaces.find((space) => space.id === selectedSpaceKey)?.id ?? null;
+    if (source === "github") {
+      const operationId = randomUUID();
+      activeOperationIdRef.current = operationId;
+      await onSubmit(
+        {
+          source: "github",
+          operationId,
+          repository: parsedRepository ?? repositoryInput.trim(),
+          destinationParent: trimmedDestinationParent,
+          directoryName: normalizedDirectoryName ?? trimmedDirectoryName,
+          spaceId,
+        },
+        { signal: abortController.signal },
+      );
+    } else if (remote) {
+      const navigation = remoteSession?.navigation;
+      if (!navigation) throw new Error("This computer is no longer connected.");
+      const route = await navigation.createProject({
+        name: name.trim(),
+        workspaceRoot: trimmedPath,
+        additionalFolders,
+        createIfMissing: false,
+      });
+      if (
+        !readWorkspaceSessions().some(
+          (entry) => entry.host === remoteSession.host && entry.navigation === navigation,
+        )
+      )
+        throw new Error("The connection changed. Reconnect to view the project.");
+      navigate(workspaceRoute(computerId, route));
+    } else {
+      await onSubmit(
+        {
+          source: "local",
+          name: name.trim(),
+          workspaceRoot: trimmedPath,
+          additionalFolders,
+          spaceId,
+          createIfMissing: false,
+        },
+        { signal: abortController.signal },
+      );
+    }
+    submitAbortRef.current = null;
+    onOpenChange(false);
+  } catch (error) {
+    submitAbortRef.current = null;
+    activeOperationIdRef.current = null;
+    const message = error instanceof Error ? error.message : "";
+    const missingDirectory = /Project directory does not exist:/.test(message);
+    setFormError(
+      abortController.signal.aborted
+        ? source === "github"
+          ? translate("workspace:gitHubCloneCancelledYouCanRetrySafely")
+          : translate("workspace:projectCreationCancelled")
+        : missingDirectory
+          ? translate("workspace:projectFolderDoesNotExist", { value0: trimmedPath })
+          : error instanceof Error
+            ? error.message
+            : translate("workspace:anErrorOccurredWhileAddingTheProject"),
+    );
+    setProvisionProgress(null);
+    setSubmitting(false);
+  }
+}
+
+export function CreateProjectDialog(props: {
+  open: boolean;
+  githubProvisioningAvailable: boolean;
+  spaces: ReadonlyArray<Space>;
+  activeSpaceId: SpaceId | null;
+  defaultCloneParent: string;
+  onOpenChange: (open: boolean) => void;
+  onSubmit: (value: CreateProjectSubmitValue, options: CreateProjectSubmitOptions) => Promise<void>;
+}) {
+  const { t } = useTranslation();
+
+  const { computers, sessions, localId, navigate } = useWorkspaceComputers();
+  const [computerId, setComputerId] = useState(localId);
+  const [name, setName] = useState("");
+  const [nameEdited, setNameEdited] = useState(false);
+  const remote = computerId !== localId;
+  const selectedComputer = computers.find((computer) => computer.id === computerId);
+  const remoteSession = sessions.find(
+    (session) => session.host.executionScope.environmentId === computerId,
+  );
+  const githubAvailable = props.githubProvisioningAvailable && !remote;
+  const dialogGeneration = useRef(0);
+  const [source, setSource] = useState<"local" | "github">("local");
+  const [path, setPath] = useState("");
+  /** Extra folders after the primary `path`, in display order. */
+  const [additionalFolders, setAdditionalFolders] = useState<ReadonlyArray<string>>([]);
+  /** Browser builds have no native picker, so another folder is typed here. */
+  const [additionalFolderInput, setAdditionalFolderInput] = useState("");
+  const [repositoryInput, setRepositoryInput] = useState("");
+  const [destinationParent, setDestinationParent] = useState("");
+  const [directoryName, setDirectoryName] = useState("");
+  const [directoryNameEdited, setDirectoryNameEdited] = useState(false);
+  const [provisionProgress, setProvisionProgress] = useState<string | null>(null);
+  /**
+   * The last path delivered verbatim by the native picker or an OS drop. Those
+   * folders exist by construction, so only hand-typed (or hand-edited) paths
+   * opt into create-if-missing — the same split the old Browse/Type-path pair had.
+   */
+  const [pickedPath, setPickedPath] = useState<string | null>(null);
+  const [selectedSpaceKey, setSelectedSpaceKey] = useState<string>(VOID_SPACE_KEY);
+  const [spaceEditorOpen, setSpaceEditorOpen] = useState(false);
+  /**
+   * A space created from this dialog, kept locally until the refreshed shell
+   * snapshot delivers it through `props.spaces` — otherwise submitting right
+   * after creating would not find the id and silently fall back to Void.
+   */
+  const [createdSpace, setCreatedSpace] = useState<Space | null>(null);
+  const [isPickingFolder, setIsPickingFolder] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
+  const openedRef = useRef(false);
+  const submitAbortRef = useRef<AbortController | null>(null);
+  const activeOperationIdRef = useRef<string | null>(null);
+  const fieldId = useId();
+  const pathInputId = `${fieldId}-path`;
+  const nameInputId = `${fieldId}-name`;
+  const additionalFolderInputId = `${fieldId}-additional-folder`;
+  const repositoryInputId = `${fieldId}-repository`;
+  const destinationParentInputId = `${fieldId}-destination-parent`;
+  const directoryNameInputId = `${fieldId}-directory-name`;
+  const submitButtonId = `${fieldId}-submit`;
+  const sourceFolderLabelId = `${fieldId}-source-folder`;
+  const spaceLabelId = `${fieldId}-space`;
+  const errorId = `${fieldId}-error`;
+
+  useEffect(() => {
+    // Seed on the closed -> open transition only, mirroring SpaceEditorDialog.
+    if (props.open === openedRef.current) return;
+    openedRef.current = props.open;
+    if (!props.open) return;
+    dialogGeneration.current += 1;
+    const requestedComputer =
+      appHistory.location.pathname === "/remote"
+        ? new URLSearchParams(appHistory.location.search).get("environment")
+        : null;
+    setComputerId(requestedComputer ?? localId);
+    setName("");
+    setNameEdited(false);
+    setSource("local");
+    setPath("");
+    setAdditionalFolders([]);
+    setAdditionalFolderInput("");
+    setRepositoryInput("");
+    setDestinationParent(props.defaultCloneParent);
+    setDirectoryName("");
+    setDirectoryNameEdited(false);
+    setProvisionProgress(null);
+    submitAbortRef.current = null;
+    activeOperationIdRef.current = null;
+    setPickedPath(null);
+    setSelectedSpaceKey(spaceKey(props.activeSpaceId));
+    setSpaceEditorOpen(false);
+    setCreatedSpace(null);
+    setIsPickingFolder(false);
+    setSubmitting(false);
+    setFormError(null);
+    // Deferred a frame: the dialog moves focus itself on open, so focusing the
+    // name field has to happen after that lands or it is immediately undone.
+    const frame = requestAnimationFrame(() => document.getElementById(nameInputId)?.focus());
+    return () => cancelAnimationFrame(frame);
+  }, [localId, nameInputId, props.activeSpaceId, props.defaultCloneParent, props.open]);
+
+  useEffect(() => {
+    if (!githubAvailable && source === "github") {
+      setSource("local");
+    }
+  }, [githubAvailable, source]);
+
+  const trimmedPath = path.trim();
+  const parsedRepository = parseGitHubRepositoryInput(repositoryInput);
+  const trimmedDestinationParent = destinationParent.trim();
+  const trimmedDirectoryName = directoryName.trim();
+  const normalizedDirectoryName = normalizeProjectDirectoryName(directoryName);
+  const formErrorMeaning = formError ? describeAddProjectError(formError) : null;
+  const spaces =
+    createdSpace && !props.spaces.some((space) => space.id === createdSpace.id)
+      ? [...props.spaces, createdSpace]
+      : props.spaces;
+  const voidSpace = useVoidSpace();
+
+  useEffect(() => {
+    if (!props.open) return;
+    const api = readNativeApi();
+    if (!api) return;
+    return api.projects.onProvisionProgress((event: GitHubProjectProvisionProgressEvent) => {
+      if (event.operationId !== activeOperationIdRef.current) return;
+      if (event.kind === "completed") {
+        setProvisionProgress("Project added");
+        return;
+      }
+      setProvisionProgress(event.message);
+    });
+  }, [props.open]);
+
+  const applyPickedFolder = useCallback(
+    (picked: string) => {
+      setPath(picked);
+      if (!nameEdited) setName(picked.split(/[/\\]/).findLast(Boolean) ?? picked);
+      setPickedPath(picked);
+      setFormError(null);
+      // Land focus on the confirm button so a plain Enter finishes the flow.
+      requestAnimationFrame(() => document.getElementById(submitButtonId)?.focus());
+    },
+    [nameEdited, setFormError, setPath, setPickedPath, submitButtonId],
+  );
+
+  const applyDestinationParent = useCallback(
+    (picked: string) => {
+      setDestinationParent(picked);
+      setFormError(null);
+      requestAnimationFrame(() => document.getElementById(directoryNameInputId)?.focus());
+    },
+    [directoryNameInputId, setDestinationParent, setFormError],
+  );
+
+  // Adds a folder after the primary one, refusing duplicates and nested folders up front.
+  const addAdditionalFolder = (folder: string): boolean => {
+    const candidate = folder.trim();
+    if (!candidate) return false;
+    const problem = findProjectFolderProblem([trimmedPath, ...additionalFolders, candidate]);
+    if (problem) {
+      setFormError(problem);
+      return false;
+    }
+    setAdditionalFolders((current) => [...current, candidate]);
+    setFormError(null);
+    return true;
+  };
+
+  // Replaces the primary folder (`path`); the rest keep their order.
+  const setFolders = (folders: ReadonlyArray<string>) => {
+    const [primary = "", ...rest] = folders;
+    setPath(primary);
+    // Extra folders must already exist, so one promoted to primary never opts into
+    // create-if-missing; only a primary typed into the path field does.
+    setPickedPath(primary || null);
+    setAdditionalFolders(rest);
+    setFormError(null);
+  };
+  const folders = trimmedPath ? [trimmedPath, ...additionalFolders] : [];
+  const makeFolderPrimary = (index: number) =>
+    setFolders([folders[index]!, ...folders.filter((_, candidate) => candidate !== index)]);
+  const removeFolder = (index: number) => {
+    if (index === 0) {
+      setFolders(additionalFolders);
+      return;
+    }
+    setAdditionalFolders((current) => current.filter((_, candidate) => candidate !== index - 1));
+    setFormError(null);
+  };
+
+  const handleBrowse = async (mode: "primary" | "additional" = "primary") => {
+    if (isPickingFolder || submitting) return;
+    const api = readNativeApi();
+    if (!api) {
+      setFormError(t("workspace:theAppServerIsUnavailable"));
+      return;
+    }
+    if (!selectedComputer?.available || (remote && !remoteSession?.navigation)) {
+      setFormError(t("workspace:thisComputerUnavailableReconnect"));
+      return;
+    }
+    const generation = dialogGeneration.current;
+    const selectedNavigation = remoteSession?.navigation;
+    setIsPickingFolder(true);
+    await browseForFolder({
+      api,
+      remote,
+      isElectron,
+      label: selectedComputer.label,
+      navigation: selectedNavigation,
+      remoteSession,
+      generation,
+      dialogGeneration,
+      mode,
+      source,
+      addAdditionalFolder,
+      applyDestinationParent,
+      applyPickedFolder,
+      setFormError,
+      setIsPickingFolder,
+      fallbackError: t("workspace:projectPicker_unableToOpenFolderPicker"),
+    });
+  };
+
+  // While the dialog is open it is the only interactive surface, so a folder dropped
+  // anywhere in the window counts (see useWindowFolderDrop).
+  const isDropTarget = useWindowFolderDrop({
+    enabled: props.open && isElectron && !remote && source === "local",
+    // With a primary folder in place, another dropped folder joins the project.
+    onFolder: (dropped) => {
+      if (trimmedPath) addAdditionalFolder(dropped);
+      else applyPickedFolder(dropped);
+    },
+    onError: setFormError,
+  });
+
+  const submit = async () => {
+    if (submitting) return;
+    if (!selectedComputer?.available) {
+      setFormError(t("workspace:thisComputerUnavailableReconnect"));
+      return;
+    }
+    // The confirm button stays enabled (and white) like the reference dialog;
+    // an empty submit explains what is missing instead of being unclickable.
+    if (source === "local" && trimmedPath.length === 0) {
+      setFormError(
+        remote
+          ? "Type a path on the remote computer, or browse its folders."
+          : "Choose a source folder or type its path.",
+      );
+      return;
+    }
+    const folderProblem =
+      source === "local" && additionalFolders.length > 0
+        ? findProjectFolderProblem([trimmedPath, ...additionalFolders])
+        : null;
+    if (folderProblem) {
+      setFormError(folderProblem);
+      return;
+    }
+    if (source === "github" && !parsedRepository) {
+      setFormError(t("workspace:enterAGitHubRepositoryAsOwnerRepositoryOrA"));
+      return;
+    }
+    if (source === "github" && !githubAvailable) {
+      setFormError(t("workspace:updateTheSynaraServerBeforeAddingAProjectFrom"));
+      return;
+    }
+    if (source === "github" && trimmedDestinationParent.length === 0) {
+      setFormError(t("workspace:chooseTheParentFolderWhereTheRepositoryShouldBe"));
+      return;
+    }
+    if (source === "github" && !normalizedDirectoryName) {
+      setFormError(t("workspace:chooseAValidFolderNameWithoutSlashesReservedDevice"));
+      return;
+    }
+    await submitProject({
+      onSubmit: props.onSubmit,
+      onOpenChange: props.onOpenChange,
+      submitAbortRef,
+      activeOperationIdRef,
+      source,
+      spaces,
+      selectedSpaceKey,
+      parsedRepository,
+      repositoryInput,
+      trimmedDestinationParent,
+      normalizedDirectoryName,
+      trimmedDirectoryName,
+      remote,
+      remoteSession,
+      name,
+      trimmedPath,
+      additionalFolders,
+      computerId,
+      navigate,
+      setFormError,
+      setProvisionProgress,
+      setSubmitting,
+      translate: t,
+    });
+  };
+
+  const submitOnEnter = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    void submit();
+  };
+
+  const handleOpenChange = (open: boolean) => {
+    if (!open) {
+      dialogGeneration.current += 1;
+      submitAbortRef.current?.abort();
+    }
+    props.onOpenChange(open);
+  };
+
+  // The space is created right away (same command the sidebar uses) and picked
+  // as the destination, so one Create click ships the project into it.
+  const handleCreateSpace = async (value: SpaceEditorValue) => {
+    const api = readNativeApi();
+    if (!api) throw new Error("The app server is unavailable.");
+    const icon = toSpaceIconName(value.icon);
+    const { spaceId } = await createSpace({ api, name: value.name, icon });
+    const createdAt = new Date().toISOString();
+    setCreatedSpace({
+      id: spaceId,
+      name: value.name,
+      icon,
+      sortOrder: Number.MAX_SAFE_INTEGER,
+      createdAt,
+      updatedAt: createdAt,
+    });
+    setSelectedSpaceKey(spaceId);
+  };
+
+  const selectedSpace = spaces.find((space) => space.id === selectedSpaceKey) ?? null;
+  // Only echo the drop/browse result while the path field still matches it;
+  // hand-editing the path afterwards puts the box back in its idle state.
+  const pickedFolderName =
+    pickedPath !== null && trimmedPath === pickedPath
+      ? (pickedPath.split(/[/\\]/).findLast(Boolean) ?? pickedPath)
+      : null;
+  const finalClonePath = joinProjectPath(trimmedDestinationParent, trimmedDirectoryName);
+  // Electron keeps the drop/browse box until a primary folder is picked; a typed primary
+  // switches to the list once another folder joins it. Browser builds list folders as soon
+  // as a path is typed, since there is no picker to fall back on.
+  const showFolderList =
+    NEOLIX_PROJECT_FOLDERS_UI_ENABLED &&
+    folders.length > 0 &&
+    (!isElectron || pickedPath === trimmedPath || additionalFolders.length > 0);
+
+  return (
+    <Dialog open={props.open} onOpenChange={handleOpenChange}>
+      <DialogPopup>
+        <DialogHeader className="px-5 pt-5">
+          <DialogTitle>{t("workspace:createProject")}</DialogTitle>
+        </DialogHeader>
+        <DialogPanel className="space-y-4 px-5">
+          <ProjectSourceSegmentedPicker
+            className="mt-4"
+            value={source}
+            disabled={submitting}
+            githubAvailable={githubAvailable}
+            {...(remote
+              ? {
+                  githubUnavailableReason: t("workspace:githubRequiresThisComputer"),
+                }
+              : {})}
+            onValueChange={(nextSource) => {
+              setSource(nextSource);
+              setFormError(null);
+              setProvisionProgress(null);
+              requestAnimationFrame(() =>
+                document
+                  .getElementById(nextSource === "local" ? pathInputId : repositoryInputId)
+                  ?.focus(),
+              );
+            }}
+          />
+
+          {source === "local" ? (
+            <>
+              <InputGroup className={PROJECT_DIALOG_FIELD_CONTROL_CLASS_NAME}>
+                <InputGroupAddon className="w-10 self-stretch border-e border-foreground/12 ps-0">
+                  <FolderIcon className="size-4 text-muted-foreground/70" aria-hidden="true" />
+                </InputGroupAddon>
+                <InputGroupInput
+                  id={nameInputId}
+                  value={name}
+                  aria-label={t("common:projectNamePlaceholder")}
+                  placeholder={t("common:projectNamePlaceholder")}
+                  maxLength={120}
+                  disabled={submitting}
+                  onChange={(event) => {
+                    setName(event.target.value);
+                    setNameEdited(true);
+                  }}
+                  onKeyDown={submitOnEnter}
+                />
+              </InputGroup>
+              <div className="flex flex-wrap items-center gap-1 text-ui text-muted-foreground">
+                <span>{t("common:addAFolderOn")}</span>
+                <ComputerPicker
+                  computers={computers}
+                  value={computerId}
+                  disabled={submitting || isPickingFolder}
+                  purpose="Project computer"
+                  onChange={(id) => {
+                    if (id === computerId) return;
+                    dialogGeneration.current += 1;
+                    setComputerId(id);
+                    setPath("");
+                    setAdditionalFolders([]);
+                    setAdditionalFolderInput("");
+                    setPickedPath(null);
+                    setFormError(null);
+                    if (!nameEdited) setName("");
+                  }}
+                  onManage={
+                    readExecutionContext()?.controller.capabilities.remoteConnections === true
+                      ? () => {
+                          handleOpenChange(false);
+                          navigate("/settings?section=connections");
+                        }
+                      : undefined
+                  }
+                />
+              </div>
+              <InputGroup className={PROJECT_DIALOG_FIELD_CONTROL_CLASS_NAME}>
+                <InputGroupInput
+                  id={pathInputId}
+                  value={path}
+                  aria-label={t("workspace:projectFolderPath")}
+                  placeholder={t("workspace:pathToProject")}
+                  disabled={submitting || isPickingFolder}
+                  aria-invalid={formError ? true : undefined}
+                  {...(formError ? { "aria-describedby": errorId } : {})}
+                  spellCheck={false}
+                  autoCorrect="off"
+                  autoCapitalize="off"
+                  onChange={(event) => {
+                    setPath(event.target.value);
+                    setFormError(null);
+                    if (!nameEdited)
+                      setName(event.target.value.split(/[/\\]/).findLast(Boolean) ?? "");
+                  }}
+                  onKeyDown={submitOnEnter}
+                />
+              </InputGroup>
+              {showFolderList ? (
+                <div className="space-y-2">
+                  <span
+                    id={sourceFolderLabelId}
+                    className={cn("block", dialogFieldLabelClassName, "text-ui text-foreground")}
+                  >
+                    {t("workspace:sourceFolders")}
+                  </span>
+                  <ProjectFolderList
+                    folders={folders}
+                    disabled={submitting || isPickingFolder}
+                    labelledBy={sourceFolderLabelId}
+                    onMakePrimary={makeFolderPrimary}
+                    onRemove={removeFolder}
+                    addRow={
+                      NEOLIX_PROJECT_FOLDERS_UI_ENABLED ? (
+                        !remote && isElectron ? (
+                          <button
+                            type="button"
+                            disabled={isPickingFolder || submitting}
+                            className={cn(
+                              "flex min-h-12 w-full cursor-pointer items-center gap-2.5 px-3.5 text-start text-ui text-[var(--color-text-foreground)] transition-colors outline-none hover:bg-foreground/4 focus-visible:bg-foreground/6 disabled:opacity-50",
+                              isDropTarget && "bg-foreground/6",
+                            )}
+                            onClick={() => void handleBrowse("additional")}
+                          >
+                            <FolderAddIcon className="size-4.5" aria-hidden="true" />
+                            {isPickingFolder
+                              ? t("workspace:openingTheFolderPicker")
+                              : t("workspace:addFolder")}
+                          </button>
+                        ) : (
+                          <div className="flex min-h-12 items-center gap-2.5 px-3.5">
+                            <FolderAddIcon className="size-4.5 shrink-0" aria-hidden="true" />
+                            <input
+                              id={additionalFolderInputId}
+                              value={additionalFolderInput}
+                              aria-label={t("workspace:additionalFolderPath")}
+                              placeholder={t("workspace:pathToAnotherFolder")}
+                              spellCheck={false}
+                              autoCorrect="off"
+                              autoCapitalize="off"
+                              disabled={submitting}
+                              className="min-w-0 flex-1 bg-transparent text-ui text-foreground outline-none placeholder:text-muted-foreground/70"
+                              onChange={(event) => {
+                                setAdditionalFolderInput(event.target.value);
+                                setFormError(null);
+                              }}
+                              onKeyDown={(event) => {
+                                if (event.key !== "Enter") return;
+                                event.preventDefault();
+                                if (addAdditionalFolder(additionalFolderInput)) {
+                                  setAdditionalFolderInput("");
+                                }
+                              }}
+                            />
+                            <Button
+                              variant="ghost"
+                              size="chip"
+                              disabled={submitting || additionalFolderInput.trim().length === 0}
+                              onClick={() => {
+                                if (addAdditionalFolder(additionalFolderInput)) {
+                                  setAdditionalFolderInput("");
+                                }
+                              }}
+                            >
+                              {t("workspace:addFolder")}
+                            </Button>
+                          </div>
+                        )
+                      ) : null
+                    }
+                  />
+                  {additionalFolders.length > 0 ? (
+                    <p className="text-ui-xs text-muted-foreground/70">
+                      {t("workspace:chatsInAMultiFolderProjectRunInLocal")}
+                    </p>
+                  ) : null}
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  <span
+                    id={sourceFolderLabelId}
+                    className={cn("block", dialogFieldLabelClassName, "text-ui text-foreground")}
+                  >
+                    {t("workspace:sourceFolder")}
+                  </span>
+                  <div
+                    className={cn(
+                      "flex flex-col gap-2",
+                      isDropTarget && "border-[color:var(--color-border-focus)] bg-foreground/6",
+                    )}
+                  >
+                    <button
+                      type="button"
+                      aria-labelledby={sourceFolderLabelId}
+                      disabled={!selectedComputer?.available || isPickingFolder || submitting}
+                      className={cn(
+                        "flex min-h-12 w-full cursor-pointer items-center gap-2.5 rounded-xl border border-foreground/12 px-3.5 text-start text-ui text-[var(--color-text-foreground)] transition-colors outline-none hover:bg-foreground/4 focus-visible:border-foreground/30 disabled:opacity-50",
+                        isDropTarget && "border-[color:var(--color-border-focus)] bg-foreground/6",
+                      )}
+                      onClick={() => void handleBrowse()}
+                    >
+                      <FolderAddIcon className="size-4.5" aria-hidden="true" />
+                      {isPickingFolder ? (
+                        t("workspace:openingTheFolderPicker")
+                      ) : pickedFolderName ? (
+                        <span className="flex min-w-0 flex-col">
+                          <span className="truncate">{pickedFolderName}</span>
+                          <span
+                            className="truncate text-ui-xs text-muted-foreground/70"
+                            title={pickedPath ?? undefined}
+                          >
+                            {pickedPath}
+                          </span>
+                        </span>
+                      ) : (
+                        t("workspace:addFolder")
+                      )}
+                    </button>
+                    {!selectedComputer?.available ? (
+                      <p role="status" className="text-ui-sm text-muted-foreground">
+                        {t("workspace:thisComputerUnavailableReconnect")}
+                      </p>
+                    ) : null}
+                  </div>
+                </div>
+              )}
+            </>
+          ) : (
+            <CreateGitHubProjectFields
+              repositoryInputId={repositoryInputId}
+              destinationParentInputId={destinationParentInputId}
+              directoryNameInputId={directoryNameInputId}
+              errorId={errorId}
+              repositoryInput={repositoryInput}
+              destinationParent={destinationParent}
+              directoryName={directoryName}
+              finalClonePath={finalClonePath}
+              formError={formError}
+              provisionProgress={provisionProgress}
+              isElectron={isElectron || Boolean(remote)}
+              isPickingFolder={isPickingFolder}
+              submitting={submitting}
+              onRepositoryChange={(nextInput) => {
+                setRepositoryInput(nextInput);
+                const nextRepository = parseGitHubRepositoryInput(nextInput);
+                if (nextRepository && !directoryNameEdited) {
+                  setDirectoryName(nextRepository.split("/").at(-1) ?? "");
+                }
+                setFormError(null);
+              }}
+              onDestinationParentChange={(nextParent) => {
+                setDestinationParent(nextParent);
+                setFormError(null);
+              }}
+              onDirectoryNameChange={(nextName) => {
+                setDirectoryName(nextName);
+                setDirectoryNameEdited(true);
+                setFormError(null);
+              }}
+              onBrowse={() => void handleBrowse()}
+              onSubmitKeyDown={submitOnEnter}
+            />
+          )}
+
+          {!remote ? (
+            <div className="space-y-2">
+              <span
+                id={spaceLabelId}
+                className={cn("block", dialogFieldLabelClassName, "text-ui text-foreground")}
+              >
+                {t("common:space")}
+              </span>
+              <div className="flex items-center gap-2">
+                <Select
+                  value={selectedSpaceKey}
+                  onValueChange={(next) => {
+                    if (typeof next === "string") setSelectedSpaceKey(next);
+                  }}
+                >
+                  <SelectTrigger
+                    aria-labelledby={spaceLabelId}
+                    className={cn(PROJECT_DIALOG_FIELD_CONTROL_CLASS_NAME, "min-w-0 flex-1")}
+                  >
+                    <SelectValue>
+                      <span className="flex items-center gap-2">
+                        <SpaceIcon
+                          icon={selectedSpace?.icon ?? voidSpace.icon}
+                          className="size-3.5"
+                        />
+                        {selectedSpace?.name ?? voidSpace.name}
+                      </span>
+                    </SelectValue>
+                  </SelectTrigger>
+                  <ComposerPickerSelectPopup align="start">
+                    <SelectItem value={VOID_SPACE_KEY}>
+                      <span className="flex items-center gap-2">
+                        <SpaceIcon icon={voidSpace.icon} className="size-3.5" />
+                        {voidSpace.name}
+                      </span>
+                    </SelectItem>
+                    {spaces.map((space) => (
+                      <SelectItem key={space.id} value={space.id}>
+                        <span className="flex items-center gap-2">
+                          <SpaceIcon icon={space.icon} className="size-3.5" />
+                          {space.name}
+                        </span>
+                      </SelectItem>
+                    ))}
+                  </ComposerPickerSelectPopup>
+                </Select>
+                {/* Neox 无 Space 元数据后端：新建项目时不提供新建 Space。 */}
+                {NEOLIX_SPACE_EDITING_UI_ENABLED ? (
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    aria-label={t("workspace:newSpace")}
+                    disabled={submitting}
+                    className={cn(PROJECT_DIALOG_FIELD_CONTROL_CLASS_NAME, "w-9 shrink-0 sm:h-9")}
+                    onClick={() => setSpaceEditorOpen(true)}
+                  >
+                    <CentralIcon name="plus-medium" className="size-4" aria-hidden="true" />
+                  </Button>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
+
+          {formError ? (
+            <div id={errorId} role="alert" className="space-y-1">
+              <p className="text-ui-xs text-destructive">{formError}</p>
+              {formErrorMeaning ? (
+                <p className="text-ui-xs text-muted-foreground/70">{formErrorMeaning}</p>
+              ) : null}
+            </div>
+          ) : null}
+        </DialogPanel>
+        <DialogFooter className="px-5 pb-5">
+          <Button
+            variant="ghost"
+            shape="capsule"
+            className="px-4 text-ui-lg sm:text-ui-lg"
+            onClick={() => handleOpenChange(false)}
+            disabled={submitting && source === "local"}
+          >
+            {submitting && source === "github"
+              ? t("workspace:cancelClone")
+              : t("common:form_cancel")}
+          </Button>
+          <Button
+            id={submitButtonId}
+            variant="prominent"
+            className="px-4 text-ui-lg transition-opacity hover:scale-100 sm:text-ui-lg"
+            onClick={() => void submit()}
+            disabled={submitting}
+          >
+            {submitting
+              ? source === "github"
+                ? t("workspace:cloning")
+                : t("workspace:creating")
+              : source === "github"
+                ? t("workspace:cloneAndAdd")
+                : t("workspace:createProject")}
+          </Button>
+        </DialogFooter>
+        <SpaceEditorDialog
+          open={spaceEditorOpen}
+          mode="create"
+          existingNames={[...spaces.map((space) => space.name), voidSpace.name]}
+          onOpenChange={setSpaceEditorOpen}
+          onSubmit={handleCreateSpace}
+        />
+      </DialogPopup>
+    </Dialog>
+  );
+}

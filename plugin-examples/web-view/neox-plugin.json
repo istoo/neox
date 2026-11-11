@@ -1,0 +1,97 @@
+{
+  "id": "web-view-example",
+  "name": "Web View 示例",
+  "description": "演示声明式贡献、沙箱 web 界面与插件 RPC。",
+  "requirements": {
+    "neolix": ">=0.15.0"
+  },
+  "contributions": {
+    "commands": [
+      {
+        "id": "open",
+        "title": "打开 Web View 示例",
+        "icon": "Plugin",
+        "context": "global",
+        "action": { "kind": "openView", "view": "main" }
+      },
+      {
+        "id": "greet",
+        "title": "通过插件 RPC 问候",
+        "icon": "MessageCircle",
+        "context": "global",
+        "action": { "kind": "pluginRpc", "method": "greet", "input": { "name": "Neolix" } }
+      }
+    ],
+    "slashCommands": [
+      {
+        "name": "webview-greet",
+        "description": "通过插件 RPC 向某人问候",
+        "argumentHint": "<名字>",
+        "context": "agent",
+        "action": { "kind": "pluginRpc", "method": "greet" }
+      }
+    ],
+    "sidebarItems": [
+      {
+        "id": "main",
+        "title": "Web View 示例",
+        "icon": "Plugin",
+        "section": "header",
+        "view": "main"
+      }
+    ],
+    "composerPills": [
+      {
+        "id": "greet",
+        "title": "插件问候",
+        "icon": "Sparkles",
+        "context": "agent",
+        "action": { "kind": "pluginRpc", "method": "greet", "input": { "name": "Neolix" } }
+      }
+    ],
+    "attachmentSources": [
+      {
+        "id": "notes",
+        "title": "示例笔记",
+        "icon": "FileText",
+        "search": { "method": "notes.search" }
+      }
+    ],
+    "themes": [
+      {
+        "id": "ocean",
+        "name": "Ocean 示例",
+        "appearance": "dark",
+        "colors": {
+          "background": "#071a24",
+          "foreground": "#e6f7ff",
+          "raised": "#0b2633",
+          "control": "#0f3344",
+          "border": "#17475c",
+          "accent": "#38bdf8",
+          "mutedForeground": "#8fb4c4",
+          "ring": "#38bdf8"
+        }
+      }
+    ],
+    "timelineItems": [
+      {
+        "kind": "greeting",
+        "version": 1,
+        "title": "插件问候",
+        "tone": "info"
+      }
+    ]
+  },
+  "web": {
+    "views": [
+      {
+        "id": "main",
+        "title": "Web View 示例",
+        "entry": "web/main.html",
+        "permissions": ["rpc", "navigate", "resize"],
+        "rpcs": ["greet", "notes.search"]
+      }
+    ]
+  }
+}

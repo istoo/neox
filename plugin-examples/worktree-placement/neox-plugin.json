@@ -1,0 +1,4 @@
+{
+  "id": "worktree-placement",
+  "requirements": { "neolix": ">=0.14.0-beta.1" }
+}

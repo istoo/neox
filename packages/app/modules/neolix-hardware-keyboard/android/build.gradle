@@ -1,0 +1,16 @@
+apply plugin: 'com.android.library'
+apply plugin: 'expo-module-gradle-plugin'
+
+group = 'com.istoo.neox.keyboard'
+version = '0.1.0'
+android {
+  namespace 'com.istoo.neox.keyboard'
+  defaultConfig {
+    versionCode 1
+    versionName '0.1.0'
+  }
+}
+dependencies {
+  implementation 'com.facebook.react:react-android'
+  testImplementation 'junit:junit:4.13.2'
+}

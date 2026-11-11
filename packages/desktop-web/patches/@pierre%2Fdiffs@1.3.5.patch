@@ -1,0 +1,43 @@
+diff --git a/dist/components/File.js b/dist/components/File.js
+index fa9a91568ab6464890d4570465c7bb1b93828555..69558b5f6cdaebd0e2568d54d9e4936b7afe0980 100644
+--- a/dist/components/File.js
++++ b/dist/components/File.js
+@@ -326,6 +326,9 @@ var File = class {
+ 			this.fileRenderer.setLineAnnotations(this.lineAnnotations);
+ 			this.renderAnnotations();
+ 		}
++		// Structural edits shift cached rows; publish them to the DOM just as FileDiff does.
++		this.rerender();
++		this.interactionManager.setSelectionDirty();
+ 	}
+ 	updateRenderCache(dirtyLines, themeType, options) {
+ 		this.fileRenderer.updateRenderCache(dirtyLines, themeType, options?.lineCountChangeInFlight);
+diff --git a/dist/renderers/DiffHunksRenderer.js b/dist/renderers/DiffHunksRenderer.js
+index db8dd4a89fca6d1d18294a8be8deafe9ba0783ab..1a11b8efa00bae6942307c10e7aa6ddf3949792c 100644
+--- a/dist/renderers/DiffHunksRenderer.js
++++ b/dist/renderers/DiffHunksRenderer.js
+@@ -985,7 +985,15 @@ function getAnnotationNames(annotations) {
+ 	return annotations?.map((annotation) => getLineAnnotationName(annotation)) ?? [];
+ }
+ const EN_PLURAL_RULES = new Intl.PluralRules("en-US");
++// Synara: the host localizes the hunk separator copy through
++// `globalThis.__synaraDiffsHunkSeparatorLabels` ({ collapsedLines(n), moreContext }); the
++// package exports no setter and its entry files are too large to patch for one.
++function hunkSeparatorLabels() {
++	return globalThis.__synaraDiffsHunkSeparatorLabels;
++}
+ function getModifiedLinesString(lines) {
++	const localized = hunkSeparatorLabels()?.collapsedLines?.(lines);
++	if (typeof localized === "string") return localized;
+ 	return `${lines} unmodified line${EN_PLURAL_RULES.select(lines) === "one" ? "" : "s"}`;
+ }
+ function pushUnifiedInjectedRows(rows, context) {
+@@ -1084,7 +1092,7 @@ function pushSeparator(type, { hunkIndex, collapsedLines, rangeSize, hunkSpecs,
+ 	const slotName = getHunkSeparatorSlotName(type, hunkIndex);
+ 	const chunked = rangeSize > context.expansionLineCount;
+ 	const expandIndex = isExpandable ? hunkIndex : void 0;
+-	const content = typeof collapsedLines === "number" ? getModifiedLinesString(collapsedLines) : "More unchanged context may be available";
++	const content = typeof collapsedLines === "number" ? getModifiedLinesString(collapsedLines) : hunkSeparatorLabels()?.moreContext ?? "More unchanged context may be available";
+ 	context.pushToGutter(type, createSeparator({
+ 		type: context.hunkSeparators,
+ 		content,

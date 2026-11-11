@@ -1,0 +1,184 @@
+import { readWorkspaceFrame } from "./lib/hosts/workspaceFrame";
+import { executionNamespace } from "./lib/hosts/executionContext";
+import { executionSessionStorage } from "./lib/hosts/executionStorage";
+// FILE: appNavigation.ts
+// Purpose: Owns the TanStack history instance and browser-style app navigation controls.
+// Layer: Web app routing utility
+// Exports: appHistory, route navigation helpers, and navigation availability state
+// Depends on: TanStack Router history and the Electron environment flag
+
+import {
+  createBrowserHistory,
+  createHashHistory,
+  createMemoryHistory,
+} from "@tanstack/react-router";
+import { useEffect, useState } from "react";
+
+import { isElectron } from "./env";
+
+type RouterHistory = ReturnType<typeof createBrowserHistory>;
+type HistorySubscriberEvent = Parameters<Parameters<RouterHistory["subscribe"]>[0]>[0];
+type HistorySubscriberAction = HistorySubscriberEvent["action"];
+
+const HISTORY_STATE_INDEX_KEY = "__TSR_index";
+
+/**
+ * The route a history opens on inside an execution scope. Coming back from another scope, or
+ * landing on the root, resumes the scope's last route. A fresh entry that names its own path
+ * (a typed URL, a deep link, a notification) keeps that path: resuming over it would send the
+ * user to whatever they last had open, such as an unsent draft, instead of what they asked for.
+ */
+export function resolveScopedInitialRoute(input: {
+  readonly scope: string;
+  readonly previousScope: string | undefined;
+  readonly currentHref: string;
+  readonly currentPathname: string;
+  readonly remembered: string | null | undefined;
+}): string {
+  const { scope, previousScope, currentHref, currentPathname, remembered } = input;
+  if (previousScope === scope) return currentHref;
+  const canResume = previousScope !== undefined || currentPathname === "/";
+  if (canResume && remembered?.startsWith("/") && !remembered.startsWith("//")) return remembered;
+  return previousScope !== undefined ? "/" : currentHref;
+}
+
+function createAppHistory(): RouterHistory {
+  if (typeof window === "undefined") {
+    return createMemoryHistory({ initialEntries: ["/"] });
+  }
+  // Electron loads the app from a file-backed shell, so hash history avoids path resolution issues.
+  const history = readWorkspaceFrame()
+    ? createMemoryHistory({ initialEntries: ["/"] })
+    : isElectron
+      ? createHashHistory()
+      : createBrowserHistory();
+  const scope = executionNamespace();
+  if (!scope) return history;
+  const push = history.push.bind(history);
+  const replace = history.replace.bind(history);
+  history.push = (href, state, options) =>
+    push(href, { ...state, synaraExecution: scope }, options);
+  history.replace = (href, state, options) =>
+    replace(href, { ...state, synaraExecution: scope }, options);
+  const previousScope = history.location.state.synaraExecution;
+  history.replace(
+    resolveScopedInitialRoute({
+      scope,
+      previousScope,
+      currentHref: history.location.href,
+      currentPathname: history.location.pathname,
+      remembered: executionSessionStorage.getItem("last-route:v1"),
+    }),
+  );
+  history.flush();
+  history.subscribe(() => {
+    if (history.location.state.synaraExecution !== scope) {
+      history.replace("/");
+      return;
+    }
+    executionSessionStorage.setItem("last-route:v1", history.location.href);
+  });
+  return history;
+}
+
+export const appHistory: RouterHistory = createAppHistory();
+
+const appHistoryMaxIndexByHistory = new WeakMap<RouterHistory, number>();
+
+function readCurrentHistoryIndex(history: RouterHistory): number | null {
+  const index = history.location.state[HISTORY_STATE_INDEX_KEY];
+  return typeof index === "number" && Number.isFinite(index) ? index : null;
+}
+
+function resolveKnownAppHistoryMaxIndex(history: RouterHistory, currentIndex: number): number {
+  const knownMaxIndex = appHistoryMaxIndexByHistory.get(history);
+  if (typeof knownMaxIndex === "number") {
+    return knownMaxIndex;
+  }
+
+  appHistoryMaxIndexByHistory.set(history, currentIndex);
+  return currentIndex;
+}
+
+// Records the highest app-owned history index seen so browser-global history.length
+// cannot make Forward look available before this app creates a forward entry.
+export function syncAppNavigationState(
+  history: RouterHistory = appHistory,
+  action?: HistorySubscriberAction,
+): AppNavigationState {
+  const currentIndex = readCurrentHistoryIndex(history);
+  if (currentIndex === null) {
+    return {
+      canGoBack: history.canGoBack(),
+      canGoForward: false,
+    };
+  }
+
+  const knownMaxIndex = resolveKnownAppHistoryMaxIndex(history, currentIndex);
+  const nextMaxIndex =
+    action?.type === "PUSH" ? currentIndex : Math.max(knownMaxIndex, currentIndex);
+  if (nextMaxIndex !== knownMaxIndex) {
+    appHistoryMaxIndexByHistory.set(history, nextMaxIndex);
+  }
+
+  return {
+    canGoBack: history.canGoBack(),
+    canGoForward: currentIndex < nextMaxIndex,
+  };
+}
+
+export interface AppNavigationState {
+  canGoBack: boolean;
+  canGoForward: boolean;
+}
+
+// Flushes TanStack's queued URL writes before asking native history to move.
+// This keeps rapid back/forward clicks aligned with the latest in-memory route.
+// Callers gate this on `canGoBack` so Back stays disabled (like Forward) when
+// there is no previous entry, rather than silently no-oping.
+export function goBackInAppHistory(history: RouterHistory = appHistory): void {
+  history.flush();
+  history.back();
+}
+
+export function goForwardInAppHistory(history: RouterHistory = appHistory): void {
+  history.flush();
+  history.forward();
+}
+
+// Derives forward availability from app-owned history indexes, not browser-global history length.
+export function resolveAppNavigationState(history: RouterHistory = appHistory): AppNavigationState {
+  const currentIndex = readCurrentHistoryIndex(history);
+  if (currentIndex === null) {
+    return {
+      canGoBack: history.canGoBack(),
+      canGoForward: false,
+    };
+  }
+
+  const knownMaxIndex = resolveKnownAppHistoryMaxIndex(history, currentIndex);
+  return {
+    canGoBack: history.canGoBack(),
+    canGoForward: currentIndex < knownMaxIndex,
+  };
+}
+
+export function useAppNavigationState(): AppNavigationState {
+  const [navigationState, setNavigationState] = useState(() => resolveAppNavigationState());
+
+  useEffect(() => {
+    const updateNavigationState = (event?: HistorySubscriberEvent) =>
+      setNavigationState(syncAppNavigationState(appHistory, event?.action));
+    const unsubscribe = appHistory.subscribe(updateNavigationState);
+    updateNavigationState();
+    return unsubscribe;
+  }, []);
+
+  return navigationState;
+}
+
+declare module "@tanstack/react-router" {
+  interface HistoryState {
+    synaraExecution?: string;
+  }
+}

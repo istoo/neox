@@ -1,0 +1,91 @@
+// Daemon configuration inputs. General provider credentials and executable/runtime
+// controls remain available to managed launches and their agent processes.
+export const DAEMON_SETTING_ENV_KEYS = [
+  "MCP_DEBUG",
+  "OPENAI_STT_BASE_URL",
+  "OPENAI_TTS_BASE_URL",
+  "NEOLIX_ALLOWED_HOSTS",
+  "NEOLIX_APP_BASE_URL",
+  "NEOLIX_CORS_ORIGINS",
+  "NEOLIX_DICTATION_ENABLED",
+  "NEOLIX_DICTATION_LANGUAGE",
+  "NEOLIX_DICTATION_LOCAL_STT_MODEL",
+  "NEOLIX_DICTATION_STT_PROVIDER",
+  "NEOLIX_GIT_CONCURRENCY",
+  "NEOLIX_GIT_MAX_PROCESSES_PER_SECOND",
+  "NEOLIX_GIT_MAX_PROCESS_CONCURRENCY",
+  "NEOLIX_HOSTNAMES",
+  "NEOLIX_LISTEN",
+  "NEOLIX_LOCAL_MODELS_DIR",
+  "NEOLIX_LOG",
+  "NEOLIX_LOG_CONSOLE_FORMAT",
+  "NEOLIX_LOG_CONSOLE_LEVEL",
+  "NEOLIX_LOG_FILE_LEVEL",
+  "NEOLIX_LOG_FILE_PATH",
+  "NEOLIX_LOG_FILE_ROTATE_COUNT",
+  "NEOLIX_LOG_FILE_ROTATE_SIZE",
+  "NEOLIX_LOG_FORMAT",
+  "NEOLIX_LOG_LEVEL",
+  "NEOLIX_LOG_ROTATE_COUNT",
+  "NEOLIX_LOG_ROTATE_SIZE",
+  "NEOLIX_PASSWORD",
+  "NEOLIX_PLUGIN_REGISTRY",
+  "NEOLIX_RELAY_ENABLED",
+  "NEOLIX_RELAY_ENDPOINT",
+  "NEOLIX_RELAY_PUBLIC_ENDPOINT",
+  "NEOLIX_RELAY_PUBLIC_USE_TLS",
+  "NEOLIX_RELAY_USE_TLS",
+  "NEOLIX_SERVICE_PROXY_ENABLED",
+  "NEOLIX_SERVICE_PROXY_LISTEN",
+  "NEOLIX_SERVICE_PROXY_PUBLIC_BASE_URL",
+  "NEOLIX_TRUSTED_PROXIES",
+  "NEOLIX_VOICE_LANGUAGE",
+  "NEOLIX_VOICE_LLM_PROVIDER",
+  "NEOLIX_VOICE_LOCAL_STT_MODEL",
+  "NEOLIX_VOICE_LOCAL_TTS_MODEL",
+  "NEOLIX_VOICE_LOCAL_TTS_SPEAKER_ID",
+  "NEOLIX_VOICE_LOCAL_TTS_SPEED",
+  "NEOLIX_VOICE_MODE_ENABLED",
+  "NEOLIX_VOICE_STT_PROVIDER",
+  "NEOLIX_VOICE_TTS_PROVIDER",
+  "NEOLIX_VOICE_TURN_DETECTION_PROVIDER",
+  "NEOLIX_WEB_UI_DIST_DIR",
+  "NEOLIX_WEB_UI_ENABLED",
+  "PORT",
+  "STT_CONFIDENCE_THRESHOLD",
+  "STT_MODEL",
+  "TTS_MODEL",
+  "TTS_VOICE",
+] as const;
+
+const CONFIG_CONTEXT_ENV_KEYS = [
+  "NEOLIX_NODE_ENV",
+  "NEOLIX_DESKTOP_MANAGED",
+  "OPENAI_API_KEY",
+  "OPENAI_BASE_URL",
+  "OPENAI_STT_API_KEY",
+  "OPENAI_TTS_API_KEY",
+] as const;
+
+export function configurationEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return Object.fromEntries(
+    [...DAEMON_SETTING_ENV_KEYS, ...CONFIG_CONTEXT_ENV_KEYS].map((key) => [key, env[key]]),
+  );
+}
+
+export function daemonLaunchEnvironment(input: {
+  env: NodeJS.ProcessEnv;
+  home: string;
+  mode: "managed" | "deployment";
+  desktopManaged?: boolean;
+}): NodeJS.ProcessEnv {
+  const env = { ...input.env };
+  if (input.mode === "managed") {
+    for (const key of DAEMON_SETTING_ENV_KEYS) delete env[key];
+  }
+  delete env.NEOLIX_HOST;
+  delete env.NEOLIX_DESKTOP_MANAGED;
+  env.NEOLIX_HOME = input.home;
+  if (input.desktopManaged) env.NEOLIX_DESKTOP_MANAGED = "1";
+  return env;
+}

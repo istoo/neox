@@ -1,0 +1,28 @@
+Neox
+Copyright (c) 2026 istoo
+
+This product is derived from Paseo
+(https://github.com/getpaseo/paseo), Copyright (c) 2025-present
+Mohamed Boudra, licensed under the Apache License, Version 2.0. The Apache
+License text and Paseo's copyright and licensing statement are preserved in
+LICENSE.
+
+The desktop interface in packages/desktop-web is derived from Synara
+(https://github.com/Emanuele-web04/synara), Copyright (c) 2026 T3 Tools Inc.
+and Copyright (c) 2026 Emanuele Di Pietro, licensed under the MIT License.
+The MIT license text is preserved in packages/desktop-web/LICENSE, and the
+changes made to it are listed in packages/desktop-web/NOTICE.md.
+
+Changes made to Paseo in Neox include:
+
+- The desktop app (packages/desktop) loads the Synara-derived interface in
+  packages/desktop-web through a local bridge to the Paseo daemon, and is
+  renamed Neox, with its own application identifier, icons and release feed
+  (https://github.com/istoo/neox/releases).
+- The daemon (packages/server) adds a local model gateway with provider
+  routing, failover, allowances and sensitive-data masking, plus the
+  workspace, agent and settings APIs the desktop interface uses.
+- The website and hosted services of Paseo are not part of this repository.
+
+Third-party components keep the licenses provided by their respective
+copyright holders.

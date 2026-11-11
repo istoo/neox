@@ -1,0 +1,394 @@
+import type {
+  DesktopAppUpdateCheckResult,
+  DesktopAppUpdateCheckIntent,
+  DesktopAppUpdateInstallResult,
+  DesktopReleaseChannel,
+} from "@/desktop/updates/desktop-updates";
+import { i18n } from "@/i18n/i18next";
+
+export type DesktopAppUpdateStatus =
+  | "idle"
+  | "checking"
+  | "pending"
+  | "up-to-date"
+  | "available"
+  | "installing"
+  | "installed"
+  | "error";
+
+export const PENDING_RECHECK_MS = 10_000;
+
+export interface DesktopAppUpdaterSnapshot {
+  status: DesktopAppUpdateStatus;
+  availableUpdate: DesktopAppUpdateCheckResult | null;
+  errorMessage: string | null;
+  installMessage: string | null;
+  lastCheckedAt: number | null;
+  isChecking: boolean;
+  isInstalling: boolean;
+  /** myna's package-manager or blocked-update sentence, when one applies. */
+  noticeMessage: string | null;
+}
+
+export interface DesktopAppUpdaterPort {
+  checkDesktopAppUpdate(input: {
+    releaseChannel: DesktopReleaseChannel;
+    intent: DesktopAppUpdateCheckIntent;
+    autoDownload?: boolean;
+    mirror?: string;
+  }): Promise<DesktopAppUpdateCheckResult>;
+  installDesktopAppUpdate(input: {
+    releaseChannel: DesktopReleaseChannel;
+  }): Promise<DesktopAppUpdateInstallResult>;
+}
+
+export interface DesktopAppUpdaterErrorReport {
+  error: unknown;
+  message: string;
+  logLabel: string;
+}
+
+export interface DesktopAppUpdaterDeps {
+  port: DesktopAppUpdaterPort;
+  now(): number;
+  reportInstallError?(report: DesktopAppUpdaterErrorReport): void;
+}
+
+export interface DesktopAppUpdater {
+  getSnapshot(): DesktopAppUpdaterSnapshot;
+  subscribe(listener: () => void): () => void;
+  checkForUpdates(options?: {
+    releaseChannel: DesktopReleaseChannel;
+    intent?: DesktopAppUpdateCheckIntent;
+    silent?: boolean;
+    autoDownload?: boolean;
+    mirror?: string;
+  }): Promise<DesktopAppUpdateCheckResult | null>;
+  installUpdate(options: {
+    releaseChannel: DesktopReleaseChannel;
+  }): Promise<DesktopAppUpdateInstallResult | null>;
+}
+
+interface InternalState {
+  status: DesktopAppUpdateStatus;
+  availableUpdate: DesktopAppUpdateCheckResult | null;
+  errorMessage: string | null;
+  installMessage: string | null;
+  lastCheckedAt: number | null;
+  isInstalling: boolean;
+  requestVersion: number;
+  noticeMessage: string | null;
+}
+
+const INITIAL_STATE: InternalState = {
+  status: "idle",
+  availableUpdate: null,
+  errorMessage: null,
+  installMessage: null,
+  lastCheckedAt: null,
+  isInstalling: false,
+  requestVersion: 0,
+  noticeMessage: null,
+};
+
+function buildSnapshot(state: InternalState): DesktopAppUpdaterSnapshot {
+  return {
+    status: state.status,
+    availableUpdate: state.availableUpdate,
+    errorMessage: state.errorMessage,
+    installMessage: state.installMessage,
+    lastCheckedAt: state.lastCheckedAt,
+    isChecking: state.status === "checking",
+    isInstalling: state.status === "installing" || state.isInstalling,
+    noticeMessage: state.noticeMessage,
+  };
+}
+
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error && typeof error.message === "string") {
+    return error.message;
+  }
+  return String(error);
+}
+
+export function formatStatusText(input: {
+  status: DesktopAppUpdateStatus;
+  availableUpdate: DesktopAppUpdateCheckResult | null;
+  installMessage: string | null;
+  lastCheckedAt: number | null;
+  formatVersion: (version: string | null | undefined) => string;
+  formatLastCheckedAt: (timestamp: number) => string;
+}): string {
+  const {
+    status,
+    availableUpdate,
+    installMessage,
+    lastCheckedAt,
+    formatVersion,
+    formatLastCheckedAt,
+  } = input;
+
+  if (status === "checking") {
+    return i18n.t("desktop.updates.status.checking");
+  }
+
+  if (status === "installing") {
+    return i18n.t("desktop.updates.status.installing");
+  }
+
+  if (status === "up-to-date") {
+    if (lastCheckedAt != null) {
+      return i18n.t("desktop.updates.status.upToDateWithLastChecked", {
+        time: formatLastCheckedAt(lastCheckedAt),
+      });
+    }
+    return i18n.t("desktop.updates.status.upToDate");
+  }
+
+  if (status === "pending") {
+    if (availableUpdate?.latestVersion) {
+      return i18n.t(
+        lastCheckedAt != null
+          ? "desktop.updates.status.pendingWithVersionAndLastChecked"
+          : "desktop.updates.status.pendingWithVersion",
+        {
+          version: formatVersion(availableUpdate.latestVersion),
+          time: lastCheckedAt != null ? formatLastCheckedAt(lastCheckedAt) : undefined,
+        },
+      );
+    }
+
+    if (lastCheckedAt != null) {
+      return i18n.t("desktop.updates.status.pendingWithLastChecked", {
+        time: formatLastCheckedAt(lastCheckedAt),
+      });
+    }
+    return i18n.t("desktop.updates.status.pending");
+  }
+
+  if (status === "available") {
+    if (availableUpdate?.latestVersion) {
+      return i18n.t(
+        lastCheckedAt != null
+          ? "desktop.updates.status.availableWithVersionAndLastChecked"
+          : "desktop.updates.status.availableWithVersion",
+        {
+          version: formatVersion(availableUpdate.latestVersion),
+          time: lastCheckedAt != null ? formatLastCheckedAt(lastCheckedAt) : undefined,
+        },
+      );
+    }
+
+    if (lastCheckedAt != null) {
+      return i18n.t("desktop.updates.status.availableWithLastChecked", {
+        time: formatLastCheckedAt(lastCheckedAt),
+      });
+    }
+    return i18n.t("desktop.updates.status.available");
+  }
+
+  if (status === "installed") {
+    return installMessage ?? i18n.t("desktop.updates.status.installed");
+  }
+
+  if (status === "error") {
+    return i18n.t("desktop.updates.status.failed");
+  }
+
+  return i18n.t("desktop.updates.status.idle");
+}
+
+export function createDesktopAppUpdater(deps: DesktopAppUpdaterDeps): DesktopAppUpdater {
+  let state: InternalState = { ...INITIAL_STATE };
+  let cachedSnapshot: DesktopAppUpdaterSnapshot = buildSnapshot(state);
+  const listeners = new Set<() => void>();
+
+  function commit(next: InternalState): void {
+    state = next;
+    cachedSnapshot = buildSnapshot(state);
+    for (const listener of listeners) {
+      listener();
+    }
+  }
+
+  function portCheckInput(options: {
+    releaseChannel: DesktopReleaseChannel;
+    intent?: DesktopAppUpdateCheckIntent;
+    autoDownload?: boolean;
+    mirror?: string;
+  }) {
+    return {
+      releaseChannel: options.releaseChannel,
+      intent: options.intent ?? "manual",
+      ...(options.autoDownload === undefined ? {} : { autoDownload: options.autoDownload }),
+      ...(options.mirror === undefined ? {} : { mirror: options.mirror }),
+    };
+  }
+
+  function lastCheckedAtFor(intent: DesktopAppUpdateCheckIntent): number | null {
+    return intent === "manual" ? deps.now() : state.lastCheckedAt;
+  }
+
+  function commitFailedCheck(
+    result: DesktopAppUpdateCheckResult,
+    lastCheckedAt: number | null,
+  ): void {
+    commit({
+      ...state,
+      status: "error",
+      availableUpdate: null,
+      errorMessage: result.errorMessage,
+      installMessage: null,
+      lastCheckedAt,
+      noticeMessage: null,
+    });
+  }
+
+  /** The status a completed check leaves, and what the row shows beside it. */
+  function commitCheckedResult(
+    result: DesktopAppUpdateCheckResult,
+    lastCheckedAt: number | null,
+  ): void {
+    let status: DesktopAppUpdateStatus;
+    let availableUpdate: DesktopAppUpdateCheckResult | null;
+    if (result.readyToInstall) {
+      status = "available";
+      availableUpdate = result;
+    } else if (result.hasUpdate) {
+      status = "pending";
+      availableUpdate = result;
+    } else {
+      status = "up-to-date";
+      availableUpdate = null;
+    }
+
+    commit({
+      ...state,
+      status,
+      availableUpdate,
+      errorMessage: null,
+      installMessage: null,
+      lastCheckedAt,
+      noticeMessage: result.packageManager?.message ?? result.blockedUpdate?.error ?? null,
+    });
+  }
+
+  function commitCaughtCheckError(message: string, lastCheckedAt: number | null): void {
+    commit({
+      ...state,
+      status: "error",
+      errorMessage: message,
+      lastCheckedAt,
+    });
+  }
+
+  async function checkForUpdates(options?: {
+    releaseChannel: DesktopReleaseChannel;
+    intent?: DesktopAppUpdateCheckIntent;
+    silent?: boolean;
+    autoDownload?: boolean;
+    mirror?: string;
+  }): Promise<DesktopAppUpdateCheckResult | null> {
+    if (!options) {
+      return null;
+    }
+    const { intent = "manual", silent = false } = options;
+    if (silent && state.status === "checking") {
+      return null;
+    }
+
+    const requestVersion = state.requestVersion + 1;
+
+    commit({
+      ...state,
+      requestVersion,
+      status: silent ? state.status : "checking",
+      errorMessage: silent ? state.errorMessage : null,
+    });
+
+    try {
+      const result = await deps.port.checkDesktopAppUpdate(portCheckInput(options));
+      if (requestVersion !== state.requestVersion) {
+        return result;
+      }
+
+      const nextLastCheckedAt = lastCheckedAtFor(intent);
+      if (result.errorMessage) {
+        if (silent && !result.hasUpdate) {
+          console.warn("[DesktopUpdater] Silent update check failed", result.errorMessage);
+          return result;
+        }
+        commitFailedCheck(result, nextLastCheckedAt);
+        return result;
+      }
+
+      commitCheckedResult(result, nextLastCheckedAt);
+      return result;
+    } catch (error) {
+      if (requestVersion !== state.requestVersion) {
+        return null;
+      }
+
+      const message = getErrorMessage(error);
+      if (silent) {
+        console.warn("[DesktopUpdater] Silent update check failed", message);
+      } else {
+        commitCaughtCheckError(message, lastCheckedAtFor(intent));
+      }
+      return null;
+    }
+  }
+
+  async function installUpdate(options: {
+    releaseChannel: DesktopReleaseChannel;
+  }): Promise<DesktopAppUpdateInstallResult | null> {
+    commit({
+      ...state,
+      status: "installing",
+      errorMessage: null,
+      isInstalling: true,
+    });
+
+    try {
+      const result = await deps.port.installDesktopAppUpdate({
+        releaseChannel: options.releaseChannel,
+      });
+      const nextLastCheckedAt = deps.now();
+      commit({
+        ...state,
+        status: result.installed ? "installed" : "up-to-date",
+        availableUpdate: null,
+        installMessage: result.message,
+        lastCheckedAt: nextLastCheckedAt,
+        isInstalling: false,
+      });
+      return result;
+    } catch (error) {
+      const message = getErrorMessage(error);
+      deps.reportInstallError?.({
+        error,
+        message: i18n.t("desktop.updates.installError"),
+        logLabel: "[DesktopUpdater] Failed to install app update",
+      });
+      commit({
+        ...state,
+        status: "error",
+        errorMessage: message,
+        isInstalling: false,
+      });
+      return null;
+    }
+  }
+
+  return {
+    getSnapshot: () => cachedSnapshot,
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+    checkForUpdates,
+    installUpdate,
+  };
+}
