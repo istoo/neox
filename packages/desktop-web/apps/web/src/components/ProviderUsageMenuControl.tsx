@@ -17,6 +17,7 @@ import {
 } from "~/hooks/useProviderUsageSummary";
 import {
   deriveProviderUsageDisplayRows,
+  localizedProviderUsageDetail,
   localizedProviderUsageNeedsAuthDetail,
   selectPrimaryProviderUsageDisplayRow,
   type ProviderUsageDisplayRow,
@@ -82,13 +83,19 @@ function providerUsageEmptyMessage(
 ): string | undefined {
   switch (snapshot?.status) {
     case "needs-auth":
-      return snapshot.detail ?? localizedProviderUsageNeedsAuthDetail(provider, translate);
+      return (
+        localizedProviderUsageDetail(snapshot.detail, translate) ??
+        localizedProviderUsageNeedsAuthDetail(provider, translate)
+      );
     case "unsupported":
       return (
         snapshot.detail ?? translate("common:liveUsageIsNotAvailableForThisProviderConfiguration")
       );
     case "error":
-      return snapshot.detail ?? translate("common:usageIsCurrentlyUnavailable");
+      return (
+        localizedProviderUsageDetail(snapshot.detail, translate) ??
+        translate("common:usageIsCurrentlyUnavailable")
+      );
     default:
       return undefined;
   }

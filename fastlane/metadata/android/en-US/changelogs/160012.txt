@@ -1,0 +1,5 @@
+Fixed
+- A turn that fails because the provider rejected the sign-in or could not be reached now says what to do, instead of repeating the provider's raw 401 authentication_error or fetch failed text
+- Settings › Usage reports an expired provider login in the app's language and keeps the command that refreshes it
+
+Full notes: https://github.com/istoo/neox/releases

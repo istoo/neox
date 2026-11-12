@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   deriveProviderUsageDisplayRows,
+  localizedProviderUsageDetail,
   providerUsagePaceDetails,
   selectPrimaryProviderUsageDisplayRow,
 } from "./providerUsageDisplay";
@@ -126,5 +127,30 @@ describe("providerUsageDisplay", () => {
       ["Claude 5h", 10],
       ["Claude Weekly", 60],
     ]);
+  });
+
+  it("rewrites the daemon's login rejection and keeps the actionable command", () => {
+    const translate = (key: string, values?: Record<string, unknown>) => {
+      if (key === "settings:providerUsage_loginRejected") {
+        return `rejected:${values?.status};${values?.remedy}`;
+      }
+      if (key === "settings:providerUsage_runToRefresh") return `run ${values?.command}`;
+      if (key === "settings:providerUsage_signInAgain") return "sign in again";
+      return key;
+    };
+
+    expect(
+      localizedProviderUsageDetail("Login rejected (HTTP 401). Sign in again.", translate),
+    ).toBe("rejected:401;sign in again");
+    expect(
+      localizedProviderUsageDetail(
+        "Login rejected (HTTP 403). Run codex to refresh it.",
+        translate,
+      ),
+    ).toBe("rejected:403;run codex");
+    expect(localizedProviderUsageDetail("Something else happened.", translate)).toBe(
+      "Something else happened.",
+    );
+    expect(localizedProviderUsageDetail("  ", translate)).toBeNull();
   });
 });

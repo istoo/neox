@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.16.1 - 2026-11-12
+
+### Fixed
+
+- A turn that fails because the provider rejected the sign-in or could not be reached now says what to do, instead of repeating the provider's raw `401 authentication_error` or `fetch failed` text
+- Settings › Usage reports an expired provider login in the app's language and keeps the command that refreshes it
+
 ## 0.16.0 - 2026-11-11
 
 First Neox release published from [istoo/neox](https://github.com/istoo/neox). Desktop builds for macOS (Apple Silicon and Intel), Windows and Linux, with updates delivered through GitHub Releases.

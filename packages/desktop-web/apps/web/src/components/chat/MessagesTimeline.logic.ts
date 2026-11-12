@@ -367,6 +367,18 @@ export function summarizeTurnFailureReason(input: {
   if (binaryMissing?.[1]) {
     return t("chat:turnFailureBinaryMissing", { binary: binaryMissing[1] });
   }
+  // These categories have no detail worth keeping in a one-line header, and the provider's raw
+  // wording ("401 authentication_error: Invalid bearer token") reads as noise to the reader.
+  if (/\b401\b|authentication_error|invalid (bearer token|api key)|unauthorized/iu.test(message)) {
+    return t("chat:turnFailureAuth");
+  }
+  if (
+    /\b(?:econnrefused|etimedout|enotfound|econnreset)\b|fetch failed|socket hang up/iu.test(
+      message,
+    )
+  ) {
+    return t("chat:turnFailureNetwork");
+  }
   const firstLine = message.split(/\r?\n/u, 1)[0]?.trim() ?? "";
   if (firstLine.length === 0) {
     return null;

@@ -1390,6 +1390,8 @@
   "turnFailureModelAtCapacity": "model at capacity",
   "turnFailureUsageLimit": "usage limit reached",
   "turnFailureBinaryMissing": "{{binary}} isn't installed or isn't on your PATH",
+  "turnFailureAuth": "sign-in failed — check your account or API key",
+  "turnFailureNetwork": "couldn't reach the model service — check your network or proxy",
   "emptyResponse": "(empty response)",
   "queuedFollowUp": "Queued follow-up",
   "pastedTextsCount_one": "{{count}} pasted text",

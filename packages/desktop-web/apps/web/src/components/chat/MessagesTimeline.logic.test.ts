@@ -2583,6 +2583,15 @@ describe("deriveMessagesTimelineRows", () => {
         }),
       ).toBe("Claude isn't installed or isn't on your PATH");
     });
+
+    it("replaces provider auth and network errors with one actionable phrase", () => {
+      expect(
+        summarizeTurnFailureReason({ message: "401 authentication_error: Invalid bearer token" }),
+      ).toBe("sign-in failed — check your account or API key");
+      expect(summarizeTurnFailureReason({ message: "TypeError: fetch failed" })).toBe(
+        "couldn't reach the model service — check your network or proxy",
+      );
+    });
   });
 
   it("keeps the live turn expanded instead of collapsing while it streams", () => {

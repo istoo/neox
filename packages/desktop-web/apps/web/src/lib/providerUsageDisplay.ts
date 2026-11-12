@@ -171,3 +171,29 @@ export function localizedProviderUsageNeedsAuthDetail(
     ? translate("settings:usageSignInCommand", { command })
     : translate("settings:usageSignInProviderCli");
 }
+
+/**
+ * The daemon reports usage failures in English. Recognize the login rejection it emits and keep
+ * the provider's command hint, which is the part the reader can act on; anything else passes
+ * through unchanged rather than being rewritten into a claim we cannot verify.
+ */
+export function localizedProviderUsageDetail(
+  detail: string | null | undefined,
+  translate: typeof t = t,
+): string | null {
+  const text = detail?.trim();
+  if (!text) return null;
+  const rejected = /^login rejected \(HTTP (\d+)\)\.\s*(.*)$/iu.exec(text);
+  if (!rejected) return text;
+  const remedy = (rejected[2] ?? "").trim();
+  const run = /^run (\S+) to refresh it\.?$/iu.exec(remedy);
+  const tail = /^sign in again\.?$/iu.test(remedy)
+    ? translate("settings:providerUsage_signInAgain")
+    : run?.[1]
+      ? translate("settings:providerUsage_runToRefresh", { command: run[1] })
+      : remedy;
+  return translate("settings:providerUsage_loginRejected", {
+    status: rejected[1] ?? "",
+    remedy: tail,
+  });
+}

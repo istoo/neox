@@ -1,4 +1,7 @@
-import { localizedProviderUsageNeedsAuthDetail } from "~/lib/providerUsageDisplay";
+import {
+  localizedProviderUsageDetail,
+  localizedProviderUsageNeedsAuthDetail,
+} from "~/lib/providerUsageDisplay";
 // FILE: ProviderUsageSettingsPanel.tsx
 // Purpose: Settings → Usage panel. One card per supported provider account showing live remaining
 // quota/credits with linear progress meters, the provider brand icon, and plan/status pills.
@@ -163,7 +166,8 @@ function ProviderUsageCard({
           <p className="text-ui leading-relaxed text-muted-foreground">
             {status === "ok"
               ? t("settings:noUsageDataReportedYet")
-              : (snapshot.detail ?? localizedProviderUsageNeedsAuthDetail(provider, t))}
+              : (localizedProviderUsageDetail(snapshot.detail, t) ??
+                localizedProviderUsageNeedsAuthDetail(provider, t))}
           </p>
         )}
       </div>
