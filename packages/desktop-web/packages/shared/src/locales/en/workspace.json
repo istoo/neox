@@ -324,6 +324,8 @@
   "feedbackSynara": "Feedback Synara",
   "editor_hideChatPanel": "Hide chat panel",
   "importFailures": "Import failures",
+  "importFailuresMore": "and {{count}} more",
+  "importFailureProviderMismatch": "This conversation belongs to {{used}}, but the current CLI uses {{current}}.",
   "importProjects": "Import projects",
   "importSelected": "Import selected",
   "libraryHistory": "Library history",

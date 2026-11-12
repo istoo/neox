@@ -151,6 +151,14 @@ function isCodexAlreadyUnarchivedError(error: unknown, threadId: string): boolea
   return message.includes(`no archived rollout found for thread id ${threadId}`);
 }
 
+function codexThreadRecordedProvider(error: unknown): string | null {
+  const message = error instanceof Error ? error.message : String(error);
+  const match = /this chat uses (\S+?), but your current provider is /iu.exec(message);
+  const provider = match?.[1];
+  // The id goes into an app-server `-c model_provider=...` argument.
+  return provider && /^[A-Za-z0-9_:.-]+$/u.test(provider) ? provider : null;
+}
+
 const TURN_START_TIMEOUT_MS = 90 * 1000;
 const INTERRUPT_TIMEOUT_MS = 2_000;
 // `turn/interrupt` ends a turn but leaves the shell commands it started running.
@@ -3569,6 +3577,10 @@ export class CodexAppServerAgentSession implements AgentSession {
   private unpairedCompactionItemCompletions = 0;
   private connectionState: "disconnected" | "history-ready" | "connected" = "disconnected";
   private connectionPromise: Promise<void> | null = null;
+  // Set when a resume finds the thread recorded under a different model
+  // provider. The next app-server starts with that provider so Codex lets the
+  // thread through.
+  private resumeProviderOverride: string | null = null;
   private closed = false;
   private collaborationModes: Array<{
     name: string;
@@ -3601,7 +3613,9 @@ export class CodexAppServerAgentSession implements AgentSession {
     config: AgentSessionConfig,
     private readonly resumeHandle: { sessionId: string; metadata?: Record<string, unknown> } | null,
     logger: Logger,
-    private readonly spawnAppServer: () => Promise<ChildProcessWithoutNullStreams>,
+    private readonly spawnAppServer: (
+      modelProviderOverride?: string,
+    ) => Promise<ChildProcessWithoutNullStreams>,
     private readonly deps: CodexAppServerAgentDeps = {},
     private readonly ephemeral: boolean = false,
     private readonly goalsEnabled: boolean = false,
@@ -3680,13 +3694,13 @@ export class CodexAppServerAgentSession implements AgentSession {
     }
   }
 
-  private async establishConnection(): Promise<void> {
+  private async establishConnection(modelProviderOverride?: string): Promise<void> {
     if (this.initialResumePurpose === "history") {
       this.stagedHistory = await this.readArchivedHistory();
       this.connectionState = "history-ready";
       return;
     }
-    const child = await this.spawnAppServer();
+    const child = await this.spawnAppServer(modelProviderOverride);
     const client = new CodexAppServerClient(child, this.logger, () => this.traceContext());
     if (this.closed) {
       await client.dispose();
@@ -4132,13 +4146,17 @@ export class CodexAppServerAgentSession implements AgentSession {
   }
 
   private async ensureThreadLoaded(): Promise<void> {
-    if (!this.client || !this.currentThreadId) return;
+    const client = this.client;
+    const threadId = this.currentThreadId;
+    if (!client || !threadId) return;
     // Neolix reads history only when it replays it; the resume response needs no turns.
-    const params: Record<string, unknown> = { threadId: this.currentThreadId, excludeTurns: true };
-    if (this.deps.customCodexConfig) {
+    const params: Record<string, unknown> = { threadId, excludeTurns: true };
+    const modelProvider =
+      this.resumeProviderOverride ?? this.deps.customCodexConfig?.model_provider;
+    if (modelProvider) {
       // Resume otherwise prefers the provider stored on the thread, including
       // the unnamespaced key emitted by earlier Neolix versions.
-      params.modelProvider = this.deps.customCodexConfig.model_provider;
+      params.modelProvider = modelProvider;
     }
     const developerInstructions = composeSystemPromptParts(
       this.config.systemPrompt,
@@ -4151,33 +4169,78 @@ export class CodexAppServerAgentSession implements AgentSession {
     if (codexConfig) {
       params.config = codexConfig;
     }
+    const resume = async (requestParams: Record<string, unknown>): Promise<void> => {
+      const response = await client.request("thread/resume", requestParams);
+      this.rememberResolvedSandboxPolicy(response);
+    };
+    // A thread records the provider it ran on. When the user has since switched
+    // gateways — or an earlier Neolix version wrote an unnamespaced key — Codex
+    // rejects the resume with a provider conflict. Starting the app-server with
+    // the thread's provider is the only override Codex honors, so reconnect
+    // there and let the recorded provider own the chat.
+    const resumeWithProviderFallback = async (): Promise<void> => {
+      try {
+        await resume(params);
+      } catch (error) {
+        if (!(await this.reconnectOnRecordedProvider(error, threadId))) {
+          throw error;
+        }
+      }
+    };
     try {
-      const loaded = toObjectRecord(await this.client.request("thread/loaded/list", {}));
+      const loaded = toObjectRecord(await client.request("thread/loaded/list", {}));
       const ids = Array.isArray(loaded?.data) ? loaded.data : [];
-      if (ids.includes(this.currentThreadId)) {
+      if (ids.includes(threadId)) {
         return;
       }
-      const response = await this.client.request("thread/resume", params);
-      this.rememberResolvedSandboxPolicy(response);
+      await resumeWithProviderFallback();
     } catch (error) {
-      const threadId = this.currentThreadId;
       const message = error instanceof Error ? error.message : String(error);
       if (isArchivedCodexThreadResumeError(error, threadId)) {
         try {
-          await this.client.request("thread/unarchive", { threadId });
+          await client.request("thread/unarchive", { threadId });
         } catch (unarchiveError) {
           if (!isCodexAlreadyUnarchivedError(unarchiveError, threadId)) {
             throw unarchiveError;
           }
         }
-        const response = await this.client.request("thread/resume", params);
-        this.rememberResolvedSandboxPolicy(response);
+        await resumeWithProviderFallback();
         this.logger.info({ threadId }, "Unarchived Codex thread to restore active Neox agent");
         return;
       }
       this.logger.warn({ error, threadId }, "Failed to resume persisted Codex thread");
       throw new Error(`Failed to resume Codex thread ${threadId}: ${message}`, { cause: error });
     }
+  }
+
+  /**
+   * Codex checks the resume against the provider the app-server started with,
+   * not the request's `modelProvider` or `config`. Restart the app-server with
+   * the thread's recorded provider, then resume there. Returns false when the
+   * error is not a provider conflict or the recorded provider is already in
+   * use, so the caller rethrows the original error.
+   */
+  private async reconnectOnRecordedProvider(error: unknown, threadId: string): Promise<boolean> {
+    const recordedProvider = codexThreadRecordedProvider(error);
+    if (!recordedProvider || recordedProvider === this.resumeProviderOverride) {
+      return false;
+    }
+    if (recordedProvider === this.deps.customCodexConfig?.model_provider) {
+      return false;
+    }
+    this.logger.info(
+      { threadId, provider: recordedProvider },
+      "Restarting Codex app-server on the thread's recorded model provider",
+    );
+    const previous = this.client;
+    this.client = null;
+    this.connectionState = "disconnected";
+    this.resumeProviderOverride = recordedProvider;
+    if (previous) {
+      await previous.dispose();
+    }
+    await this.establishConnection(recordedProvider);
+    return true;
   }
 
   private parseSlashCommandInput(text: string): { commandName: string; args?: string } | null {
@@ -7519,10 +7582,19 @@ export class CodexAppServerAgentClient implements AgentClient {
 
   private async spawnAppServer(
     launchEnv?: Record<string, string>,
-    options?: { goalsEnabled?: boolean; agentId?: string; environment?: Record<string, string> },
+    options?: {
+      goalsEnabled?: boolean;
+      agentId?: string;
+      environment?: Record<string, string>;
+      /** Resumes a thread recorded under this provider instead of the configured one. */
+      modelProvider?: string;
+    },
   ): Promise<ChildProcessWithoutNullStreams> {
     const launchPrefix = await resolveCodexLaunchPrefix(this.runtimeSettings);
     const args = [...launchPrefix.args, "app-server"];
+    if (options?.modelProvider) {
+      args.push("-c", `model_provider=${options.modelProvider}`);
+    }
     if (options?.goalsEnabled) {
       args.push("--enable", "goals");
     }
@@ -7615,11 +7687,12 @@ export class CodexAppServerAgentClient implements AgentClient {
       merged,
       handle,
       this.logger,
-      () =>
+      (modelProviderOverride) =>
         this.spawnAppServer(launchContext?.env, {
           goalsEnabled,
           agentId: launchContext?.agentId,
           environment,
+          modelProvider: modelProviderOverride,
         }),
       { ...this.sessionDeps(launchContext?.env), environment },
       false,

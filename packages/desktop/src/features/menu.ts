@@ -70,12 +70,122 @@ export function reloadActiveBrowserOrWindow({
   win.webContents.reload();
 }
 
+export interface MenuLabels {
+  readonly about: string;
+  readonly services: string;
+  readonly hide: string;
+  readonly hideOthers: string;
+  readonly showAll: string;
+  readonly quit: string;
+  readonly file: string;
+  readonly newWindow: string;
+  readonly desktopUi: string;
+  readonly standard: string;
+  readonly classic: string;
+  readonly edit: string;
+  readonly undo: string;
+  readonly redo: string;
+  readonly cut: string;
+  readonly copy: string;
+  readonly paste: string;
+  readonly selectAll: string;
+  readonly view: string;
+  readonly zoomIn: string;
+  readonly zoomOut: string;
+  readonly actualSize: string;
+  readonly reload: string;
+  readonly forceReload: string;
+  readonly devTools: string;
+  readonly toggleFullScreen: string;
+  readonly window: string;
+  readonly minimize: string;
+  readonly zoom: string;
+  readonly front: string;
+  readonly close: string;
+}
+
+/**
+ * Electron 的 role 默认标签是英文，macOS 不会替它们本地化，所以整个菜单在这里
+ * 按系统语言取文案。只支持界面已有的两种语言，其他系统语言回退英文。
+ */
+export function menuLabels(locale: string, appName: string): MenuLabels {
+  if (!locale.trim().toLowerCase().startsWith("zh")) {
+    return {
+      about: `About ${appName}`,
+      services: "Services",
+      hide: `Hide ${appName}`,
+      hideOthers: "Hide Others",
+      showAll: "Show All",
+      quit: `Quit ${appName}`,
+      file: "File",
+      newWindow: "New Window",
+      desktopUi: "Desktop UI",
+      standard: "Standard",
+      classic: "Classic (legacy)",
+      edit: "Edit",
+      undo: "Undo",
+      redo: "Redo",
+      cut: "Cut",
+      copy: "Copy",
+      paste: "Paste",
+      selectAll: "Select All",
+      view: "View",
+      zoomIn: "Zoom In",
+      zoomOut: "Zoom Out",
+      actualSize: "Actual Size",
+      reload: "Reload",
+      forceReload: "Force Reload",
+      devTools: "Developer Tools",
+      toggleFullScreen: "Toggle Full Screen",
+      window: "Window",
+      minimize: "Minimize",
+      zoom: "Zoom",
+      front: "Bring All to Front",
+      close: "Close Window",
+    };
+  }
+  return {
+    about: `关于 ${appName}`,
+    services: "服务",
+    hide: `隐藏 ${appName}`,
+    hideOthers: "隐藏其他",
+    showAll: "全部显示",
+    quit: `退出 ${appName}`,
+    file: "文件",
+    newWindow: "新建窗口",
+    desktopUi: "桌面界面",
+    standard: "标准",
+    classic: "经典（旧版）",
+    edit: "编辑",
+    undo: "撤销",
+    redo: "重做",
+    cut: "剪切",
+    copy: "复制",
+    paste: "粘贴",
+    selectAll: "全选",
+    view: "视图",
+    zoomIn: "放大",
+    zoomOut: "缩小",
+    actualSize: "实际大小",
+    reload: "重新载入",
+    forceReload: "强制重新载入",
+    devTools: "开发者工具",
+    toggleFullScreen: "切换全屏",
+    window: "窗口",
+    minimize: "最小化",
+    zoom: "缩放",
+    front: "前置全部窗口",
+    close: "关闭窗口",
+  };
+}
+
 function buildApplicationMenuTemplate(
   options: ApplicationMenuOptions,
   capturing: boolean,
 ): Electron.MenuItemConstructorOptions[] {
   const isMac = process.platform === "darwin";
   const zoomEnabled = !capturing;
+  const labels = menuLabels(app.getLocale(), app.name);
 
   return [
     ...(isMac
@@ -83,24 +193,24 @@ function buildApplicationMenuTemplate(
           {
             label: app.name,
             submenu: [
-              { role: "about" as const },
+              { role: "about" as const, label: labels.about },
               { type: "separator" as const },
-              { role: "services" as const },
+              { role: "services" as const, label: labels.services },
               { type: "separator" as const },
-              { role: "hide" as const },
-              { role: "hideOthers" as const },
-              { role: "unhide" as const },
+              { role: "hide" as const, label: labels.hide },
+              { role: "hideOthers" as const, label: labels.hideOthers },
+              { role: "unhide" as const, label: labels.showAll },
               { type: "separator" as const },
-              { role: "quit" as const },
+              { role: "quit" as const, label: labels.quit },
             ],
           },
         ]
       : []),
     {
-      label: "File",
+      label: labels.file,
       submenu: [
         {
-          label: "New Window",
+          label: labels.newWindow,
           accelerator: "CmdOrCtrl+Shift+N",
           click: () => {
             options.onNewWindow();
@@ -108,10 +218,10 @@ function buildApplicationMenuTemplate(
         },
         { type: "separator" },
         {
-          label: "Desktop UI",
+          label: labels.desktopUi,
           submenu: [
             {
-              label: "Standard",
+              label: labels.standard,
               type: "radio",
               checked: options.uiMode === "web",
               enabled: options.uiModeSelectable !== false,
@@ -119,7 +229,7 @@ function buildApplicationMenuTemplate(
             },
             {
               // COMPAT(webRendererDefault): the way back while the native renderer still ships.
-              label: "Classic (legacy)",
+              label: labels.classic,
               type: "radio",
               checked: options.uiMode !== "web",
               enabled: options.uiModeSelectable !== false,
@@ -130,22 +240,22 @@ function buildApplicationMenuTemplate(
       ],
     },
     {
-      label: "Edit",
+      label: labels.edit,
       submenu: [
-        { role: "undo" },
-        { role: "redo" },
+        { role: "undo", label: labels.undo },
+        { role: "redo", label: labels.redo },
         { type: "separator" },
-        { role: "cut" },
-        { role: "copy" },
-        { role: "paste" },
-        { role: "selectAll" },
+        { role: "cut", label: labels.cut },
+        { role: "copy", label: labels.copy },
+        { role: "paste", label: labels.paste },
+        { role: "selectAll", label: labels.selectAll },
       ],
     },
     {
-      label: "View",
+      label: labels.view,
       submenu: [
         {
-          label: "Zoom In",
+          label: labels.zoomIn,
           accelerator: "CmdOrCtrl+=",
           enabled: zoomEnabled,
           click: withBrowserWindow((win) => {
@@ -153,7 +263,7 @@ function buildApplicationMenuTemplate(
           }),
         },
         {
-          label: "Zoom Out",
+          label: labels.zoomOut,
           accelerator: "CmdOrCtrl+-",
           enabled: zoomEnabled,
           click: withBrowserWindow((win) => {
@@ -161,7 +271,7 @@ function buildApplicationMenuTemplate(
           }),
         },
         {
-          label: "Actual Size",
+          label: labels.actualSize,
           accelerator: "CmdOrCtrl+0",
           enabled: zoomEnabled,
           click: withBrowserWindow((win) => {
@@ -170,7 +280,7 @@ function buildApplicationMenuTemplate(
         },
         { type: "separator" },
         {
-          label: "Reload",
+          label: labels.reload,
           accelerator: "CmdOrCtrl+R",
           click: withBrowserWindow((win) => {
             reloadActiveBrowserOrWindow({
@@ -180,7 +290,7 @@ function buildApplicationMenuTemplate(
           }),
         },
         {
-          label: "Force Reload",
+          label: labels.forceReload,
           accelerator: "CmdOrCtrl+Shift+R",
           click: withBrowserWindow((win) => {
             reloadActiveBrowserOrWindow({
@@ -190,19 +300,19 @@ function buildApplicationMenuTemplate(
             });
           }),
         },
-        { role: "toggleDevTools" },
+        { role: "toggleDevTools", label: labels.devTools },
         { type: "separator" },
-        { role: "togglefullscreen" },
+        { role: "togglefullscreen", label: labels.toggleFullScreen },
       ],
     },
     {
-      label: "Window",
+      label: labels.window,
       submenu: [
-        { role: "minimize" },
-        { role: "zoom" },
+        { role: "minimize", label: labels.minimize },
+        { role: "zoom", label: labels.zoom },
         ...(isMac
-          ? [{ type: "separator" as const }, { role: "front" as const }]
-          : [{ role: "close" as const }]),
+          ? [{ type: "separator" as const }, { role: "front" as const, label: labels.front }]
+          : [{ role: "close" as const, label: labels.close }]),
       ],
     },
   ];
@@ -235,19 +345,19 @@ export function setupApplicationMenu(options: ApplicationMenuOptions): void {
 
     const contextMenu = Menu.buildFromTemplate([
       {
-        label: "Copy",
+        label: menuLabels(app.getLocale(), app.name).copy,
         role: "copy",
         enabled: input.hasSelection === true,
       },
       {
-        label: "Paste",
+        label: menuLabels(app.getLocale(), app.name).paste,
         role: "paste",
       },
       {
         type: "separator",
       },
       {
-        label: "Select All",
+        label: menuLabels(app.getLocale(), app.name).selectAll,
         role: "selectAll",
       },
     ]);

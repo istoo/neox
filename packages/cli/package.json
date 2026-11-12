@@ -1,6 +1,6 @@
 {
   "name": "@neolix/cli",
-  "version": "0.16.1",
+  "version": "0.16.2",
   "description": "Neox CLI - control your AI coding agents from the command line",
   "license": "Apache-2.0",
   "bin": {
@@ -30,9 +30,9 @@
   },
   "dependencies": {
     "@clack/prompts": "^1.0.0",
-    "@neolix/client": "0.16.1",
-    "@neolix/protocol": "0.16.1",
-    "@neolix/server": "0.16.1",
+    "@neolix/client": "0.16.2",
+    "@neolix/protocol": "0.16.2",
+    "@neolix/server": "0.16.2",
     "chalk": "^5.3.0",
     "commander": "^12.0.0",
     "ink": "^7.1.1",

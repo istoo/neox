@@ -210,6 +210,34 @@ describe("peakOf", () => {
       want: null,
     },
     {
+      // 文档里的插件占位是 https://plugin.invalid，不是 plugin://。
+      name: "commandcode plan's plugin at a placeholder host",
+      p: provider({
+        id: "commandcode-plan",
+        baseUrl: "https://plugin.invalid",
+        plugin: { pluginId: "commandcode-auth", providerId: "commandcode-plan" },
+      }),
+      model: "deepseek/deepseek-v4.1-flash",
+      want: "weekdays",
+    },
+    {
+      name: "another plugin at a placeholder host",
+      p: provider({
+        id: "zen-free",
+        baseUrl: "https://plugin.invalid",
+        plugin: { pluginId: "zen-free", providerId: "zen-free" },
+      }),
+      model: "deepseek-v4.1-flash",
+      want: null,
+    },
+    {
+      // 非插件 provider 的假地址依旧不能借 id 冒领峰谷价。
+      name: "relay at a placeholder host named deepseek",
+      p: provider({ id: "deepseek", baseUrl: "https://plugin.invalid" }),
+      model: "deepseek-v4-flash",
+      want: null,
+    },
+    {
       name: "opencode go",
       p: provider({ id: "oc", baseUrl: "https://opencode.ai/zen/go/v1" }),
       model: "deepseek-v4.1-flash",

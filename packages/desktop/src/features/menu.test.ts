@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { reloadActiveBrowserOrWindow } from "./menu.js";
+import { menuLabels, reloadActiveBrowserOrWindow } from "./menu.js";
 
 class FakeWebContents {
   public readonly reloads: string[] = [];
@@ -66,5 +66,21 @@ describe("reloadActiveBrowserOrWindow", () => {
     expect(browserReloads.firstBrowser.reloads).toEqual([]);
     expect(browserReloads.secondBrowser.reloads).toEqual(["force-reload"]);
     expect(browserReloads.secondWindow.webContents.reloads).toEqual([]);
+  });
+});
+
+describe("menuLabels", () => {
+  it("follows the system language and keeps the app name in role labels", () => {
+    const chinese = menuLabels("zh-CN", "Neox");
+    expect(chinese.file).toBe("文件");
+    expect(chinese.about).toBe("关于 Neox");
+    expect(chinese.quit).toBe("退出 Neox");
+
+    const english = menuLabels("en-US", "Neox");
+    expect(english.file).toBe("File");
+    expect(english.about).toBe("About Neox");
+
+    // Unknown system languages keep the English menu, matching the app's fallback locale.
+    expect(menuLabels("fr-FR", "Neox").file).toBe("File");
   });
 });

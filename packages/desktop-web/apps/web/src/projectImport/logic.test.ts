@@ -4,6 +4,7 @@ import {
   buildProjectImportQueue,
   projectImportItemKey,
   selectableProjectImportKeys,
+  summarizeImportFailure,
 } from "./logic";
 
 const project: ProjectImportProject = {
@@ -46,6 +47,12 @@ const project: ProjectImportProject = {
     },
   ],
 };
+
+function translateImportFailure(key: string, values?: Record<string, unknown>): string {
+  return key === "workspace:importFailureProviderMismatch"
+    ? `mismatch ${values?.used}->${values?.current}`
+    : key;
+}
 
 describe("project import selection", () => {
   it("skips duplicates and archived selections when the archive filter is off", () => {
@@ -97,5 +104,25 @@ describe("project import selection", () => {
     expect(projectImportItemKey(project.key, "codex:one")).not.toBe(
       projectImportItemKey(project.key, "claude:one"),
     );
+  });
+
+  it("collapses a failed import into one line and explains a provider mismatch", () => {
+    const longTitle = `tmp · # AGENTS.md instructions ${"x".repeat(200)}`;
+
+    const mismatch = summarizeImportFailure(
+      longTitle,
+      "Failed to resume Codex thread 01a18869-3b55-78e3-accd-2cbed33e133f: This chat uses magpie, but your current provider is owl. Switch to magpie to continue.",
+      translateImportFailure,
+    );
+    expect(mismatch.title.length).toBeLessThanOrEqual(48);
+    expect(mismatch.title.endsWith("…")).toBe(true);
+    expect(mismatch.detail).toBe("mismatch magpie->owl");
+
+    const plain = summarizeImportFailure(
+      "short",
+      "first line\nsecond line",
+      translateImportFailure,
+    );
+    expect(plain).toEqual({ title: "short", detail: "first line" });
   });
 });

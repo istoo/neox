@@ -71,23 +71,27 @@ const PEAK_BILLS: readonly PeakBill[] = [
  * or model, which keeps one price at every hour.
  */
 export function peakOf(
-  provider: Pick<GatewayProvider, "id" | "baseUrl">,
+  provider: Pick<GatewayProvider, "id" | "baseUrl" | "plugin">,
   modelId: string,
 ): PeakKind | null {
   const model = bareModelId(modelId);
   const base = provider.baseUrl.trim();
   const url = base !== "" && !base.startsWith("plugin://") ? base : null;
-  for (const bill of PEAK_BILLS) {
-    if (!billServes(bill, model)) {
-      continue;
-    }
-    if (url !== null) {
-      if (bill.at(url)) {
+  // 插件 provider 的 baseUrl 只是占位，真实地址由插件在每次请求时给出，
+  // 所以它可能指不到任何厂商；这时与 myna 一样改由 id 判断。若占位里仍
+  // 写着真实厂商地址，host 仍然优先。
+  if (url !== null) {
+    for (const bill of PEAK_BILLS) {
+      if (billServes(bill, model) && bill.at(url)) {
         return bill.kind;
       }
-      continue;
     }
-    if (bill.ids.includes(provider.id)) {
+    if (provider.plugin === undefined) {
+      return null;
+    }
+  }
+  for (const bill of PEAK_BILLS) {
+    if (billServes(bill, model) && bill.ids.includes(provider.id)) {
       return bill.kind;
     }
   }

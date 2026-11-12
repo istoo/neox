@@ -2162,6 +2162,79 @@ describe("Codex app-server provider", () => {
     appServer.assertNoErrors();
   });
 
+  test("restarts the app-server on the thread's recorded provider", async () => {
+    const first = createFakeCodexAppServer({
+      "thread/resume": () =>
+        Promise.reject(
+          new Error(
+            "This chat uses magpie, but your current provider is neolix:owl. Switch to magpie to continue.",
+          ),
+        ),
+    });
+    const second = createFakeCodexAppServer();
+    const provider = createProviderWithFakeAppServer(first, {
+      runtimeSettings: { env: { OPENAI_BASE_URL: "https://owl.example.com/v1" } },
+      customProvider: { id: "owl", label: "Owl", extends: CODEX_PROVIDER },
+    });
+    const servers = [first, second];
+    let spawns = 0;
+    castInternals<{ spawnAppServer: () => Promise<ChildProcessWithoutNullStreams> }>(
+      provider,
+    ).spawnAppServer = async () => servers[spawns++]!.child;
+
+    const session = await provider.resumeSession({ sessionId: "saved-thread" });
+
+    expect(spawns).toBe(2);
+    expect(
+      first
+        .requests()
+        .filter((request) => request.method === "thread/resume")
+        .map((request) => request.params),
+    ).toEqual([expect.objectContaining({ modelProvider: "neolix:owl" })]);
+    expect(
+      second
+        .requests()
+        .filter((request) => request.method === "thread/resume")
+        .map((request) => request.params),
+    ).toEqual([expect.objectContaining({ threadId: "saved-thread", modelProvider: "magpie" })]);
+    await session.close();
+    first.assertNoErrors();
+    second.assertNoErrors();
+  });
+
+  test("keeps the wrapped failure when the recorded provider still fails", async () => {
+    let attempts = 0;
+    const first = createFakeCodexAppServer({
+      "thread/resume": () => {
+        attempts += 1;
+        return Promise.reject(
+          new Error("This chat uses magpie, but your current provider is neolix:owl."),
+        );
+      },
+    });
+    const second = createFakeCodexAppServer({
+      "thread/resume": () => {
+        attempts += 1;
+        return Promise.reject(new Error("thread resume failed again"));
+      },
+    });
+    const provider = createProviderWithFakeAppServer(first, {
+      runtimeSettings: { env: { OPENAI_BASE_URL: "https://owl.example.com/v1" } },
+      customProvider: { id: "owl", label: "Owl", extends: CODEX_PROVIDER },
+    });
+    const servers = [first, second];
+    let spawns = 0;
+    castInternals<{ spawnAppServer: () => Promise<ChildProcessWithoutNullStreams> }>(
+      provider,
+    ).spawnAppServer = async () => servers[spawns++]!.child;
+
+    await expect(provider.resumeSession({ sessionId: "saved-thread" })).rejects.toThrow(
+      "Failed to resume Codex thread saved-thread: thread resume failed again",
+    );
+    expect(spawns).toBe(2);
+    expect(attempts).toBe(2);
+  });
+
   test("reopening an agent whose timeline Neox still holds does not read Codex history", async () => {
     const codex = createReopenableCodexAgent({
       "saved-thread": [

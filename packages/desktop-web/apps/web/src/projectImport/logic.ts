@@ -17,6 +17,44 @@ export interface ProjectImportQueueItem {
   readonly input: ImportProjectInput;
 }
 
+const MAX_IMPORT_FAILURE_TITLE = 48;
+const MAX_IMPORT_FAILURE_DETAIL = 140;
+
+function clipImportText(text: string, max: number): string {
+  return text.length > max ? `${text.slice(0, max - 1).trimEnd()}…` : text;
+}
+
+/**
+ * 导入失败列表只给一行可读的原因：标题压成单行，已知的 provider 不匹配换成
+ * 本地化说明。原始错误仍由调用方的 title 属性保留，排查时可见。
+ */
+export function summarizeImportFailure(
+  title: string,
+  error: string,
+  translate: (key: string, values?: Record<string, unknown>) => string,
+): { readonly title: string; readonly detail: string } {
+  const compactTitle = clipImportText(title.replace(/\s+/gu, " ").trim(), MAX_IMPORT_FAILURE_TITLE);
+  const mismatch = /uses ([^\s,]+)[, ]+but your current provider is ([^\s.]+)/iu.exec(error);
+  if (mismatch?.[1] && mismatch[2]) {
+    return {
+      title: compactTitle,
+      detail: translate("workspace:importFailureProviderMismatch", {
+        used: mismatch[1],
+        current: mismatch[2],
+      }),
+    };
+  }
+  const firstLine =
+    error
+      .split(/\r?\n/u)
+      .find((line) => line.trim().length > 0)
+      ?.trim() ?? "";
+  return {
+    title: compactTitle,
+    detail: clipImportText(firstLine || error.trim(), MAX_IMPORT_FAILURE_DETAIL),
+  };
+}
+
 export function projectImportItemKey(projectKey: string, threadKey: string | null): string {
   return JSON.stringify([projectKey, threadKey]);
 }

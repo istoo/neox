@@ -1,6 +1,6 @@
 {
   "name": "@neolix/plugin",
-  "version": "0.16.1",
+  "version": "0.16.2",
   "description": "Neolix plugin SDK package",
   "license": "Apache-2.0",
   "files": [
@@ -98,8 +98,8 @@
     "use-sync-external-store": "^1.6.0"
   },
   "devDependencies": {
-    "@neolix/client": "0.16.1",
-    "@neolix/protocol": "0.16.1",
+    "@neolix/client": "0.16.2",
+    "@neolix/protocol": "0.16.2",
     "@types/node": "^20.9.0",
     "@types/react": "~19.2.0",
     "react": "19.2.3",
@@ -109,8 +109,8 @@
     "zod": "^4.4.3"
   },
   "peerDependencies": {
-    "@neolix/client": "0.16.1",
-    "@neolix/protocol": "0.16.1",
+    "@neolix/client": "0.16.2",
+    "@neolix/protocol": "0.16.2",
     "react": ">=19.1.0 <20",
     "react-native": ">=0.81.5",
     "zod": "^4.4.3"

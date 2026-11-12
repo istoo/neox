@@ -18,6 +18,7 @@ import {
   buildProjectImportQueue,
   IMPORT_PROVIDERS,
   selectableProjectImportKeys,
+  summarizeImportFailure,
   IMPORT_PROVIDER_LABELS,
   type ProjectImportQueueItem,
 } from "./logic";
@@ -420,11 +421,17 @@ export function ProjectImportPanel(props: {
           aria-label={t("workspace:importFailures")}
           className={cn("space-y-1.5 text-destructive", "text-ui-sm")}
         >
-          {failures.map(([key, failure]) => (
-            <li key={key}>
-              <span className="font-medium">{failure.title}</span>: {failure.error}
-            </li>
-          ))}
+          {failures.slice(0, 6).map(([key, failure]) => {
+            const summary = summarizeImportFailure(failure.title, failure.error ?? "", t);
+            return (
+              <li key={key} title={`${failure.title}: ${failure.error ?? ""}`}>
+                <span className="font-medium">{summary.title}</span>: {summary.detail}
+              </li>
+            );
+          })}
+          {failures.length > 6 ? (
+            <li>{t("workspace:importFailuresMore", { count: failures.length - 6 })}</li>
+          ) : null}
         </ul>
       ) : null}
       {catalog ? (

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.16.2 - 2026-11-12
+
+### Fixed
+
+- The desktop menu follows the system language; a Chinese system now shows Chinese menu items instead of English ones
+- Importing a Codex chat that ran on a different model provider no longer fails; Neox resumes it on the provider the chat recorded
+- A failed project import shows a short title and one line of detail per row instead of dumping the full provider error into the list
+
 ## 0.16.1 - 2026-11-12
 
 ### Fixed
