@@ -277,6 +277,16 @@ jobs:
         shell: bash
         run: node scripts/emit-release-env.mjs --source-tag "$SOURCE_TAG" >> "$GITHUB_ENV"
 
+      # The packaged app plus electron-builder's caches leave too little room on a
+      # stock ubuntu runner; the tar/rpm steps failed with ENOSPC. Drop the SDKs
+      # this job never uses before installing anything.
+      - name: Free disk space
+        shell: bash
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /usr/local/share/boost /usr/share/swift /usr/lib/jvm
+          df -h /
+
       - name: Setup Node
         uses: actions/setup-node@v4
         with:

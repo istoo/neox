@@ -1,6 +1,6 @@
 {
   "name": "@neolix/client",
-  "version": "0.16.4",
+  "version": "0.16.5",
   "description": "Neolix client SDK package",
   "license": "Apache-2.0",
   "files": [
@@ -48,8 +48,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@neolix/protocol": "0.16.4",
-    "@neolix/relay": "0.16.4",
+    "@neolix/protocol": "0.16.5",
+    "@neolix/relay": "0.16.5",
     "ws": "^8.20.0",
     "zod": "^4.4.3"
   },

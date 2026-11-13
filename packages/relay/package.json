@@ -1,6 +1,6 @@
 {
   "name": "@neolix/relay",
-  "version": "0.16.4",
+  "version": "0.16.5",
   "description": "Neox relay for bridging daemon and client connections",
   "license": "Apache-2.0",
   "files": [
@@ -36,7 +36,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@neolix/protocol": "0.16.4",
+    "@neolix/protocol": "0.16.5",
     "@noble/ciphers": "^2.4.0",
     "@noble/curves": "^2.4.0",
     "@noble/hashes": "^2.4.0",
@@ -48,8 +48,6 @@
     "@types/node": "^20.9.0",
     "@types/ws": "^8.5.8",
     "typescript": "^5.2.2",
-    "vitest": "^4.1.6",
-    "workerd": "1.20260625.1",
-    "wrangler": "^4.105.0"
+    "vitest": "^4.1.6"
   }
 }

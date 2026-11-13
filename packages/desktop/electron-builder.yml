@@ -30,6 +30,12 @@ files:
   - "!node_modules/@neolix/*/.tasks/**"
   - "!node_modules/@neolix/*/conversations/**"
   - "!node_modules/@neolix/*/test-results/**"
+  # Test-only toolchain for the relay e2e suite; it is never imported at runtime and
+  # workerd alone adds a 109 MB binary that overflowed the Linux runner's disk.
+  - "!node_modules/workerd/**"
+  - "!node_modules/@cloudflare/workerd-*/**"
+  - "!node_modules/wrangler/**"
+  - "!node_modules/miniflare/**"
 asarUnpack:
   - dist/daemon/node-entrypoint-runner.js
   - node_modules/@neolix/server/dist/server/terminal/shell-integration/**/*
