@@ -1,0 +1,4 @@
+Fixed
+- Opening the desktop Browser panel no longer crashes when the desktop shell does not provide browser annotations; annotation mode simply stays unavailable
+
+Full notes: https://github.com/istoo/neox/releases

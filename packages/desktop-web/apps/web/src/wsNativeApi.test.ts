@@ -1102,6 +1102,37 @@ describe("wsNativeApi", () => {
     expect(withNativeMenuIconsMock).not.toHaveBeenCalled();
   });
 
+  it("omits browser annotations when the desktop shell has no annotation host", async () => {
+    Object.defineProperty(getWindowForTest(), "desktopBridge", {
+      configurable: true,
+      writable: true,
+      value: { browser: { open: vi.fn() } },
+    });
+
+    const { createWsNativeApi } = await import("./wsNativeApi");
+    const api = createWsNativeApi();
+    // The panel disables annotation mode when this is undefined; a partial host used to crash it.
+    expect(api.browser.annotations).toBeUndefined();
+  });
+
+  it("forwards browser annotations when the desktop shell provides them", async () => {
+    const annotations = {
+      start: vi.fn(),
+      cancel: vi.fn(),
+      syncMarkers: vi.fn(),
+      onEvent: vi.fn(() => () => {}),
+    };
+    Object.defineProperty(getWindowForTest(), "desktopBridge", {
+      configurable: true,
+      writable: true,
+      value: { browser: { annotations } },
+    });
+
+    const { createWsNativeApi } = await import("./wsNativeApi");
+    const api = createWsNativeApi();
+    expect(api.browser.annotations).toBe(annotations);
+  });
+
   it("rasterizes context menu icons for the macOS desktop bridge", async () => {
     vi.stubGlobal("navigator", { platform: "MacIntel" });
     const showContextMenu = vi.fn().mockResolvedValue("rename");

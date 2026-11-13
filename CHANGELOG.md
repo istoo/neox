@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.16.4 - 2026-11-13
+
+### Fixed
+
+- Opening the desktop Browser panel no longer crashes when the desktop shell does not provide browser annotations; annotation mode simply stays unavailable
+
 ## 0.16.3 - 2026-11-13
 
 ### Fixed

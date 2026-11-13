@@ -1419,38 +1419,12 @@ export function createWsNativeApi(): NativeApi {
           await window.desktopBridge.browser.openDevTools(input);
         }
       },
-      annotations: {
-        start: async (input) => {
-          if (remoteExecution) throw new Error(REMOTE_NATIVE_UNAVAILABLE);
-          if (window.desktopBridge) {
-            return window.desktopBridge.browser.annotations.start(input);
-          }
-          throw new Error("Browser annotations require the desktop app.");
-        },
-        cancel: async (input) => {
-          if (remoteExecution) throw new Error(REMOTE_NATIVE_UNAVAILABLE);
-          if (window.desktopBridge) {
-            await window.desktopBridge.browser.annotations.cancel(input);
-            return;
-          }
-          throw new Error("Browser annotations require the desktop app.");
-        },
-        syncMarkers: async (input) => {
-          if (remoteExecution) throw new Error(REMOTE_NATIVE_UNAVAILABLE);
-          if (window.desktopBridge) {
-            await window.desktopBridge.browser.annotations.syncMarkers(input);
-            return;
-          }
-          throw new Error("Browser annotations require the desktop app.");
-        },
-        onEvent: (callback) => {
-          if (remoteExecution) return () => {};
-          if (window.desktopBridge) {
-            return window.desktopBridge.browser.annotations.onEvent(callback);
-          }
-          return () => {};
-        },
-      },
+      // An older desktop shell has no annotation host; omitting the object is what the
+      // browser panel reads as "annotation mode unavailable". Calling into a missing host
+      // crashed the panel outright.
+      ...(window.desktopBridge?.browser?.annotations && !remoteExecution
+        ? { annotations: window.desktopBridge.browser.annotations }
+        : {}),
       onState: (callback) => {
         if (remoteExecution) return () => {};
         if (window.desktopBridge) {

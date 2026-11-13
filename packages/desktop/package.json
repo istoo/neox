@@ -1,6 +1,6 @@
 {
   "name": "@neolix/desktop",
-  "version": "0.16.3",
+  "version": "0.16.4",
   "private": true,
   "description": "Neox desktop app (Electron wrapper)",
   "homepage": "https://github.com/istoo/neox",

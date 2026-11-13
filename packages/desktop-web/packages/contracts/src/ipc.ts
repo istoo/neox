@@ -1377,7 +1377,8 @@ export interface DesktopBridge {
     ) => Promise<ServerVoiceTranscriptionResult>;
   };
   browser: BrowserControlMethods & {
-    annotations: BrowserAnnotationMethods;
+    /** Absent on a desktop shell that has no annotation host; the panel disables annotation mode. */
+    annotations?: BrowserAnnotationMethods;
     onBrowserUseOpenPanelRequest: (
       listener: (request: BrowserUseOpenPanelRequest) => void,
     ) => () => void;
@@ -1916,7 +1917,8 @@ export interface NativeApi {
     onEvent: (callback: (event: TodoStreamEvent) => void) => () => void;
   };
   browser: BrowserControlMethods & {
-    annotations: BrowserAnnotationMethods;
+    /** Absent when the host has no annotation support; the panel treats that as unavailable. */
+    annotations?: BrowserAnnotationMethods;
     onCopyLink: (callback: (event: BrowserCopyLinkEvent) => void) => () => void;
   };
   // macOS-only in practice: off darwin the server answers `list`/`getThreadState`
