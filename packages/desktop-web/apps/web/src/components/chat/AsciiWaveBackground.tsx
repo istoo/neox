@@ -27,9 +27,16 @@ const MAX_RIPPLES = 6;
 // Ripple edges wobble by up to this many px so they read as water, not circles.
 const RIPPLE_WOBBLE_PX = 34;
 // Ink only shows inside drifting noise blotches; the rest of the field stays empty.
-const PATCH_THRESHOLD_LOW = 0.4;
-const PATCH_THRESHOLD_HIGH = 0.78;
-const INK_ALPHA_MAX = 0.18;
+// The landing is a workspace, not a showpiece: sparse blotches at the edges keep the
+// field ambient without turning the reading area into a texture of random glyphs.
+const PATCH_THRESHOLD_LOW = 0.47;
+const PATCH_THRESHOLD_HIGH = 0.82;
+const INK_ALPHA_MAX = 0.16;
+// Inside this normalized radius (fraction of the half-width) the field is nearly
+// invisible, so the heading, composer and their labels always sit on clean paper.
+const CALM_RADIUS_START = 0.42;
+const CALM_RADIUS_FULL = 1.05;
+const CALM_ALPHA_FLOOR = 0.18;
 // The field cycles through these looks, cross-fading from one to the next.
 const PATTERN_DURATION_MS = 20_000;
 const PATTERN_CROSSFADE_MS = 4_000;
@@ -431,10 +438,14 @@ export function AsciiWaveBackground() {
             lerp(waveLattice[bottom]!, waveLattice[bottom + 1]!, fx),
             fy,
           );
-          // Dim the middle so the hero stays readable.
-          const dx = (x - centerX) / (width * 0.3);
-          const dy = (y - centerY) / (height * 0.3);
-          const centerFade = Math.min(1, 0.45 + 0.55 * Math.sqrt(dx * dx + dy * dy));
+          // Keep the middle clean: the field only reaches full strength towards the
+          // pane edges, where it reads as an environment rather than noise behind text.
+          const nx = (x - centerX) / (width * 0.5);
+          const ny = (y - centerY) / (height * 0.5);
+          const centerFade =
+            CALM_ALPHA_FLOOR +
+            (1 - CALM_ALPHA_FLOOR) *
+              smoothstep(CALM_RADIUS_START, CALM_RADIUS_FULL, Math.sqrt(nx * nx + ny * ny));
           const inkAlpha = INK_ALPHA_MAX * patch * patch * (0.4 + 0.6 * wave) * centerFade * reveal;
 
           let rippleStrength = 0;

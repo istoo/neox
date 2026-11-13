@@ -50,12 +50,69 @@ interface ProjectMetaUpdateCommand {
 }
 
 /** Project fields the daemon's project registry has no place for. */
-const UNSUPPORTED_META_FIELDS = [
-  "workspaceRoot",
-  "defaultModelSelection",
-  "scripts",
-  "spaceId",
-] as const;
+const UNSUPPORTED_META_FIELDS = ["workspaceRoot", "defaultModelSelection", "spaceId"] as const;
+
+/**
+ * Project actions are stored in the project's `neox.json`, which is also what the daemon's
+ * workspace-script runtime executes and what the top bar's script list reads back. The client
+ * only models a name and a command, so every other key of an entry it already knows about
+ * (`type`, `port`, …) is carried over unchanged.
+ */
+export function toNeolixScripts(
+  raw: unknown,
+  existing: unknown,
+): Record<string, Record<string, unknown>> {
+  const previous =
+    existing !== null && typeof existing === "object" && !Array.isArray(existing)
+      ? (existing as Record<string, unknown>)
+      : {};
+  const scripts: Record<string, Record<string, unknown>> = {};
+  for (const entry of Array.isArray(raw) ? raw : []) {
+    if (entry === null || typeof entry !== "object") continue;
+    const name = typeof entry.name === "string" ? entry.name.trim() : "";
+    const command = typeof entry.command === "string" ? entry.command.trim() : "";
+    if (!name || !command) continue;
+    const prior = previous[name];
+    scripts[name] =
+      prior !== null && typeof prior === "object" && !Array.isArray(prior)
+        ? { ...(prior as Record<string, unknown>), command }
+        : { command };
+  }
+  return scripts;
+}
+
+/** The command of the action the client marked as "run on worktree creation", if any. */
+function worktreeSetupCommand(raw: unknown): string | null {
+  for (const entry of Array.isArray(raw) ? raw : []) {
+    if (entry === null || typeof entry !== "object") continue;
+    if ((entry as { runOnWorktreeCreate?: unknown }).runOnWorktreeCreate !== true) continue;
+    const command = (entry as { command?: unknown }).command;
+    if (typeof command === "string" && command.trim()) return command.trim();
+  }
+  return null;
+}
+
+/**
+ * Neox runs `worktree.setup` after creating a worktree; the client's "run on worktree creation"
+ * action is that same command. Only a setup that already equals a configured script's command is
+ * treated as owned by the action list, so a setup the user wrote by hand is never dropped.
+ */
+function setupIsOwnedByScripts(setup: unknown, scripts: unknown): boolean {
+  const commands = typeof setup === "string" ? [setup] : Array.isArray(setup) ? setup : [];
+  if (commands.length === 0) return false;
+  const known = new Set(
+    Object.values(scripts !== null && typeof scripts === "object" ? scripts : {}).flatMap(
+      (entry) => {
+        const command =
+          entry !== null && typeof entry === "object"
+            ? (entry as { command?: unknown }).command
+            : undefined;
+        return typeof command === "string" ? [command.trim()] : [];
+      },
+    ),
+  );
+  return commands.every((command) => typeof command === "string" && known.has(command.trim()));
+}
 
 /** Project pins live in the bridge, not in the daemon's project registry. */
 export interface ProjectPinStore {
@@ -144,6 +201,9 @@ export function makeProjectHandlers(
           await client.renameProject(projectId, title);
         }
         if (command.isPinned === true) await options.projectPins?.setPinned(projectId, true);
+        // The daemon does not publish a project update for a registration it just accepted, so
+        // the new project would stay missing from the shell snapshot until the next reload.
+        await model.reloadProjects();
         return { projectId, created: true };
       });
     },
@@ -152,6 +212,7 @@ export function makeProjectHandlers(
       fromPromise("project.delete", async () => {
         const command = payload as ProjectDeleteCommand;
         await client.removeProject(model.resolveProjectId(command.projectId));
+        await model.reloadProjects();
         return { projectId: command.projectId };
       }),
 
@@ -159,6 +220,50 @@ export function makeProjectHandlers(
       const command = payload as ProjectMetaUpdateCommand;
       const projectId = model.resolveProjectId(command.projectId);
       const currentKind = model.projectKind(projectId);
+      if (command.scripts !== undefined) {
+        const repoRoot = model.projectRoot(projectId);
+        if (!repoRoot) {
+          return Effect.fail(notSupported("project.meta.update scripts without a project root"));
+        }
+        return fromPromise("project.meta.update scripts", async () => {
+          const current = await client.readProjectConfig(repoRoot);
+          if (!current.ok) {
+            throw bridgeError(
+              "project.scripts-read-failed",
+              `Could not read the project's neox.json (${current.error.code}).`,
+              { code: current.error.code },
+            );
+          }
+          const currentScripts = current.config?.scripts;
+          const setup = worktreeSetupCommand(command.scripts);
+          const nextWorktree: Record<string, unknown> = { ...current.config?.worktree };
+          if (setup !== null) {
+            nextWorktree.setup = setup;
+          } else if (setupIsOwnedByScripts(current.config?.worktree?.setup, currentScripts)) {
+            delete nextWorktree.setup;
+          }
+          const { worktree: _previousWorktree, ...rest } = current.config ?? {};
+          const written = await client.writeProjectConfig({
+            repoRoot,
+            // Keep every other key (service ports, teardown) untouched.
+            config: {
+              ...rest,
+              scripts: toNeolixScripts(command.scripts, currentScripts),
+              ...(Object.keys(nextWorktree).length > 0 ? { worktree: nextWorktree } : {}),
+            },
+            expectedRevision: current.revision ?? null,
+          });
+          if (!written.ok) {
+            throw bridgeError(
+              "project.scripts-write-failed",
+              `Could not save the project's neox.json (${written.error.code}).`,
+              { code: written.error.code },
+            );
+          }
+          await model.reloadProjects();
+          return { projectId };
+        });
+      }
       const unsupported: string[] = UNSUPPORTED_META_FIELDS.filter(
         (field) => command[field] !== undefined,
       );
@@ -179,6 +284,9 @@ export function makeProjectHandlers(
         if (command.isPinned !== undefined) {
           await options.projectPins?.setPinned(projectId, command.isPinned);
         }
+        // Rename lives in the daemon and pins in the bridge; either way the shell the client
+        // already holds is stale until the projects are reloaded.
+        await model.reloadProjects();
         return { projectId };
       });
     },

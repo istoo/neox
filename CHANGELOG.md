@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.16.3 - 2026-11-13
+
+### Fixed
+
+- Project actions appear in the Environment panel and run from the top bar; saving one stores it in the project's `neox.json`
+- Editing an action keeps the rest of the script's configuration, including a service's `type` and `port`
+- "Run automatically on worktree creation" now sets the project's worktree setup and stays on after a reload
+- A newly added, renamed or removed project shows up in the sidebar and project picker immediately, without restarting the app
+
 ## 0.16.2 - 2026-11-12
 
 ### Fixed

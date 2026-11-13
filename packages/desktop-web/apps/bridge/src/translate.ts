@@ -12,6 +12,7 @@ import type {
   OrchestrationThread,
   OrchestrationThreadActivity,
   OrchestrationThreadShell,
+  ProjectScript,
   ProviderKind,
   RuntimeMode,
   UserInputQuestion,
@@ -47,6 +48,7 @@ export function toProjectShell(
   at: string,
   homeDir?: string,
   isPinned = false,
+  scripts: readonly ProjectScript[] = [],
 ): OrchestrationProjectShell {
   const isHome =
     homeDir !== undefined && path.resolve(project.projectRootPath) === path.resolve(homeDir);
@@ -56,7 +58,7 @@ export function toProjectShell(
     title: brand(project.projectDisplayName.trim() || project.projectRootPath),
     workspaceRoot: brand(project.projectRootPath),
     defaultModelSelection: null,
-    scripts: [],
+    scripts: isHome ? [] : [...scripts],
     isPinned,
     spaceId: null,
     additionalFolders: [],

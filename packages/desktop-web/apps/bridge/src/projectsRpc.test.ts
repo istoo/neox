@@ -4,7 +4,11 @@ import { describe, expect, it } from "vitest";
 
 import type { BridgeModel } from "./model.ts";
 import type { DaemonClient } from "./neolix.ts";
-import { makeProjectHandlers, projectProvisionFromGitHubHandler } from "./projectsRpc.ts";
+import {
+  makeProjectHandlers,
+  projectProvisionFromGitHubHandler,
+  toNeolixScripts,
+} from "./projectsRpc.ts";
 
 const CREATE = {
   type: "project.create",
@@ -20,6 +24,7 @@ interface Fakes {
   readonly added?: Record<string, unknown>;
   readonly created?: Record<string, unknown>;
   readonly cloned?: Record<string, unknown>;
+  readonly config?: Record<string, unknown>;
 }
 
 function makeHandlers(fakes: Fakes = {}) {
@@ -52,6 +57,14 @@ function makeHandlers(fakes: Fakes = {}) {
         }
       );
     },
+    readProjectConfig: async (repoRoot: string) => {
+      calls.push(["readProjectConfig", repoRoot]);
+      return fakes.config ?? { ok: true, config: null, revision: null };
+    },
+    writeProjectConfig: async (input: unknown) => {
+      calls.push(["writeProjectConfig", input]);
+      return { ok: true, config: null, revision: null };
+    },
   } as unknown as DaemonClient;
   const aliases = new Map<string, string>();
   const kinds: Record<string, string> = { prj_1: "project", prj_home: "chat" };
@@ -62,6 +75,7 @@ function makeHandlers(fakes: Fakes = {}) {
     aliasProject: (clientId: string, daemonId: string) => aliases.set(clientId, daemonId),
     resolveProjectId: resolve,
     projectKind: (id: string) => kinds[resolve(id)],
+    projectRoot: () => "/repo",
     reloadProjects: async () => {
       reloads.push("reload");
     },
@@ -99,11 +113,20 @@ const renameTo = (projectId: string, title: string) => ({
   title,
 });
 
+const action = (name: string, command: string) => ({ id: name, name, command });
+
+const writtenConfig = (calls: Array<[string, unknown]>) =>
+  (
+    calls.find(([name]) => name === "writeProjectConfig")?.[1] as
+      | { config: Record<string, unknown> }
+      | undefined
+  )?.config;
+
 describe("projectsRpc", () => {
   it("adds the project folder through the daemon registry", async () => {
     // The payload is the contract's own shape; the handler must not need extra fields.
     const command = Schema.decodeUnknownSync(ProjectCreateCommand)(CREATE);
-    const { handlers, calls, aliases } = makeHandlers();
+    const { handlers, calls, aliases, reloads } = makeHandlers();
     const result = await call<{ projectId: string; created: boolean }>(
       handlers,
       "project.create",
@@ -115,6 +138,8 @@ describe("projectsRpc", () => {
       // The dialog's name is not the folder name, so it is applied as a rename.
       ["renameProject", { projectId: "prj_1", name: "Neox" }],
     ]);
+    // The daemon does not announce the registration; the bridge must refresh the shell itself.
+    expect(reloads).toEqual(["reload"]);
     // Later commands still name the id the client minted.
     expect(aliases.get(String(command.projectId))).toBe("prj_1");
   });
@@ -169,7 +194,7 @@ describe("projectsRpc", () => {
   });
 
   it("removes a project by the id the shell snapshot exposes", async () => {
-    const { handlers, calls } = makeHandlers();
+    const { handlers, calls, reloads } = makeHandlers();
     const result = await call<{ projectId: string }>(handlers, "project.delete", {
       type: "project.delete",
       commandId: "cmd-del",
@@ -177,14 +202,17 @@ describe("projectsRpc", () => {
     });
     expect(result).toEqual({ projectId: "prj_1" });
     expect(calls).toEqual([["removeProject", "prj_1"]]);
+    expect(reloads).toEqual(["reload"]);
   });
 
   it("renames a project and leaves the shared Home chat container named as it is", async () => {
-    const { handlers, calls, aliases } = makeHandlers();
+    const { handlers, calls, aliases, reloads } = makeHandlers();
     aliases.set("client-home", "prj_home");
     await call(handlers, "project.meta.update", renameTo("prj_1", "Renamed"));
     await call(handlers, "project.meta.update", renameTo("client-home", "Renamed"));
     expect(calls).toEqual([["renameProject", { projectId: "prj_1", name: "Renamed" }]]);
+    // Both commands refresh the shell; the Home container's skipped rename still re-emits it.
+    expect(reloads).toEqual(["reload", "reload"]);
   });
 
   it("refuses project fields the daemon cannot store", async () => {
@@ -207,7 +235,7 @@ describe("projectsRpc", () => {
   });
 
   it("keeps a project pin in the bridge and reports success", async () => {
-    const { handlers, calls, pins } = makeHandlers();
+    const { handlers, calls, pins, reloads } = makeHandlers();
     await call(handlers, "project.meta.update", {
       type: "project.meta.update",
       commandId: "c",
@@ -216,12 +244,98 @@ describe("projectsRpc", () => {
     });
     expect(calls).toEqual([["setPinned", { projectId: "prj_1", pinned: true }]]);
     expect(pins.get("prj_1")).toBe(true);
+    expect(reloads).toEqual(["reload"]);
   });
 
   it("does not rename a project whose title already matches its folder", async () => {
     const { handlers, calls } = makeHandlers();
     await call(handlers, "project.create", { ...CREATE, workspaceRoot: "/workspace/Neox" });
     expect(calls).toEqual([["addProject", "/workspace/Neox"]]);
+  });
+});
+
+describe("toNeolixScripts", () => {
+  it("maps the client's actions to neox.json script entries", () => {
+    expect(
+      toNeolixScripts([action("dev", "vite"), action("ping", "echo pong")], undefined),
+    ).toEqual({ dev: { command: "vite" }, ping: { command: "echo pong" } });
+  });
+
+  it("keeps the keys the client does not model on entries it already knows", () => {
+    const existing = { server: { type: "service", port: 3000, command: "old" } };
+    expect(toNeolixScripts([action("server", "node server.js")], existing)).toEqual({
+      server: { type: "service", port: 3000, command: "node server.js" },
+    });
+  });
+
+  it("drops entries the client removed, and entries without a name or command", () => {
+    const existing = { gone: { type: "service", command: "x" } };
+    expect(toNeolixScripts([action("  ", "x"), action("ok", "  ")], existing)).toEqual({});
+  });
+});
+
+describe("project.meta.update scripts", () => {
+  const update = (handlers: ReturnType<typeof makeHandlers>["handlers"], scripts: unknown[]) =>
+    call(handlers, "project.meta.update", {
+      type: "project.meta.update",
+      commandId: "c",
+      projectId: "prj_1",
+      scripts,
+    });
+
+  it("writes the actions into neox.json", async () => {
+    const { handlers, calls } = makeHandlers();
+    await update(handlers, [
+      { id: "dev", name: "dev", command: "vite", runOnWorktreeCreate: false },
+    ]);
+    expect(writtenConfig(calls)).toEqual({ scripts: { dev: { command: "vite" } } });
+  });
+
+  it("maps run-on-worktree-create to the config's worktree setup and back", async () => {
+    const { handlers, calls } = makeHandlers();
+    await update(handlers, [
+      { id: "dev", name: "dev", command: "vite", runOnWorktreeCreate: false },
+      { id: "setup", name: "setup", command: "bun install", runOnWorktreeCreate: true },
+    ]);
+    expect(writtenConfig(calls)).toEqual({
+      scripts: { dev: { command: "vite" }, setup: { command: "bun install" } },
+      worktree: { setup: "bun install" },
+    });
+  });
+
+  it("clears a setup the actions own, but keeps a hand-written one", async () => {
+    const owned = makeHandlers({
+      config: {
+        ok: true,
+        revision: { mtimeMs: 1, size: 1 },
+        config: {
+          scripts: { setup: { command: "bun install" } },
+          worktree: { setup: "bun install", teardown: "rm -rf node_modules" },
+        },
+      },
+    });
+    await update(owned.handlers, [
+      { id: "setup", name: "setup", command: "bun install", runOnWorktreeCreate: false },
+    ]);
+    expect(writtenConfig(owned.calls)).toEqual({
+      scripts: { setup: { command: "bun install" } },
+      worktree: { teardown: "rm -rf node_modules" },
+    });
+
+    const unowned = makeHandlers({
+      config: {
+        ok: true,
+        revision: { mtimeMs: 1, size: 1 },
+        config: { scripts: {}, worktree: { setup: "make deps" } },
+      },
+    });
+    await update(unowned.handlers, [
+      { id: "dev", name: "dev", command: "vite", runOnWorktreeCreate: false },
+    ]);
+    expect(writtenConfig(unowned.calls)).toEqual({
+      scripts: { dev: { command: "vite" } },
+      worktree: { setup: "make deps" },
+    });
   });
 });
 

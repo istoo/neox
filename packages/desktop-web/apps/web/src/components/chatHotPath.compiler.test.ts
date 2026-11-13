@@ -210,11 +210,10 @@ const HOT_PATH_MODULES: readonly HotPathModule[] = [
     allowedBailoutReasons: [],
   },
   {
+    // `useStableRows` keeps its row-identity cache in state rather than a ref, so the
+    // module compiles without bailouts.
     relativePath: "chat/MessagesTimeline.tsx",
-    // `useStableRows` deliberately reads and rewrites a previous-state ref inside
-    // its memo to reuse row identities across streaming updates. That pattern is
-    // documented in place and costs memoization only for that one small hook.
-    allowedBailoutReasons: ["Cannot access refs during render"],
+    allowedBailoutReasons: [],
   },
   { relativePath: "chat/TimelineWorkEntryRow.tsx", allowedBailoutReasons: [] },
   { relativePath: "chat/InlineVisualFrame.tsx", allowedBailoutReasons: [] },

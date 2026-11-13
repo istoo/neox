@@ -11,6 +11,7 @@ import type {
   OrchestrationThreadDetailSnapshot,
   OrchestrationThreadShell,
   OrchestrationThreadStreamItem,
+  ProjectScript,
 } from "@synara/contracts";
 
 import { sep } from "node:path";
@@ -45,6 +46,11 @@ export class BridgeModel {
   private sequence = 0;
   private readonly startedAt = new Date().toISOString();
   private readonly projects = new Map<string, OrchestrationProjectShell>();
+  /**
+   * The project's actions, read from its `neox.json`. The daemon's project descriptor has no
+   * script list, so the bridge reads the config file the script runtime consumes.
+   */
+  private readonly projectScripts = new Map<string, ProjectScript[]>();
   private readonly entries = new Map<string, FetchAgentsEntry>();
   private readonly shells = new Map<string, OrchestrationThreadShell>();
   private readonly drafts = new Map<string, OrchestrationThreadShell>();
@@ -118,8 +124,41 @@ export class BridgeModel {
       this.startedAt,
       this.homeDir,
       this.projectPins?.isPinned(project.projectId) ?? false,
+      this.projectScripts.get(project.projectId) ?? [],
     );
     return this.missingRoots.has(project.projectId) ? { ...shell, rootMissing: true } : shell;
+  }
+
+  /**
+   * Reads the project's actions from its `neox.json`. A read failure returns null so a transient
+   * daemon error keeps the last known list instead of blanking the Actions section.
+   */
+  private async readProjectScripts(project: NeolixProject): Promise<ProjectScript[] | null> {
+    const payload = await this.client.readProjectConfig(project.projectRootPath);
+    if (!payload.ok) return null;
+    const entries = payload.config?.scripts;
+    if (!entries || typeof entries !== "object") return [];
+    const setup = payload.config?.worktree?.setup;
+    const setupCommands = new Set(
+      (typeof setup === "string" ? [setup] : Array.isArray(setup) ? setup : [])
+        .filter((value): value is string => typeof value === "string")
+        .map((value) => value.trim()),
+    );
+    const scripts: ProjectScript[] = [];
+    for (const [rawName, entry] of Object.entries(entries)) {
+      const name = rawName.trim();
+      const command = typeof entry?.command === "string" ? entry.command.trim() : "";
+      if (!name || !command) continue;
+      // The dialog has no icon field for a config script; `play` is the neutral default.
+      scripts.push({
+        id: name,
+        name,
+        command,
+        icon: "play",
+        runOnWorktreeCreate: setupCommands.has(command),
+      });
+    }
+    return scripts;
   }
 
   /**
@@ -339,8 +378,13 @@ export class BridgeModel {
   }
 
   async load(): Promise<void> {
-    const projects = await this.client.listProjects();
-    for (const project of projects.projects as NeolixProject[]) {
+    const projects = (await this.client.listProjects()).projects as NeolixProject[];
+    const scripts = await Promise.all(
+      projects.map((project) => this.readProjectScripts(project).catch(() => null)),
+    );
+    for (const [index, project] of projects.entries()) {
+      const projectScripts = scripts[index];
+      if (projectScripts) this.projectScripts.set(project.projectId, projectScripts);
       this.projects.set(project.projectId, this.projectShell(project));
     }
     await this.reloadWorkspaces();
@@ -528,10 +572,15 @@ export class BridgeModel {
 
   /** Re-reads the project list: upserts what the daemon has, removes what it no longer has. */
   async reloadProjects(): Promise<void> {
-    const projects = await this.client.listProjects();
+    const projects = (await this.client.listProjects()).projects as NeolixProject[];
+    const scripts = await Promise.all(
+      projects.map((project) => this.readProjectScripts(project).catch(() => null)),
+    );
     const current = new Set<string>();
-    for (const project of projects.projects as NeolixProject[]) {
+    for (const [index, project] of projects.entries()) {
       current.add(project.projectId);
+      const projectScripts = scripts[index];
+      if (projectScripts) this.projectScripts.set(project.projectId, projectScripts);
       const shell = this.projectShell(project);
       this.projects.set(project.projectId, shell);
       this.emitShell({ kind: "project-upserted", sequence: this.next(), project: shell });
@@ -542,6 +591,7 @@ export class BridgeModel {
       if ([...this.entries.values()].some((entry) => entry.project?.projectKey === projectId))
         continue;
       this.projects.delete(projectId);
+      this.projectScripts.delete(projectId);
       this.emitShell({
         kind: "project-removed",
         sequence: this.next(),

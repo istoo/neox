@@ -117,7 +117,26 @@
         const attached = new Promise((resolve) => {
           webview.addEventListener(
             "did-attach",
-            () => resolve({ browserId, webContentsId: webview.getWebContentsId() }),
+            () => {
+              // Electron only exposes the guest's webContents id after the
+              // webview is attached and dom-ready has fired. Reading it inside
+              // did-attach can throw for the first guest, which would leave
+              // this promise pending forever and stall the whole group.
+              let attempts = 0;
+              const settle = () => {
+                try {
+                  resolve({ browserId, webContentsId: webview.getWebContentsId() });
+                } catch {
+                  attempts += 1;
+                  if (attempts > 100) {
+                    resolve({ browserId, webContentsId: -1 });
+                    return;
+                  }
+                  setTimeout(settle, 20);
+                }
+              };
+              settle();
+            },
             { once: true },
           );
         });

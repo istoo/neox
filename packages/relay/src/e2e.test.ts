@@ -15,9 +15,12 @@ import {
   decrypt,
 } from "./crypto.js";
 
-const nodeMajor = Number((process.versions.node ?? "0").split(".")[0] ?? "0");
-const shouldRunRelayE2e = process.env.FORCE_RELAY_E2E === "1" || nodeMajor < 25;
-const wranglerCliPath = createRequire(import.meta.url).resolve("wrangler/bin/wrangler.js");
+// Resolve wrangler from the package root: current wrangler versions gate subpath
+// imports behind `exports`, so the CLI path is derived rather than imported.
+const wranglerCliPath = resolvePath(
+  dirname(createRequire(import.meta.url).resolve("wrangler/package.json")),
+  "bin/wrangler.js",
+);
 const relayPackageRoot = resolvePath(dirname(fileURLToPath(import.meta.url)), "..");
 const STARTUP_HOOK_TIMEOUT_MS = 90_000;
 const SHUTDOWN_TIMEOUT_MS = 10_000;
@@ -188,7 +191,7 @@ async function stopRelayProcess(relayProcess: ChildProcess): Promise<void> {
   }
 }
 
-(shouldRunRelayE2e ? describe : describe.skip)("E2E Relay with E2EE", () => {
+describe("E2E Relay with E2EE", () => {
   let relayPort: number;
   let relayProcess: ChildProcess | null = null;
 

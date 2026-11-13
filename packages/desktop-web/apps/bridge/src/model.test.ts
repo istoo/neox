@@ -82,6 +82,44 @@ describe("BridgeModel", () => {
     model.dispose();
   });
 
+  it("lists the project's neox.json actions on its shell", async () => {
+    const client = {
+      listProjects: async () => ({
+        projects: [{ projectId: "p-1", projectDisplayName: "demo", projectRootPath: "/repo" }],
+      }),
+      readProjectConfig: async () => ({
+        ok: true,
+        revision: null,
+        config: {
+          scripts: {
+            ping: { command: "echo pong" },
+            setup: { command: "bun install" },
+            bad: { command: "   " },
+          },
+          worktree: { setup: "bun install" },
+        },
+      }),
+      fetchWorkspaces: async () => ({ entries: [] }),
+      fetchAgents: async () => ({ entries: [] }),
+      subscribe: () => () => {},
+    } as unknown as DaemonClient;
+
+    const model = new BridgeModel(client, () => {});
+    await model.load();
+    const project = model.shellSnapshot().projects.find((entry) => entry.id === "p-1");
+    expect(project?.scripts).toEqual([
+      { id: "ping", name: "ping", command: "echo pong", icon: "play", runOnWorktreeCreate: false },
+      {
+        id: "setup",
+        name: "setup",
+        command: "bun install",
+        icon: "play",
+        runOnWorktreeCreate: true,
+      },
+    ]);
+    model.dispose();
+  });
+
   it("loads archived agents and reports their archivedAt on the shell", async () => {
     let fetchOptions: unknown;
     const client = {

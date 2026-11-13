@@ -273,7 +273,16 @@ export function normalizeMcpConnectorUrl(raw: string): McpConnectorUrlResult {
 /** A readable default name for a custom server: its host without `mcp.`/`api.`/`www.`. */
 export function defaultMcpConnectorName(url: string): string {
   const host = new URL(url).hostname.replace(/^(?:mcp|api|www)\./u, "");
-  return host.slice(0, MCP_CONNECTOR_MAX_NAME_LENGTH);
+  // A saved server's name only accepts letters, digits, `-` and `_`. An IPv4
+  // host or a multi-label domain would otherwise reach the daemon with dots and
+  // fail only after the user had already approved the connector.
+  const sanitized = host
+    .replace(/[[\]]/gu, "")
+    .replace(/[^A-Za-z0-9_-]+/gu, "-")
+    .replace(/^-+|-+$/gu, "");
+  const named = sanitized.length > 0 ? sanitized : "server";
+  const prefixed = /^[A-Za-z0-9]/u.test(named) ? named : `mcp-${named}`;
+  return prefixed.slice(0, MCP_CONNECTOR_MAX_NAME_LENGTH).replace(/[-_]+$/u, "") || "mcp-server";
 }
 
 /**

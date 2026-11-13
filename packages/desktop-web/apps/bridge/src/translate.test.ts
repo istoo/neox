@@ -142,6 +142,15 @@ describe("translate", () => {
     expect(toProjectShell(project, AT).kind).toBe("project");
   });
 
+  it("carries the project's neox.json actions, but not on the Home chat container", () => {
+    const project = { projectId: "prj_1", projectDisplayName: "neox", projectRootPath: "/repo" };
+    const scripts = [
+      { id: "ping", name: "ping", command: "echo pong", icon: "play", runOnWorktreeCreate: false },
+    ] as const;
+    expect(toProjectShell(project, AT, "/Users/me", false, scripts).scripts).toEqual(scripts);
+    expect(toProjectShell(project, AT, "/repo", false, scripts).scripts).toEqual([]);
+  });
+
   it("hands tool details to the web in the provider shapes its work log parses", () => {
     const tool = (callId: string, detail: Record<string, unknown>) =>
       timelineEntry(2, {

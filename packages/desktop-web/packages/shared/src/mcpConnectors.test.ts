@@ -93,9 +93,18 @@ describe("normalizeMcpConnectorUrl", () => {
 
 describe("connector names", () => {
   it("derives a readable default name from the host", () => {
-    expect(defaultMcpConnectorName("https://mcp.acme.dev/mcp")).toBe("acme.dev");
-    expect(defaultMcpConnectorName("https://www.acme.dev/mcp")).toBe("acme.dev");
-    expect(defaultMcpConnectorName("https://api.acme.dev/v1/mcp/key")).toBe("acme.dev");
+    expect(defaultMcpConnectorName("https://mcp.acme.dev/mcp")).toBe("acme-dev");
+    expect(defaultMcpConnectorName("https://www.acme.dev/mcp")).toBe("acme-dev");
+    expect(defaultMcpConnectorName("https://api.acme.dev/v1/mcp/key")).toBe("acme-dev");
+  });
+
+  it("keeps the default name inside the server-name charset", () => {
+    // The daemon rejects dots; a loopback connector must not fail after approval.
+    expect(defaultMcpConnectorName("http://127.0.0.1:9/not-a-server")).toBe("127-0-0-1");
+    expect(defaultMcpConnectorName("https://my_tools.example.com/mcp")).toBe(
+      "my_tools-example-com",
+    );
+    expect(defaultMcpConnectorName("http://[::1]:9/mcp")).toBe("1");
   });
 
   it("slugs names into provider-safe server names", () => {
