@@ -89,6 +89,22 @@ Download the package for your platform from [Releases](https://github.com/istoo/
 > xattr -dr com.apple.quarantine /Applications/Neox.app
 > ```
 
+### Install on macOS from the command line
+
+On macOS (Apple silicon or Intel), you can skip the DMG and run the installer script instead:
+
+```sh
+curl -fsSL https://github.com/istoo/neox/releases/latest/download/install.sh | sh
+```
+
+For a prerelease, put its tag in the path:
+
+```sh
+curl -fsSL https://github.com/istoo/neox/releases/download/v0.17.0-beta.1/install.sh | sh
+```
+
+`latest` follows stable releases only and never selects a prerelease. The script downloads the ZIP for your CPU architecture from the same release, verifies its SHA-512, and unpacks it into `~/Applications`: stable installs as `Neox.app`, beta as `Neox Beta.app`. It never overwrites an existing app at that path (symlinks included), does not use `sudo`, does not launch the app, and does not stop or modify a running older version. Both installs share the existing application data. The macOS app is not signed yet; if macOS blocks the first launch, follow the note above.
+
 ### Updates
 
 | Installed from               | How it updates                                             |

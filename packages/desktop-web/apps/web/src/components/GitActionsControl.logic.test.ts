@@ -1142,6 +1142,8 @@ describe("resolveCreatePrDialogView", () => {
       isNewBranch: false,
       willCreateFeatureBranch: false,
       showCommitToggle: false,
+      // The Neox daemon rejects draft PR creation; keep the row hidden until it can.
+      showDraftAction: false,
       insertions: 0,
       deletions: 0,
     });

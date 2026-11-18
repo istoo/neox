@@ -1911,6 +1911,36 @@ describe("WorkspaceGitServiceImpl", () => {
     service.dispose();
   });
 
+  test("invalidateCheckoutDiffs clears cached working-tree and base diffs", async () => {
+    vi.useRealTimers();
+    let revision = 0;
+    const getCheckoutDiff = vi.fn(async () => ({ diff: `revision ${revision}` }));
+    const service = createService({
+      getCheckoutDiff: getCheckoutDiff as unknown as ReturnType<typeof vi.fn>,
+    });
+    const cwd = "/tmp/repo-invalidate-diff";
+
+    expect((await service.getCheckoutDiff(cwd, { mode: "uncommitted" })).diff).toBe("revision 0");
+    expect((await service.getCheckoutDiff(cwd, { mode: "base", baseRef: "main" })).diff).toBe(
+      "revision 0",
+    );
+    expect((await service.getCheckoutDiff(cwd, { mode: "uncommitted" })).diff).toBe("revision 0");
+    expect((await service.getCheckoutDiff(cwd, { mode: "base", baseRef: "main" })).diff).toBe(
+      "revision 0",
+    );
+    expect(getCheckoutDiff).toHaveBeenCalledTimes(2);
+
+    revision = 1;
+    service.invalidateCheckoutDiffs(cwd);
+
+    expect((await service.getCheckoutDiff(cwd, { mode: "uncommitted" })).diff).toBe("revision 1");
+    expect((await service.getCheckoutDiff(cwd, { mode: "base", baseRef: "main" })).diff).toBe(
+      "revision 1",
+    );
+    expect(getCheckoutDiff).toHaveBeenCalledTimes(4);
+    service.dispose();
+  });
+
   test("checkoutDiffCache evicts least-recently-used entries past its size cap", async () => {
     vi.useRealTimers();
     const getCheckoutDiff = vi.fn(async (cwd: string) => ({

@@ -118,6 +118,18 @@ export const TerminalCloseInput = Schema.Struct({
 });
 export type TerminalCloseInput = Schema.Codec.Encoded<typeof TerminalCloseInput>;
 
+/**
+ * Reports whether the page currently has one of this session's terminals focused.
+ * The bridge resolves `(threadId, terminalId)` to the daemon terminal it owns; an
+ * unknown pair clears focus instead of naming a daemon id the caller supplied.
+ */
+export const TerminalFocusHeartbeatInput = Schema.Struct({
+  threadId: TrimmedNonEmptyStringSchema,
+  terminalId: Schema.optional(TerminalIdSchema),
+  appVisible: Schema.Boolean,
+});
+export type TerminalFocusHeartbeatInput = Schema.Codec.Encoded<typeof TerminalFocusHeartbeatInput>;
+
 export const TerminalSessionStatus = Schema.Literals(["starting", "running", "exited", "error"]);
 export type TerminalSessionStatus = typeof TerminalSessionStatus.Type;
 

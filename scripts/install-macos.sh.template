@@ -1,0 +1,142 @@
+#!/bin/sh
+# Neox macOS 安装脚本，绑定到 __NEOX_VERSION__（__NEOX_CHANNEL__）。
+# 由 __NEOX_TAG__ 的 macOS 更新 manifest 生成，并随该 Release 上传；
+# 不要手动修改已发布的副本，应从 manifest 重新生成。
+set -eu
+
+NEOX_VERSION='__NEOX_VERSION__'
+NEOX_TAG='__NEOX_TAG__'
+NEOX_CHANNEL='__NEOX_CHANNEL__'
+APP_NAME='__NEOX_APP_NAME__'
+ARM64_ASSET='__NEOX_ARM64_ASSET__'
+ARM64_SHA512='__NEOX_ARM64_SHA512__'
+X64_ASSET='__NEOX_X64_ASSET__'
+X64_SHA512='__NEOX_X64_SHA512__'
+REPO='istoo/neox'
+
+work_dir=''
+reserved_target=''
+install_complete=0
+
+say() {
+  printf '%s\n' "$*"
+}
+
+fail() {
+  printf '错误：%s\n' "$*" >&2
+  exit 1
+}
+
+cleanup() {
+  # 复制完成前被中断时，撤掉本脚本用 mkdir 占下的空目录/半成品，
+  # 否则它会阻止用户重试。只处理本脚本创建且不是软链的目录。
+  if [ -n "$reserved_target" ] && [ "$install_complete" -ne 1 ] &&
+    [ -d "$reserved_target" ] && [ ! -L "$reserved_target" ]; then
+    rm -rf "$reserved_target"
+  fi
+  if [ -n "$work_dir" ] && [ -d "$work_dir" ]; then
+    rm -rf "$work_dir"
+  fi
+}
+
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+main() {
+  if [ -z "${HOME:-}" ]; then
+    fail "HOME 未设置，无法确定安装位置。"
+  fi
+
+  system_name=$(uname -s)
+  if [ "$system_name" != "Darwin" ]; then
+    fail "只支持 macOS，当前系统是 ${system_name}。"
+  fi
+
+  machine=$(uname -m)
+  case "$machine" in
+    arm64 | aarch64)
+      asset=$ARM64_ASSET
+      expected_sha512=$ARM64_SHA512
+      arch_label=arm64
+      ;;
+    x86_64 | amd64)
+      asset=$X64_ASSET
+      expected_sha512=$X64_SHA512
+      arch_label=x86_64
+      ;;
+    *)
+      fail "不支持的 CPU 架构：${machine}。只提供 macOS arm64 和 x86_64 安装包。"
+      ;;
+  esac
+
+  apps_dir="$HOME/Applications"
+  target="$apps_dir/$APP_NAME"
+
+  if [ -e "$target" ] || [ -L "$target" ]; then
+    fail "已存在 ${target}。安装器不会覆盖或合并已有应用，请先手动移除后再运行。"
+  fi
+
+  work_dir=$(mktemp -d "${TMPDIR:-/tmp}/neox-install.XXXXXX") ||
+    fail "无法创建临时目录。"
+  chmod 700 "$work_dir"
+
+  archive="$work_dir/$asset"
+  url="https://github.com/$REPO/releases/download/$NEOX_TAG/$asset"
+
+  say "正在下载 Neox ${NEOX_VERSION}（macOS ${arch_label}）..."
+  curl --fail --location --silent --show-error --retry 3 \
+    --proto '=https' --tlsv1.2 \
+    --output "$archive" "$url" ||
+    fail "下载失败：$url"
+
+  say "正在校验 SHA-512..."
+  actual_sha512=$(shasum -a 512 "$archive" | awk '{ print $1 }')
+  if [ "$actual_sha512" != "$expected_sha512" ]; then
+    fail "SHA-512 校验失败，安装已中止。下载的安装包可能不完整或已被替换。"
+  fi
+
+  unpacked="$work_dir/unpacked"
+  mkdir -p "$unpacked"
+  ditto -x -k "$archive" "$unpacked" ||
+    fail "解包失败。"
+
+  staged_app="$unpacked/Neox.app"
+  if [ ! -d "$staged_app" ]; then
+    fail "安装包里没有 Neox.app。"
+  fi
+  if [ ! -x "$staged_app/Contents/MacOS/Neox" ]; then
+    fail "安装包里的 Neox 可执行文件缺失或不可执行。"
+  fi
+
+  mkdir -p "$apps_dir" || fail "无法创建 ${apps_dir}。"
+
+  # 下载完成后重新检查，再用 mkdir 抢占目标路径。目标已存在（包括软链）时
+  # mkdir 会失败；成功则说明空目录归本安装器所有，ditto 只会复制进这个空目录，
+  # 不会与其他安装的目录合并。
+  if [ -e "$target" ] || [ -L "$target" ]; then
+    fail "已存在 ${target}。安装器不会覆盖或合并已有应用，请先手动移除后再运行。"
+  fi
+  if ! mkdir "$target"; then
+    fail "无法创建 ${target}；它可能已被另一个安装占用。"
+  fi
+  reserved_target=$target
+
+  say "正在安装到 ${target} ..."
+  if ! ditto "$staged_app" "$target"; then
+    fail "复制应用失败，正在清理未完成的安装。"
+  fi
+  install_complete=1
+
+  say "已安装 Neox ${NEOX_VERSION} 到 ${target}"
+  if [ "$NEOX_CHANNEL" = "beta" ]; then
+    say "这是预发行版，可以与稳定版并存。"
+  fi
+  say "安装器没有启动应用，也没有停止或修改正在运行的旧版。"
+  say "两个安装共用已有应用数据。"
+  say "Neox 目前未签名。首次打开若被系统拦截，请在「系统设置 › 隐私与安全性」中允许，或运行："
+  say "  xattr -dr com.apple.quarantine '${target}'"
+}
+
+main "$@"

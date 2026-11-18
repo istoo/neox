@@ -491,6 +491,7 @@ import {
   TerminalClearInput,
   TerminalCloseInput,
   TerminalEvent,
+  TerminalFocusHeartbeatInput,
   TerminalOpenInput,
   TerminalResizeInput,
   TerminalRestartInput,
@@ -1618,6 +1619,12 @@ export const WsTerminalCloseRpc = Rpc.make(WS_METHODS.terminalClose, {
   error: WsRpcError,
 });
 
+export const WsTerminalFocusHeartbeatRpc = Rpc.make(WS_METHODS.terminalFocusHeartbeat, {
+  payload: TerminalFocusHeartbeatInput,
+  success: Schema.Void,
+  error: WsRpcError,
+});
+
 export const WsSubscribeTerminalEventsRpc = Rpc.make(WS_METHODS.subscribeTerminalEvents, {
   payload: Schema.Struct({}),
   success: TerminalEvent,
@@ -2634,6 +2641,7 @@ export type WsFeatureRpc =
   | typeof WsTerminalClearRpc
   | typeof WsTerminalRestartRpc
   | typeof WsTerminalCloseRpc
+  | typeof WsTerminalFocusHeartbeatRpc
   | typeof WsSubscribeTerminalEventsRpc
   | typeof WsServerGetRuntimeStatusRpc
   | typeof WsServerGetConfigRpc
@@ -2852,6 +2860,7 @@ const wsApplicationRpcGroup = RpcGroup.make(
   WsTerminalClearRpc,
   WsTerminalRestartRpc,
   WsTerminalCloseRpc,
+  WsTerminalFocusHeartbeatRpc,
   WsSubscribeTerminalEventsRpc,
   WsServerGetRuntimeStatusRpc,
   WsServerGetConfigRpc,

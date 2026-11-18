@@ -516,6 +516,57 @@ export interface RunWorkspaceLookupClient {
   }>;
 }
 
+export interface RunProviderLookupClient {
+  getProvidersSnapshot(): Promise<{ entries: Array<{ provider: string }> }>;
+  getLastServerInfoMessage?: () => { features?: { providersSnapshot?: boolean } } | null;
+}
+
+export interface RunWorkspaceCreateClient {
+  createWorkspace(options: {
+    source: Parameters<ConnectedDaemonClient["createWorkspace"]>[0]["source"];
+    callerAgentId?: string;
+  }): Promise<{
+    workspace?: {
+      id: string;
+      name: string;
+      workspaceDirectory?: string | null;
+      gitRuntime?: { currentBranch?: string | null } | null;
+    } | null;
+    error?: string | null;
+    setupSkippedReason?: string;
+  }>;
+}
+
+export interface RunWorkspaceClient
+  extends RunWorkspaceLookupClient, RunProviderLookupClient, RunWorkspaceCreateClient {}
+
+// The daemon's provider registry is the authority: its read-only snapshot lists
+// built-ins beside configured profiles (`extends`) and plugin providers. Refuse
+// a provider the snapshot omits before `run` mints a workspace, or the failed
+// createAgent leaves an empty workspace that can later read as ambiguous.
+// A daemon that does not advertise or cannot answer the snapshot keeps the old
+// path: createAgent still validates and returns its own error.
+export async function assertKnownRunProvider(
+  client: RunProviderLookupClient,
+  provider: string,
+): Promise<void> {
+  if (client.getLastServerInfoMessage?.()?.features?.providersSnapshot !== true) return;
+
+  let entries: Array<{ provider: string }>;
+  try {
+    ({ entries } = await client.getProvidersSnapshot());
+  } catch {
+    return;
+  }
+
+  if (entries.length === 0 || entries.some((entry) => entry.provider === provider)) return;
+
+  throw {
+    code: "AGENT_CREATE_FAILED",
+    message: `Failed to create agent: Provider ${provider} is not configured`,
+  } satisfies CommandError;
+}
+
 export async function resolveExistingRunWorkspace(
   client: RunWorkspaceLookupClient,
   workspaceId: string,
@@ -541,11 +592,12 @@ export async function resolveExistingRunWorkspace(
 //   3. $NEOLIX_WORKSPACE_ID         -> exported by workspace terminals
 //   4. --new-workspace <kind>      -> mint a new workspace explicitly
 //   5. bare run                    -> mint a new local-backed workspace for cwd
-async function resolveRunWorkspace(
-  client: ConnectedDaemonClient,
+export async function resolveRunWorkspace(
+  client: RunWorkspaceClient,
   options: AgentRunOptions,
   cwd: string,
   callerAgentId: string | undefined,
+  provider: string,
 ): Promise<RunWorkspace> {
   const newWorkspace = resolveNewWorkspaceKind(options);
   const explicit = newWorkspace ? undefined : options.workspace?.trim();
@@ -566,6 +618,7 @@ async function resolveRunWorkspace(
 
   // TODO: thread the run `prompt` as firstAgentContext so workspace-level
   // title/branch generation picks up the task description (U8/U6 deferred).
+  await assertKnownRunProvider(client, provider);
   const source = buildRunWorkspaceSource(options, cwd);
   const result = await client.createWorkspace({
     source,
@@ -625,7 +678,13 @@ export async function runRunCommand(
     const requestEnv = Object.keys(env).length > 0 ? env : undefined;
 
     const callerAgentId = await resolveCallerAgentId(client);
-    const workspace = await resolveRunWorkspace(client, options, cwd, callerAgentId);
+    const workspace = await resolveRunWorkspace(
+      client,
+      options,
+      cwd,
+      callerAgentId,
+      resolvedProviderModel.provider,
+    );
     const workspaceId = workspace.id;
     const runCwd = workspace.cwd;
 

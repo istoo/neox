@@ -264,3 +264,39 @@ describe("effort=auto", () => {
     expect(planned.candidates[0]?.ruleEffort).toBe("high");
   });
 });
+
+describe("explicit provider routes", () => {
+  const twoProviders: GatewayConfig = {
+    version: 1,
+    enabled: true,
+    keys: [],
+    providers: [
+      {
+        id: "one",
+        protocol: "openai",
+        baseUrl: "https://one.test/v1",
+        models: [{ id: "shared" }],
+      },
+      {
+        id: "two",
+        protocol: "openai",
+        baseUrl: "https://two.test/v1",
+        models: [{ id: "shared" }],
+      },
+    ],
+    groups: [],
+  };
+
+  it("sends provider/model to that provider, not to the found group for the model", async () => {
+    const planned = await planRequestCandidates({
+      config: twoProviders,
+      requestedModel: "two/shared",
+      state,
+      context,
+    });
+    expect(
+      planned.candidates.map((candidate) => `${candidate.provider.id}/${candidate.model.id}`),
+    ).toEqual(["two/shared"]);
+    expect(planned.rule).toBeNull();
+  });
+});

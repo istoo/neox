@@ -67,8 +67,10 @@ function makeFakes(
             };
           if (name === "createNeolixWorktree")
             return {
+              // Wire shape: the daemon's workspace descriptor names its id `id`, not
+              // `workspaceId` (WorkspaceDescriptorPayloadSchema).
               workspace: {
-                workspaceId: "wks-worktree",
+                id: "wks-worktree",
                 workspaceDirectory: options.worktreePath ?? "/repo-worktree",
                 projectRootPath: "/repo",
                 gitRuntime: { currentBranch: "feature-branch" },

@@ -18,6 +18,7 @@ import {
   type TerminalCharacterWidths,
   type TerminalCloseInput,
   type TerminalEvent,
+  type TerminalFocusHeartbeatInput,
   type TerminalOpenInput,
   type TerminalResizeInput,
   type TerminalRestartInput,
@@ -449,6 +450,34 @@ class TerminalSessions {
     });
   }
 
+  /**
+   * Clears the daemon's terminal attention when the visible page actually focuses
+   * one of our terminals. The caller names a Synara session, not a daemon id; an
+   * unknown pair or a hidden page reports no terminal so a forged or stale id
+   * cannot clear a sibling pane's or another daemon's attention.
+   */
+  focusHeartbeat(input: TerminalFocusHeartbeatInput): void {
+    const session = input.terminalId
+      ? this.sessions.get(terminalKey(input.threadId, input.terminalId))
+      : undefined;
+    const focusedTerminalId =
+      input.appVisible && session && !session.exited ? session.daemonId : null;
+    try {
+      this.client.sendHeartbeat({
+        deviceType: "web",
+        // The daemon requires the field. This bridge has no agent-focus source, so
+        // it reports null. The heartbeat belongs to this bridge's own client
+        // session and cannot change another connected client's focus.
+        focusedAgentId: null,
+        focusedTerminalId,
+        lastActivityAt: new Date().toISOString(),
+        appVisible: input.appVisible,
+      });
+    } catch {
+      // Focus reporting is best-effort: a dropped transport must not fail the UI.
+    }
+  }
+
   async close(input: TerminalCloseInput): Promise<void> {
     const key = terminalKey(input.threadId, input.terminalId ?? "default");
     const session = this.sessions.get(key);
@@ -752,6 +781,8 @@ export function makeTerminalHandlers(model: BridgeModel): Record<string, AnyHand
       fromPromise("terminal.restart", () => sessions.restart(payload as TerminalRestartInput)),
     [WS_METHODS.terminalClose]: (payload) =>
       fromPromise("terminal.close", () => sessions.close(payload as TerminalCloseInput)),
+    [WS_METHODS.terminalFocusHeartbeat]: (payload) =>
+      Effect.sync(() => sessions.focusHeartbeat(payload as TerminalFocusHeartbeatInput)),
     [WS_METHODS.subscribeTerminalEvents]: () =>
       fromSubscription<TerminalEvent>((emit) => sessions.subscribe(emit)),
   };

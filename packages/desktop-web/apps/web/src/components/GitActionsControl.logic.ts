@@ -8,6 +8,7 @@ import type {
 import { isTemporaryWorktreeBranch, resolveUniqueSynaraBranchName } from "@synara/shared/git";
 
 import { t } from "~/i18n";
+import { NEOLIX_GIT_DRAFT_PR_UI_ENABLED } from "~/neolixFeatures";
 
 export type GitActionIconName = "commit" | "push" | "pr";
 
@@ -158,6 +159,8 @@ export function resolveCreatePrExecution(input: {
   isDefaultBranch: boolean;
   hasOriginRemote: boolean;
   defaultBranchName?: string | null | undefined;
+  /** False when Neox cannot create the feature branch a PR from the default branch needs. */
+  allowFeatureBranch?: boolean | undefined;
 }): CreatePrExecution {
   const { gitStatus, isBusy, isDefaultBranch, hasOriginRemote, defaultBranchName } = input;
   if (isBusy) return { kind: "unavailable", hint: t("git:pullAndPushBusy") };
@@ -165,6 +168,11 @@ export function resolveCreatePrExecution(input: {
   if (gitStatus.pr?.state === "open") return { kind: "open_pr" };
   if (gitStatus.branch === null) {
     return { kind: "unavailable", hint: t("git:detachedHeadCreatePr") };
+  }
+  // A PR needs a head branch that differs from the base. Neox cannot create one in
+  // place, so point at the branch step instead of failing after the commit.
+  if (isDefaultBranch && input.allowFeatureBranch === false) {
+    return { kind: "unavailable", hint: t("git:createBranchBeforePushPr") };
   }
 
   const isAhead = gitStatus.aheadCount > 0;
@@ -231,6 +239,8 @@ export interface GitDialogContext {
   isDefaultBranch: boolean;
   hasOriginRemote: boolean;
   defaultBranchName?: string | null | undefined;
+  /** False hides actions that need an in-place feature branch Neox cannot create. */
+  allowFeatureBranch?: boolean | undefined;
 }
 
 export interface CreatePrDialogRuntimeStatus {
@@ -298,6 +308,9 @@ export interface CreatePrDialogView {
   // Submitting creates an auto-named feature branch first (default-branch flow).
   willCreateFeatureBranch: boolean;
   showCommitToggle: boolean;
+  // The daemon rejects draft PR creation, so the dialog only offers it when the
+  // backend feature flag says a draft route exists.
+  showDraftAction: boolean;
   insertions: number;
   deletions: number;
 }
@@ -310,6 +323,7 @@ export function resolveCreatePrDialogView(context: GitDialogContext): CreatePrDi
     isNewBranch: context.isDefaultBranch || gitStatus?.hasUpstream !== true,
     willCreateFeatureBranch: context.isDefaultBranch,
     showCommitToggle: gitStatus?.hasWorkingTreeChanges === true,
+    showDraftAction: NEOLIX_GIT_DRAFT_PR_UI_ENABLED,
     insertions: gitStatus?.workingTree.insertions ?? 0,
     deletions: gitStatus?.workingTree.deletions ?? 0,
   };
@@ -620,19 +634,26 @@ export function resolveCommitDialogActions(input: {
     isDefaultBranch,
     hasOriginRemote,
     defaultBranchName,
+    ...(input.context.allowFeatureBranch !== undefined
+      ? { allowFeatureBranch: input.context.allowFeatureBranch }
+      : {}),
   });
   // A pure push needs no working-tree selection; anything that commits does.
   const pushCommits = pushItem?.dialogAction !== "push";
 
   return [
-    {
-      id: "commit_new_branch",
-      label: t("git:commitOnNewBranch"),
-      icon: "branch",
-      action: "commit",
-      featureBranch: true,
-      ...resolveRowState(commitItem, true),
-    },
+    ...(input.context.allowFeatureBranch === false
+      ? []
+      : [
+          {
+            id: "commit_new_branch" as const,
+            label: t("git:commitOnNewBranch"),
+            icon: "branch" as const,
+            action: "commit" as const,
+            featureBranch: true,
+            ...resolveRowState(commitItem, true),
+          },
+        ]),
     {
       id: "commit",
       label: t("git:commit"),

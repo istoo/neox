@@ -36,7 +36,11 @@ export interface GitMutationService {
 
 type GitMutationGitSource = Pick<
   WorkspaceGitService,
-  "validateBranchRef" | "getSnapshot" | "hasLocalBranch" | "invalidateForge"
+  | "validateBranchRef"
+  | "getSnapshot"
+  | "hasLocalBranch"
+  | "invalidateForge"
+  | "invalidateCheckoutDiffs"
 >;
 
 export function createGitMutationService(deps: {
@@ -80,6 +84,9 @@ export function createGitMutationService(deps: {
     if (options?.invalidateForge) {
       workspaceGitService.invalidateForge(cwd);
     }
+    // The mutation's response reaches the client before any watcher event, and its
+    // refetch would otherwise read the pre-mutation diff from the 15s cache.
+    workspaceGitService.invalidateCheckoutDiffs(cwd);
     try {
       await workspaceGitService.getSnapshot(cwd, { force: true, reason });
     } catch (error) {

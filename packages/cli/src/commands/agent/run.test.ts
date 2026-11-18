@@ -3,6 +3,7 @@ import { DaemonConnectionError } from "@neolix/client/internal/daemon-client";
 import { resolveCallerAgentId as resolveRunCallerAgentId } from "../../utils/caller-agent.js";
 import {
   resolveExistingRunWorkspace,
+  resolveRunWorkspace,
   runRunCommand,
   waitsForFinish,
   type AgentRunOptions,
@@ -167,5 +168,145 @@ describe("runRunCommand option validation", () => {
       { newWorkspace: "worktree", worktreeMode: "container" },
       /Unsupported worktree mode/,
     );
+  });
+});
+
+// `run` must not mint a workspace for a provider the daemon does not know: the
+// failed createAgent would otherwise leave an empty workspace behind.
+describe("run provider preflight", () => {
+  const createdWorkspace = {
+    id: "wks-run",
+    name: "run-workspace",
+    workspaceDirectory: "/repo",
+  };
+
+  function daemonWithProviders(
+    options: {
+      providers?: string[] | "unsupported" | "empty";
+      serverInfo?: { features?: { providersSnapshot?: boolean } } | null;
+      workspaces?: Array<{ id: string; workspaceDirectory: string }>;
+    } = {},
+  ) {
+    const {
+      providers = ["claude"],
+      serverInfo = { features: { providersSnapshot: true } },
+      workspaces = [],
+    } = options;
+    const createWorkspace = vi.fn(async () => ({ workspace: createdWorkspace }));
+    const fetchWorkspaces = vi.fn(async () => ({
+      entries: workspaces,
+      pageInfo: { nextCursor: null },
+    }));
+    const getProvidersSnapshot = vi.fn(async () => {
+      if (providers === "unsupported") throw new Error("Unsupported request");
+      return {
+        entries: providers === "empty" ? [] : providers.map((provider) => ({ provider })),
+      };
+    });
+
+    return {
+      createWorkspace,
+      fetchWorkspaces,
+      getProvidersSnapshot,
+      getLastServerInfoMessage: () => serverInfo,
+    };
+  }
+
+  it("rejects an explicit unknown provider without creating a workspace", async () => {
+    const client = daemonWithProviders({ providers: ["claude", "custom-agent"] });
+
+    await expect(
+      resolveRunWorkspace(
+        client,
+        { provider: "nope", newWorkspace: "local" },
+        "/repo",
+        undefined,
+        "nope",
+      ),
+    ).rejects.toMatchObject({
+      code: "AGENT_CREATE_FAILED",
+      message: "Failed to create agent: Provider nope is not configured",
+    });
+    expect(client.createWorkspace).not.toHaveBeenCalled();
+  });
+
+  it("keeps a configured custom provider on the workspace creation path", async () => {
+    const client = daemonWithProviders({ providers: ["claude", "custom-agent"] });
+
+    await expect(
+      resolveRunWorkspace(
+        client,
+        { provider: "custom-agent", newWorkspace: "local" },
+        "/repo",
+        undefined,
+        "custom-agent",
+      ),
+    ).resolves.toEqual({ id: "wks-run", cwd: "/repo" });
+    expect(client.createWorkspace).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not reject when the daemon cannot answer the provider snapshot", async () => {
+    const client = daemonWithProviders({ providers: "unsupported" });
+
+    await expect(
+      resolveRunWorkspace(
+        client,
+        { provider: "nope", newWorkspace: "local" },
+        "/repo",
+        undefined,
+        "nope",
+      ),
+    ).resolves.toEqual({ id: "wks-run", cwd: "/repo" });
+    expect(client.createWorkspace).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not send the snapshot without an advertised capability", async () => {
+    const client = daemonWithProviders({ serverInfo: null });
+
+    await expect(
+      resolveRunWorkspace(
+        client,
+        { provider: "nope", newWorkspace: "local" },
+        "/repo",
+        undefined,
+        "nope",
+      ),
+    ).resolves.toEqual({ id: "wks-run", cwd: "/repo" });
+    expect(client.getProvidersSnapshot).not.toHaveBeenCalled();
+    expect(client.createWorkspace).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not preflight an explicit existing workspace", async () => {
+    const client = daemonWithProviders({
+      providers: ["claude"],
+      workspaces: [{ id: "ws-1", workspaceDirectory: "/existing" }],
+    });
+
+    await expect(
+      resolveRunWorkspace(
+        client,
+        { provider: "nope", workspace: "ws-1" },
+        "/repo",
+        undefined,
+        "nope",
+      ),
+    ).resolves.toEqual({ id: "ws-1", cwd: "/existing" });
+    expect(client.getProvidersSnapshot).not.toHaveBeenCalled();
+    expect(client.createWorkspace).not.toHaveBeenCalled();
+  });
+
+  it("does not reject on an empty snapshot", async () => {
+    const client = daemonWithProviders({ providers: "empty" });
+
+    await expect(
+      resolveRunWorkspace(
+        client,
+        { provider: "nope", newWorkspace: "local" },
+        "/repo",
+        undefined,
+        "nope",
+      ),
+    ).resolves.toEqual({ id: "wks-run", cwd: "/repo" });
+    expect(client.createWorkspace).toHaveBeenCalledTimes(1);
   });
 });

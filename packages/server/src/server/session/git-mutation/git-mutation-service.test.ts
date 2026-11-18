@@ -12,13 +12,18 @@ import type {
 import { createGitMutationService } from "./git-mutation-service.js";
 
 // The production module reads only WorkspaceGitService.{validateBranchRef,getSnapshot,
-// hasLocalBranch,invalidateForge}. The fake below implements exactly that slice as an
-// in-memory adapter; the happy-path tests cross the real git boundary against a temp repo,
-// since that is where checkoutResolvedBranch / `git checkout -b` actually run.
+// hasLocalBranch,invalidateForge,invalidateCheckoutDiffs}. The fake below implements
+// exactly that slice as an in-memory adapter; the happy-path tests cross the real git
+// boundary against a temp repo, since that is where checkoutResolvedBranch / `git checkout -b`
+// actually run.
 
 type GitSource = Pick<
   WorkspaceGitService,
-  "validateBranchRef" | "getSnapshot" | "hasLocalBranch" | "invalidateForge"
+  | "validateBranchRef"
+  | "getSnapshot"
+  | "hasLocalBranch"
+  | "invalidateForge"
+  | "invalidateCheckoutDiffs"
 >;
 
 const logger = pino({ level: "silent" });
@@ -36,6 +41,7 @@ function createFakeGit(opts: FakeGitOptions = {}) {
   const branchExists = opts.branchExists ?? false;
   const snapshotCalls: Array<{ cwd: string; force: boolean; reason?: string }> = [];
   const invalidateCalls: Array<{ cwd: string }> = [];
+  const invalidateDiffCalls: string[] = [];
   const git: GitSource = {
     async validateBranchRef() {
       return resolution;
@@ -53,14 +59,17 @@ function createFakeGit(opts: FakeGitOptions = {}) {
     invalidateForge(cwd) {
       invalidateCalls.push({ cwd });
     },
+    invalidateCheckoutDiffs(cwd) {
+      invalidateDiffCalls.push(cwd);
+    },
   };
-  return { git, snapshotCalls, invalidateCalls };
+  return { git, snapshotCalls, invalidateCalls, invalidateDiffCalls };
 }
 
 function buildService(gitOptions: FakeGitOptions = {}) {
-  const { git, snapshotCalls, invalidateCalls } = createFakeGit(gitOptions);
+  const { git, snapshotCalls, invalidateCalls, invalidateDiffCalls } = createFakeGit(gitOptions);
   const service = createGitMutationService({ workspaceGitService: git, logger });
-  return { service, snapshotCalls, invalidateCalls };
+  return { service, snapshotCalls, invalidateCalls, invalidateDiffCalls };
 }
 
 const tempRepos: string[] = [];
@@ -264,16 +273,18 @@ describe("createBranchFromBase", () => {
 
 describe("notifyGitMutation", () => {
   test("invalidates github and force-refreshes when invalidateForge is set", async () => {
-    const { service, snapshotCalls, invalidateCalls } = buildService();
+    const { service, snapshotCalls, invalidateCalls, invalidateDiffCalls } = buildService();
     await service.notifyGitMutation("/tmp/repo", "commit-changes", { invalidateForge: true });
     expect(invalidateCalls).toEqual([{ cwd: "/tmp/repo" }]);
+    expect(invalidateDiffCalls).toEqual(["/tmp/repo"]);
     expect(snapshotCalls).toEqual([{ cwd: "/tmp/repo", force: true, reason: "commit-changes" }]);
   });
 
   test("force-refreshes without invalidating github by default", async () => {
-    const { service, snapshotCalls, invalidateCalls } = buildService();
+    const { service, snapshotCalls, invalidateCalls, invalidateDiffCalls } = buildService();
     await service.notifyGitMutation("/tmp/repo", "pull");
     expect(invalidateCalls).toEqual([]);
+    expect(invalidateDiffCalls).toEqual(["/tmp/repo"]);
     expect(snapshotCalls).toEqual([{ cwd: "/tmp/repo", force: true, reason: "pull" }]);
   });
 

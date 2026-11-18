@@ -38,6 +38,19 @@ export const NEOLIX_PROJECT_AGENT_UI_ENABLED = false;
 /** Neox 无 GitHub inbox 后端：隐藏 Code review 列表入口（PR 详情 dock 保留）。 */
 export const NEOLIX_PULL_REQUESTS_INBOX_ENABLED = false;
 
+/**
+ * Neox 的 daemon 只能创建 worktree，不能就地新建分支；bridge 的 `git.createBranch` 与
+ * `runStackedAction.featureBranch` 都是 notSupported。隐藏「Commit on new branch」和
+ * 「Checkout feature branch & continue」，default 分支上的 Create PR 改为提示先切分支。
+ */
+export const NEOLIX_GIT_FEATURE_BRANCH_UI_ENABLED = false;
+
+/**
+ * Neox daemon 创建 PR 时不接受 draft：bridge 的 `pullRequest.create` 对 `prDraft` 返回
+ * notSupported。隐藏「Create draft PR」，普通 Create PR 照常可用。
+ */
+export const NEOLIX_GIT_DRAFT_PR_UI_ENABLED = false;
+
 /** Neox 无 sync key 配对后端：隐藏 SyncKeyPairingPanel。 */
 export const NEOLIX_SYNC_KEY_UI_ENABLED = false;
 

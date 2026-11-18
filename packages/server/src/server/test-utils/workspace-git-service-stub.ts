@@ -72,6 +72,7 @@ export function createNoopWorkspaceGitService(
     scheduleRefreshForCwd: () => {},
     onWorkspaceStateMayHaveChanged: () => {},
     invalidateForge: () => {},
+    invalidateCheckoutDiffs: () => {},
     getMetrics: () => ({
       workspaceTargetCount: 0,
       workspaceListenerCount: 0,

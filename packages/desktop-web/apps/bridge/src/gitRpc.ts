@@ -150,6 +150,7 @@ interface NeolixPrCreatePayload {
 
 interface NeolixCreatedWorkspace {
   readonly workspace: {
+    readonly id?: string;
     readonly workspaceDirectory?: string;
     readonly projectRootPath: string;
     readonly gitRuntime?: { readonly currentBranch?: string | null } | null;
@@ -237,6 +238,41 @@ function assertCommandSucceeded(
     throw bridgeError(token, payload.error.message, { detail: payload.error.message });
   }
   if (payload.success === false) throw bridgeError(token, fallback);
+}
+
+const PULL_CONFLICT_LINE = /CONFLICT \([^)]*\)/;
+const PULL_CONFLICT_MERGE_FAILED = /Automatic merge failed/i;
+const PULL_CONFLICT_FILE = /^CONFLICT \([^)]*\): Merge conflict in (.+)$/gm;
+
+/**
+ * A conflicting pull comes back as the raw git stderr. The daemon aborts the
+ * merge before answering, so the working tree is untouched; name the files that
+ * collided instead of leaving the toast at "The pull failed.".
+ */
+function assertPullSucceeded(payload: NeolixCommandPayload): void {
+  if (!payload.error) {
+    if (payload.success === false) throw bridgeError("git.pull-failed", "git pull failed");
+    return;
+  }
+  const message = payload.error.message.trim();
+  if (!PULL_CONFLICT_LINE.test(message) && !PULL_CONFLICT_MERGE_FAILED.test(message)) {
+    throw bridgeError("git.pull-failed", message, { detail: message });
+  }
+  const files = [...message.matchAll(PULL_CONFLICT_FILE)]
+    .map((match) => match[1]?.trim() ?? "")
+    .filter((file) => file.length > 0);
+  if (files.length === 0) {
+    throw bridgeError(
+      "git.pull-conflict",
+      "Pulling would conflict with your local commits; nothing was merged.",
+    );
+  }
+  const joined = [...new Set(files)].join(", ");
+  throw bridgeError(
+    "git.pull-conflict-files",
+    `Pulling would conflict in ${joined}; nothing was merged.`,
+    { files: joined },
+  );
 }
 
 /**
@@ -527,7 +563,7 @@ async function pullBranch(client: DaemonClient, cwd: string): Promise<GitPullRes
   // skip the fetch that would discover new remote commits. Neox reports only success/failure,
   // not whether the pull was a no-op.
   const payload = (await client.checkoutPull(cwd)) as unknown as NeolixCommandPayload;
-  assertCommandSucceeded(payload, "git pull failed", "git.pull-failed");
+  assertPullSucceeded(payload);
   const after = await readStatus(client, cwd);
   return {
     status: "pulled",
@@ -647,6 +683,7 @@ async function popStash(client: DaemonClient, cwd: string, stashRef: string): Pr
 interface CreatedWorktreeCheckout {
   readonly path: string;
   readonly branch: string | null;
+  readonly workspaceId: string | null;
 }
 
 /**
@@ -685,6 +722,7 @@ async function createWorktreeCheckout(
   return {
     path,
     branch: workspace?.gitRuntime?.currentBranch?.trim() || newBranch,
+    workspaceId: workspace?.id?.trim() || null,
   };
 }
 
@@ -734,6 +772,7 @@ async function createWorktree(
   client: DaemonClient,
   input: GitCreateWorktreeInput,
   projectId: string | undefined,
+  onCreated?: (checkout: CreatedWorktreeCheckout) => void,
 ): Promise<GitCreateWorktreeResult> {
   if (input.path?.trim()) {
     throw bridgeError(
@@ -747,6 +786,7 @@ async function createWorktree(
     ...(projectId ? { projectId } : {}),
     ...(input.newBranch ? { newBranch: input.newBranch } : {}),
   });
+  onCreated?.(created);
   return {
     worktree: { path: created.path, branch: created.branch ?? input.newBranch ?? input.branch },
   };
@@ -1209,8 +1249,15 @@ export function makeGitHandlers(
     [WS_METHODS.gitCreateWorktree]: (payload) =>
       fromPromise("git.createWorktree", async () => {
         const input = payload as GitCreateWorktreeInput;
-        const result = await createWorktree(client, input, model.projectIdForCwd(input.cwd));
-        model.rememberWorktree(result.worktree.path, result.worktree.branch);
+        const result = await createWorktree(
+          client,
+          input,
+          model.projectIdForCwd(input.cwd),
+          (checkout) => {
+            model.rememberWorktree(checkout.path, checkout.branch);
+            if (checkout.workspaceId) model.rememberWorkspace(checkout.workspaceId, checkout.path);
+          },
+        );
         return result;
       }),
 
@@ -1220,7 +1267,10 @@ export function makeGitHandlers(
         client,
         input,
         model.projectIdForCwd(input.cwd),
-        (checkout) => model.rememberWorktree(checkout.path, checkout.branch),
+        (checkout) => {
+          model.rememberWorktree(checkout.path, checkout.branch);
+          if (checkout.workspaceId) model.rememberWorkspace(checkout.workspaceId, checkout.path);
+        },
       );
     },
 

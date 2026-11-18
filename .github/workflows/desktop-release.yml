@@ -642,6 +642,20 @@ jobs:
             exit 1
           fi
 
+          # 把 install.sh 绑定到本次 Release 的 tag 和合并后 macOS manifest 里的校验值。
+          # 在 Release 仍是 draft 时上传，确保 /releases/latest/download/install.sh
+          # 不会指向一个只发布了一半的 Release。
+          if [[ "${{ needs.publish-macos.result }}" == "success" ]]; then
+            install_script="$GITHUB_WORKSPACE/install.sh"
+            node ../scripts/generate-install-sh.mjs \
+              --manifest "final/${RELEASE_CHANNEL}-mac.yml" \
+              --channel "$RELEASE_CHANNEL" \
+              --tag "$RELEASE_TAG" \
+              --version "$RELEASE_VERSION" \
+              --output "$install_script"
+            gh release upload "$release_lookup" "$install_script" --clobber --repo "${{ github.repository }}"
+          fi
+
           publish_args=(release edit "$release_lookup" --tag "$RELEASE_TAG" --draft=false --repo "${{ github.repository }}")
           if [[ "$IS_PRERELEASE" == "true" ]]; then
             publish_args+=(--prerelease)

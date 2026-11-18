@@ -96,6 +96,7 @@ interface Fakes {
   readonly prCreate?: Record<string, unknown>;
   readonly prStatus?: Record<string, unknown>;
   readonly switchError?: string;
+  readonly pullError?: string;
   readonly createWorkspace?: Record<string, unknown>;
   readonly discard?: Record<string, unknown>;
   readonly merge?: Record<string, unknown>;
@@ -162,7 +163,14 @@ function makeHandlers(fakes: Fakes = {}) {
     },
     checkoutPull: async (cwd: string) => {
       calls.push(["checkoutPull", cwd]);
-      return { cwd, success: true, error: null, requestId: "r" };
+      return fakes.pullError
+        ? {
+            cwd,
+            success: false,
+            error: { code: "UNKNOWN", message: fakes.pullError },
+            requestId: "r",
+          }
+        : { cwd, success: true, error: null, requestId: "r" };
     },
     checkoutPush: async (cwd: string) => {
       calls.push(["checkoutPush", cwd]);
@@ -253,7 +261,12 @@ function makeHandlers(fakes: Fakes = {}) {
   const model = {
     client,
     notePrStatus: () => {},
-    rememberWorktree: () => {},
+    rememberWorktree: (path: string, branch: string | null) => {
+      calls.push(["rememberWorktree", { path, branch }]);
+    },
+    rememberWorkspace: (workspaceId: string, directory: string) => {
+      calls.push(["rememberWorkspace", { workspaceId, directory }]);
+    },
     projectIdForCwd: () => fakes.projectId,
   } as unknown as BridgeModel;
   return {
@@ -626,6 +639,39 @@ describe("gitRpc", () => {
     expect(calls).toContainEqual(["checkoutPull", CWD]);
   });
 
+  it("names the files a conflicting pull would disturb", async () => {
+    const { handlers } = makeHandlers({
+      pullError:
+        "Git command failed: git pull (exit code: 1, signal: none)\n" +
+        "Auto-merging src/app.js\n" +
+        "CONFLICT (content): Merge conflict in src/app.js\n" +
+        "Automatic merge failed; fix conflicts and then commit the result.",
+    });
+    await expect(call(handlers, WS_METHODS.gitPull, { cwd: CWD })).rejects.toMatchObject({
+      code: "neolix.error.git.pull-conflict-files",
+      params: { files: "src/app.js" },
+      message: "Pulling would conflict in src/app.js; nothing was merged.",
+    });
+  });
+
+  it("reports a merge conflict without a file list", async () => {
+    const { handlers } = makeHandlers({
+      pullError: "Git command failed: git pull\nAutomatic merge failed; fix conflicts.",
+    });
+    await expect(call(handlers, WS_METHODS.gitPull, { cwd: CWD })).rejects.toMatchObject({
+      code: "neolix.error.git.pull-conflict",
+      message: "Pulling would conflict with your local commits; nothing was merged.",
+    });
+  });
+
+  it("keeps a non-conflicting pull failure generic", async () => {
+    const { handlers } = makeHandlers({ pullError: "fatal: unable to access remote" });
+    await expect(call(handlers, WS_METHODS.gitPull, { cwd: CWD })).rejects.toMatchObject({
+      code: "neolix.error.git.pull-failed",
+      message: "fatal: unable to access remote",
+    });
+  });
+
   it("switches branches through checkout", async () => {
     const { handlers, calls } = makeHandlers();
     await call(handlers, WS_METHODS.gitCheckout, { cwd: CWD, branch: "feature" });
@@ -755,6 +801,7 @@ describe("gitRpc", () => {
       projectId: "prj_1",
       createWorkspace: {
         workspace: {
+          id: "wks-worktree",
           workspaceDirectory: "/worktrees/feature",
           projectRootPath: CWD,
           gitRuntime: { currentBranch: "feature" },
@@ -779,6 +826,10 @@ describe("gitRpc", () => {
           refName: "feature",
         },
       },
+    ]);
+    expect(calls).toContainEqual([
+      "rememberWorkspace",
+      { workspaceId: "wks-worktree", directory: "/worktrees/feature" },
     ]);
   });
 

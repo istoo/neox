@@ -412,6 +412,7 @@ test("quality preserves commands and routes each domain independently after fail
       "npm audit signatures",
       "npm run lint",
       "node --test scripts/oxlint/neolix-plugin.test.mjs",
+      "node --test scripts/generate-install-sh.test.mjs",
     ],
     relay: ["npm run build:relay", "npm run test --workspace=@neolix/relay"],
     sdk: [

@@ -97,6 +97,11 @@ jobs:
         if: ${{ !cancelled() && steps.install.outcome == 'success' && (needs.changes.outputs.full != 'false' || needs.changes.outputs.quality != 'false') }}
         run: node --test scripts/oxlint/neolix-plugin.test.mjs
 
+      # 生成器导入 js-yaml，必须放在 npm ci 之后，不能并入无依赖的 changes job。
+      - name: Test macOS installer generator
+        if: ${{ !cancelled() && steps.install.outcome == 'success' && (needs.changes.outputs.full != 'false' || needs.changes.outputs.quality != 'false') }}
+        run: node --test scripts/generate-install-sh.test.mjs
+
       - name: Build relay
         if: ${{ !cancelled() && steps.install.outcome == 'success' && (needs.changes.outputs.full != 'false' || needs.changes.outputs.relay != 'false') }}
         run: npm run build:relay

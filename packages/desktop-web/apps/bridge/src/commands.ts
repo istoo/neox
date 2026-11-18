@@ -574,19 +574,11 @@ export class CommandDispatcher {
     const branch = nonEmptyString(command.branch) ?? null;
     let worktreePath = nonEmptyString(command.worktreePath) ?? null;
     if (envMode === "worktree" && !worktreePath) {
-      const created = (await this.model.client.createNeolixWorktree({
+      const created = await this.model.client.createNeolixWorktree({
         cwd: fallback.cwd,
         ...(fallback.projectId ? { projectId: fallback.projectId } : {}),
         ...(branch ? { refName: branch } : {}),
-      })) as unknown as {
-        workspace?: {
-          workspaceId?: string;
-          workspaceDirectory?: string;
-          projectRootPath?: string;
-          gitRuntime?: { currentBranch?: string | null } | null;
-        } | null;
-        error?: string | null;
-      };
+      });
       const workspace = created.workspace;
       worktreePath = workspace?.workspaceDirectory ?? workspace?.projectRootPath ?? null;
       if (!worktreePath)
@@ -601,8 +593,9 @@ export class CommandDispatcher {
         cwd: worktreePath,
         // Create the agent in the workspace the worktree create just registered. Omitting
         // this makes the daemon provision a second workspace (and a stray project) for the
-        // same directory, so the thread leaves its project's sidebar group.
-        workspaceId: workspace?.workspaceId?.trim() || null,
+        // same directory, so the thread leaves its project's sidebar group. The descriptor
+        // names its id `id` on the wire; `workspaceId` is not a field of it.
+        workspaceId: workspace?.id?.trim() || null,
         envMode,
         branch: createdBranch || branch,
         worktreePath,

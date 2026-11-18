@@ -251,6 +251,7 @@ export interface WorkspaceGitService {
   scheduleRefreshForCwd(cwd: string): void;
   onWorkspaceStateMayHaveChanged(cwd: string): void;
   invalidateForge(cwd: string): void;
+  invalidateCheckoutDiffs(cwd: string): void;
   getMetrics(): WorkspaceGitServiceMetrics;
   dispose(): Promise<void>;
 }
@@ -1070,6 +1071,22 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
   invalidateForge(cwd: string): void {
     this.assertNotDisposed();
     this.forgeResolver.invalidate(resolve(cwd));
+  }
+
+  /**
+   * Drop the cached working-tree diff for a cwd after a checkout mutation. Diff reads
+   * are cached for 15s, and a client refetch fired from the mutation's response lands
+   * inside that window: without this, a discarded file stayed listed (and a commit's
+   * cleared diff kept rendering) until the watcher or a reload caught up. Mode
+   * "uncommitted" also clears "all", which is what base comparisons read.
+   */
+  invalidateCheckoutDiffs(cwd: string): void {
+    this.assertNotDisposed();
+    const normalized = resolve(cwd);
+    // A mutation can change both sides: the working tree (commit, discard) and the
+    // base comparison (merge, pull, branch move). Clear both before the client refetches.
+    this.invalidateCheckoutDiffCache(normalized, "uncommitted");
+    this.invalidateCheckoutDiffCache(normalized, "base");
   }
 
   dispose(): Promise<void> {

@@ -159,6 +159,7 @@ import {
   TerminalClearInput,
   TerminalCloseInput,
   TerminalEvent,
+  TerminalFocusHeartbeatInput,
   TerminalOpenInput,
   TerminalResizeInput,
   TerminalRestartInput,
@@ -438,6 +439,7 @@ export const WS_METHODS = {
   terminalClear: "terminal.clear",
   terminalRestart: "terminal.restart",
   terminalClose: "terminal.close",
+  terminalFocusHeartbeat: "terminal.focusHeartbeat",
 
   // Server meta
   serverGetRuntimeStatus: "server.getRuntimeStatus",
@@ -857,6 +859,7 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.terminalClear, TerminalClearInput),
   tagRequestBody(WS_METHODS.terminalRestart, TerminalRestartInput),
   tagRequestBody(WS_METHODS.terminalClose, TerminalCloseInput),
+  tagRequestBody(WS_METHODS.terminalFocusHeartbeat, TerminalFocusHeartbeatInput),
 
   // Server meta
   tagRequestBody(WS_METHODS.serverGetRuntimeStatus, Schema.Struct({})),

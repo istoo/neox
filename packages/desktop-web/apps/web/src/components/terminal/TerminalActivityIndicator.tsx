@@ -22,6 +22,7 @@ export default function TerminalActivityIndicator({
     return (
       <span
         aria-hidden="true"
+        data-terminal-activity={state}
         className={cn(
           "inline-flex size-1.5 shrink-0 rounded-full",
           state === "attention"
@@ -36,6 +37,7 @@ export default function TerminalActivityIndicator({
   return (
     <span
       aria-hidden="true"
+      data-terminal-activity={state}
       className={cn(
         "inline-grid h-2.5 w-2.5 shrink-0 grid-cols-2 grid-rows-2 gap-px text-current",
         className,

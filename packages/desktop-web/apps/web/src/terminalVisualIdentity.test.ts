@@ -93,6 +93,19 @@ describe("terminal visual identity", () => {
     });
   });
 
+  it("shows the finished review state even while the activity flag stays set", () => {
+    expect(
+      resolveTerminalVisualIdentityMap({
+        terminalIds: ["terminal-1"],
+        runningTerminalIds: ["terminal-1"],
+        terminalAttentionStatesById: { "terminal-1": "review" },
+        terminalCliKindsById: {},
+        terminalLabelsById: {},
+        terminalTitleOverridesById: {},
+      }).get("terminal-1")?.state,
+    ).toBe("review");
+  });
+
   it("keeps attention ahead of running in the terminal identity map", () => {
     expect(
       resolveTerminalVisualIdentityMap({
