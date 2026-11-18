@@ -71,6 +71,9 @@ export interface RightDockAddMenuItem {
   readonly key: string;
   readonly label: string;
   readonly icon?: ReactNode;
+  readonly disabled?: boolean;
+  /** Shown on the disabled row. */
+  readonly disabledReason?: string | undefined;
   readonly onSelect: () => void;
 }
 
@@ -93,6 +96,8 @@ interface RightDockProps {
   // swapping the generic kind icon for its live state glyph.
   paneIconOverrides?: Record<string, ReactNode | undefined>;
   addMenuKinds: readonly RightDockPaneKind[];
+  /** Per-kind reason shown on a disabled add-menu row. */
+  addMenuDisabledReasons?: Partial<Record<RightDockPaneKind, string>>;
   /** Extra add-menu rows beyond the pane kinds (e.g. terminal profiles). */
   addMenuItems?: readonly RightDockAddMenuItem[];
   launcherItems?: readonly RightDockLauncherItem[];
@@ -139,14 +144,17 @@ function RightDockLauncher(props: {
       className="flex h-full min-h-0 items-center justify-center overflow-y-auto p-6"
     >
       <div className="flex w-full max-w-sm flex-col gap-1.5">
-        {props.items.map(({ kind, Icon, label }) => (
+        {props.items.map(({ kind, Icon, label, disabledReason }) => (
           <Button
             key={kind}
             variant="subtle"
             size="xl"
             className="h-11 w-full justify-start gap-3 rounded-xl px-4 text-ui-lg font-normal"
-            disabled={remotePaneUnavailable(kind)}
-            title={remotePaneUnavailable(kind) ? REMOTE_NATIVE_UNAVAILABLE : undefined}
+            disabled={remotePaneUnavailable(kind) || disabledReason !== undefined}
+            title={
+              disabledReason ??
+              (remotePaneUnavailable(kind) ? REMOTE_NATIVE_UNAVAILABLE : undefined)
+            }
             aria-label={t("workspace:open", { value0: label })}
             onClick={() => props.onOpen(kind)}
           >
@@ -161,6 +169,8 @@ function RightDockLauncher(props: {
             size="xl"
             className="h-11 w-full justify-start gap-3 rounded-xl px-4 text-ui-lg font-normal"
             aria-label={t("workspace:open", { value0: item.label })}
+            disabled={item.disabled === true}
+            title={item.disabled ? item.disabledReason : undefined}
             onClick={item.onSelect}
           >
             {item.icon ?? <PluginPlaceholderIcon />}
@@ -440,12 +450,14 @@ export function RightDock(props: RightDockProps) {
                     <ComposerPickerMenuPopup align="end" side="bottom" className="w-44 min-w-44">
                       {props.addMenuKinds.map((kind) => {
                         const { Icon, label } = getRightDockPaneMeta(kind);
+                        const disabledReason = props.addMenuDisabledReasons?.[kind];
                         return (
                           <MenuItem
                             key={kind}
-                            disabled={remotePaneUnavailable(kind)}
+                            disabled={remotePaneUnavailable(kind) || disabledReason !== undefined}
                             title={
-                              remotePaneUnavailable(kind) ? REMOTE_NATIVE_UNAVAILABLE : undefined
+                              disabledReason ??
+                              (remotePaneUnavailable(kind) ? REMOTE_NATIVE_UNAVAILABLE : undefined)
                             }
                             onClick={() => props.onAddPane(kind)}
                           >
@@ -455,7 +467,12 @@ export function RightDock(props: RightDockProps) {
                         );
                       })}
                       {(props.addMenuItems ?? []).map((item) => (
-                        <MenuItem key={item.key} onClick={item.onSelect}>
+                        <MenuItem
+                          key={item.key}
+                          disabled={item.disabled === true}
+                          title={item.disabled ? item.disabledReason : undefined}
+                          onClick={item.onSelect}
+                        >
                           {item.icon ?? null}
                           <span>{item.label}</span>
                         </MenuItem>

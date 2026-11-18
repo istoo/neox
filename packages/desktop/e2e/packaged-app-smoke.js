@@ -558,32 +558,22 @@ async function connectToPackagedApp({
   );
 }
 
-// The main window loads the desktop web UI from its local bridge
-// (main.ts createWindow, desktopWebBaseUrl); the origin is only known once
-// the bridge logs it. neolix://app/ is the bundled-app fallback.
-const DESKTOP_WEB_BRIDGE_READY = /desktop web bridge ready at (http:\/\/127\.0\.0\.1:\d+)/;
-
-async function waitForPackagedAppPage(browser, stdout, deadline) {
+// The main window loads the web UI from the daemon's own HTTP address
+// (main.ts createWindow, desktopWebBaseUrl); this smoke starts the daemon on
+// the isolated listen address it configures above.
+async function waitForPackagedAppPage(browser, listen, deadline) {
+  const appOrigin = `http://${listen}`;
   while (Date.now() < deadline) {
-    const bridgeOrigin = stdout.join("").match(DESKTOP_WEB_BRIDGE_READY)?.[1];
     const page = browser
       .contexts()
       .flatMap((context) => context.pages())
-      .find((candidate) => {
-        const url = candidate.url();
-        return (
-          url.startsWith("neolix://app/") ||
-          (bridgeOrigin !== undefined && url.startsWith(`${bridgeOrigin}/`))
-        );
-      });
+      .find((candidate) => candidate.url().startsWith(`${appOrigin}/`));
     if (page) {
       return page;
     }
     await delay(250);
   }
-  throw new Error(
-    "Timed out waiting for the packaged app renderer (desktop web bridge or neolix://app/)",
-  );
+  throw new Error(`Timed out waiting for the packaged app renderer at ${appOrigin}/`);
 }
 
 async function assertPackagedRendererLoaded(page, deadline) {
@@ -605,6 +595,17 @@ async function assertPackagedRendererLoaded(page, deadline) {
   if (missingBridgeKeys.length > 0) {
     throw new Error(
       `Packaged renderer is missing desktop preload bridge keys: ${missingBridgeKeys.join(", ")}. Present keys: ${bridgeKeys.join(", ") || "<none>"}`,
+    );
+  }
+
+  // Agent-driven browser automation lives on the web client's `desktopBridge.browser`
+  // executor surface. Without it the page silently skips enlisting as an executor.
+  const automationCommand = await page.evaluate(
+    () => typeof window.desktopBridge?.browser?.executeAutomationCommand,
+  );
+  if (automationCommand !== "function") {
+    throw new Error(
+      `Packaged desktopBridge.browser.executeAutomationCommand is ${automationCommand}; the web client cannot enlist as a browser automation host`,
     );
   }
 }
@@ -1059,7 +1060,7 @@ async function smokePackagedDesktopApp({
       daemonHome,
       deadline,
     });
-    page = await waitForPackagedAppPage(browser, stdout, deadline);
+    page = await waitForPackagedAppPage(browser, listen, deadline);
     await assertPackagedRendererLoaded(page, deadline);
     console.log("Packaged desktop smoke: real app renderer and preload bridge loaded");
     const status = await waitForRendererStartedDaemon({

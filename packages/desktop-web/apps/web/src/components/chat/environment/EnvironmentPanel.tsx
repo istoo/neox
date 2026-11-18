@@ -174,12 +174,19 @@ export interface EnvironmentPanelProps {
   projectActions?: {
     readonly scripts: readonly ProjectScript[];
     readonly onRunScript: (script: ProjectScript) => void;
+    /** Why actions cannot run yet; undefined when they are available. */
+    readonly runDisabledReason?: string | undefined;
     readonly onAddScript: (input: NewProjectScriptInput) => Promise<void> | void;
     readonly onUpdateScript: (
       scriptId: string,
       input: NewProjectScriptInput,
     ) => Promise<void> | void;
     readonly onDeleteScript: (scriptId: string) => Promise<void> | void;
+    readonly worktree: { readonly setup: string; readonly teardown: string };
+    readonly onSaveWorktree: (input: {
+      readonly setup: string;
+      readonly teardown: string;
+    }) => Promise<void> | void;
   };
   /** Toggle the Diff panel/route (same handler the header diff toggle used). */
   onToggleDiff: () => void;
@@ -392,9 +399,12 @@ export function EnvironmentPanel({
           scripts={projectActions.scripts}
           keybindings={keybindings}
           onRunScript={projectActions.onRunScript}
+          runDisabledReason={projectActions.runDisabledReason}
           onAddScript={projectActions.onAddScript}
           onUpdateScript={projectActions.onUpdateScript}
           onDeleteScript={projectActions.onDeleteScript}
+          worktree={projectActions.worktree}
+          onSaveWorktree={projectActions.onSaveWorktree}
         />
       ) : null}
 

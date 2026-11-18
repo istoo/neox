@@ -59,6 +59,9 @@ export class RestStore {
   private readonly logger: Logger;
   private timer: NodeJS.Timeout | null = null;
   private pending: Map<string, SavedRest> | null = null;
+  private disposed = false;
+  /** The last save written or in flight; `dispose()` waits for it. */
+  private flushing: Promise<void> = Promise.resolve();
 
   constructor(options: { neolixHome: string; logger: Logger }) {
     this.filePath = path.join(options.neolixHome, FILENAME);
@@ -88,6 +91,9 @@ export class RestStore {
   }
 
   public scheduleSave(rests: ReadonlyMap<string, SavedRest>): void {
+    if (this.disposed) {
+      return;
+    }
     this.pending = new Map(rests);
     if (this.timer !== null) {
       return;
@@ -97,22 +103,27 @@ export class RestStore {
       const snapshot = this.pending;
       this.pending = null;
       if (snapshot !== null) {
-        void this.flush(snapshot);
+        this.flushing = this.flushing.then(() => this.flush(snapshot));
       }
     }, SAVE_DEBOUNCE_MS);
     this.timer.unref();
   }
 
-  public dispose(): void {
-    if (this.timer !== null) {
-      clearTimeout(this.timer);
-      this.timer = null;
-    }
-    if (this.pending !== null) {
+  /** Waits for the save in flight, then refuses new ones. */
+  public async dispose(): Promise<void> {
+    if (!this.disposed) {
+      this.disposed = true;
+      if (this.timer !== null) {
+        clearTimeout(this.timer);
+        this.timer = null;
+      }
       const snapshot = this.pending;
       this.pending = null;
-      void this.flush(snapshot);
+      if (snapshot !== null) {
+        this.flushing = this.flushing.then(() => this.flush(snapshot));
+      }
     }
+    await this.flushing;
   }
 
   private async flush(rests: ReadonlyMap<string, SavedRest>): Promise<void> {

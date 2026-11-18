@@ -19,7 +19,9 @@ import { SplitChatSurface } from "./SplitChatSurface";
 const state = vi.hoisted(() => ({
   navigate: vi.fn(async (_input: unknown) => {}),
   dispatch: vi.fn(async (_input: unknown) => {}),
+  detach: vi.fn(async (_input: unknown) => {}),
   roster: { active: [] as unknown[], previous: [] as unknown[] },
+  managedThreadIds: new Set<string>(),
 }));
 vi.mock("@tanstack/react-router", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@tanstack/react-router")>()),
@@ -27,17 +29,32 @@ vi.mock("@tanstack/react-router", async (importOriginal) => ({
 }));
 vi.mock("../../nativeApi", async (importOriginal) => {
   // Keep the module's other exports (capability listeners and the like) real.
-  const api = { orchestration: { dispatchCommand: state.dispatch } };
+  const api = {
+    orchestration: { dispatchCommand: state.dispatch },
+    neolix: {
+      subagents: {
+        list: async () => ({ subagents: [] }),
+        detach: state.detach,
+      },
+    },
+  };
   return {
     ...(await importOriginal<typeof import("../../nativeApi")>()),
     readNativeApi: () => api,
     ensureNativeApi: () => api,
   };
 });
+vi.mock("../../lib/neolixHostApi", () => ({
+  getHostFeatures: async () => ({
+    serverVersion: "0.15.0",
+    features: { agentDetach: true },
+  }),
+}));
 vi.mock("./useSubagentStripSource", () => ({
   useThreadSubagentRoster: () => ({
     roster: state.roster,
     source: { stripSourceThreadId: "parent", subagentParentRow: null },
+    managedThreadIds: state.managedThreadIds,
   }),
 }));
 vi.mock("../../hooks/useHandleNewChat", () => ({
@@ -69,6 +86,8 @@ function renderWithQuery(ui: ReactNode) {
 beforeEach(() => {
   vi.clearAllMocks();
   state.roster = { active: [child], previous: [] };
+  // Activity-derived rows are provider task handles, not Neox child agents.
+  state.managedThreadIds = new Set<string>();
   useRightDockStore.setState({ dockStateByThreadId: {} });
 });
 
@@ -124,6 +143,23 @@ it.each(["Stop subagent Scout", "Run Scout in background"])(
     }
   },
 );
+
+it("detaches a managed child agent after confirmation and opens it", async () => {
+  // Detach addresses a real Neox agent id, so the dock must know the row is a child agent.
+  state.managedThreadIds = new Set([String(child.threadId)]);
+  const screen = await renderWithQuery(<SubagentsDockPane hostThreadId={parent} />);
+  try {
+    page.getByRole("button", { name: "Open subagent Scout (Running)" }).element().focus();
+    await page.getByRole("button", { name: "Detach subagent Scout", exact: true }).click();
+    await expect.element(page.getByText("will leave this track", { exact: false })).toBeVisible();
+    await page.getByRole("button", { name: "Detach", exact: true }).click();
+    await expect.poll(() => state.detach.mock.calls.length).toBe(1);
+    expect(state.detach).toHaveBeenCalledWith({ agentId: child.threadId });
+    await expect.poll(() => state.navigate.mock.calls.length).toBe(1);
+  } finally {
+    await screen.unmount();
+  }
+});
 
 it("opens the subagent dock in a split pane, keeps its destination in that pane, and closes it", async () => {
   await page.viewport(1800, 1000);

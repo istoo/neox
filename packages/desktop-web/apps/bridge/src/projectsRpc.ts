@@ -11,6 +11,8 @@ import {
   type GitHubProjectProvisionPhase,
   type GitHubProjectProvisionProgressEvent,
   type GitHubProjectProvisionResult,
+  type GitHubRepositorySearchInput,
+  type GitHubRepositorySearchResult,
 } from "@synara/contracts";
 import { Effect, Stream } from "effect";
 
@@ -45,6 +47,8 @@ interface ProjectMetaUpdateCommand {
   readonly workspaceRoot?: string;
   readonly defaultModelSelection?: unknown;
   readonly scripts?: unknown;
+  readonly worktreeSetup?: string | null;
+  readonly worktreeTeardown?: string | null;
   readonly isPinned?: boolean;
   readonly spaceId?: string | null;
 }
@@ -73,10 +77,26 @@ export function toNeolixScripts(
     const command = typeof entry.command === "string" ? entry.command.trim() : "";
     if (!name || !command) continue;
     const prior = previous[name];
-    scripts[name] =
+    const nextEntry: Record<string, unknown> =
       prior !== null && typeof prior === "object" && !Array.isArray(prior)
         ? { ...(prior as Record<string, unknown>), command }
         : { command };
+    const entryRecord = entry as Record<string, unknown>;
+    // `type` and `port` are the app's "run as a service" fields. Omitted keeps the
+    // config's existing values; an explicit empty value clears them.
+    if (entryRecord.type !== undefined) {
+      const type = typeof entryRecord.type === "string" ? entryRecord.type.trim() : "";
+      if (type) nextEntry.type = type;
+      else delete nextEntry.type;
+    }
+    if (entryRecord.port !== undefined) {
+      const port = entryRecord.port;
+      const text =
+        typeof port === "number" ? String(port) : typeof port === "string" ? port.trim() : "";
+      if (text) nextEntry.port = typeof port === "number" ? port : text;
+      else delete nextEntry.port;
+    }
+    scripts[name] = nextEntry;
   }
   return scripts;
 }
@@ -220,7 +240,11 @@ export function makeProjectHandlers(
       const command = payload as ProjectMetaUpdateCommand;
       const projectId = model.resolveProjectId(command.projectId);
       const currentKind = model.projectKind(projectId);
-      if (command.scripts !== undefined) {
+      if (
+        command.scripts !== undefined ||
+        command.worktreeSetup !== undefined ||
+        command.worktreeTeardown !== undefined
+      ) {
         const repoRoot = model.projectRoot(projectId);
         if (!repoRoot) {
           return Effect.fail(notSupported("project.meta.update scripts without a project root"));
@@ -237,9 +261,25 @@ export function makeProjectHandlers(
           const currentScripts = current.config?.scripts;
           const setup = worktreeSetupCommand(command.scripts);
           const nextWorktree: Record<string, unknown> = { ...current.config?.worktree };
+          if (command.worktreeTeardown !== undefined) {
+            const teardown = command.worktreeTeardown?.trim();
+            if (teardown) nextWorktree.teardown = teardown;
+            else delete nextWorktree.teardown;
+          }
+          // The "run on worktree creation" action owns setup when one is marked; otherwise
+          // an explicit setup field is written or cleared.
           if (setup !== null) {
             nextWorktree.setup = setup;
-          } else if (setupIsOwnedByScripts(current.config?.worktree?.setup, currentScripts)) {
+          } else if (command.worktreeSetup !== undefined) {
+            const explicitSetup = command.worktreeSetup?.trim();
+            if (explicitSetup) nextWorktree.setup = explicitSetup;
+            else delete nextWorktree.setup;
+          } else if (
+            // Only a scripts update re-evaluates which setup it owns; a teardown-only edit
+            // must leave the existing setup chain alone.
+            command.scripts !== undefined &&
+            setupIsOwnedByScripts(current.config?.worktree?.setup, currentScripts)
+          ) {
             delete nextWorktree.setup;
           }
           const { worktree: _previousWorktree, ...rest } = current.config ?? {};
@@ -248,7 +288,10 @@ export function makeProjectHandlers(
             // Keep every other key (service ports, teardown) untouched.
             config: {
               ...rest,
-              scripts: toNeolixScripts(command.scripts, currentScripts),
+              scripts:
+                command.scripts !== undefined
+                  ? toNeolixScripts(command.scripts, currentScripts)
+                  : currentScripts,
               ...(Object.keys(nextWorktree).length > 0 ? { worktree: nextWorktree } : {}),
             },
             expectedRevision: current.revision ?? null,
@@ -291,6 +334,25 @@ export function makeProjectHandlers(
       });
     },
   };
+}
+
+/** `projects.searchGitHubRepositories`: the daemon's `gh` search, forwarded as-is. */
+export function projectSearchGitHubRepositoriesHandler(model: BridgeModel): AnyHandler {
+  return (payload) =>
+    fromPromise("projects.searchGitHubRepositories", async () => {
+      const input = payload as GitHubRepositorySearchInput;
+      const result = (await model.client.searchGithubRepositories({
+        query: input.query,
+        ...(typeof input.limit === "number" ? { limit: input.limit } : {}),
+      })) as unknown as GitHubRepositorySearchResult & { reason?: string | null };
+      return {
+        status: result.status,
+        repositories: result.repositories ?? [],
+        available: result.available,
+        error: result.error ?? null,
+        ...(result.reason !== undefined ? { reason: result.reason } : {}),
+      } satisfies GitHubRepositorySearchResult;
+    });
 }
 
 const PROVISION_PHASE_MESSAGES: Record<GitHubProjectProvisionPhase, string> = {

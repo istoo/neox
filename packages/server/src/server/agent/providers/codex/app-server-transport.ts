@@ -229,6 +229,13 @@ export class CodexAppServerClient {
       }
     });
 
+    // A write to a process that has already closed its stdin emits EPIPE on
+    // the stream; without this listener it is an uncaught exception.
+    child.stdin.on("error", (err) => {
+      this.logger.warn({ err }, "Codex app-server stdin write failed");
+      this.handleUnexpectedTermination(new Error(`Codex app-server stdin failed: ${err.message}`));
+    });
+
     child.on("error", (err) => {
       this.logger.error({ err }, "Codex app-server child process error");
       this.handleUnexpectedTermination(err);

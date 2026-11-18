@@ -5,7 +5,9 @@ import type { GatewayAccount, GatewayProvider } from "./config.js";
 import {
   runGatewayMiddlewareAccount,
   runGatewayMiddlewareEvent,
+  runGatewayMiddlewareHeaders,
   runGatewayMiddlewareProvider,
+  runGatewayMiddlewareRequest,
   setGatewayMiddlewareRunner,
   setPluginUpstreamResolver,
   type GatewayMiddlewareRunner,
@@ -319,6 +321,53 @@ describe("plugin gateway middleware", () => {
       await local.close();
     }
     expect(JSON.parse(local.seen[0]?.body ?? "{}")).toMatchObject({ model: "m" });
+  });
+
+  it("passes the request key and returns a middleware's rejection", async () => {
+    const seen: Array<string | undefined> = [];
+    releases.push(
+      setGatewayMiddlewareRunner(
+        middlewareRunner({
+          request: async (input) => {
+            seen.push(input.requestKey);
+            return { body: input.body, reject: { status: 418, message: "nope" } };
+          },
+        }),
+      ),
+    );
+    await expect(
+      runGatewayMiddlewareRequest({
+        requestKey: "call-1",
+        providerId: "qoder",
+        protocol: "anthropic",
+        model: "m",
+        accountId: "",
+        body: { model: "m" },
+      }),
+    ).resolves.toEqual({
+      body: { model: "m" },
+      reject: { status: 418, message: "nope" },
+    });
+    expect(seen).toEqual(["call-1"]);
+  });
+
+  it("collects the headers a plugin adds to one request", async () => {
+    releases.push(
+      setGatewayMiddlewareRunner(
+        middlewareRunner({
+          headers: async (input) => ({ headers: { "x-demo": input.providerId } }),
+        }),
+      ),
+    );
+    await expect(
+      runGatewayMiddlewareHeaders({
+        requestKey: "call-1",
+        providerId: "qoder",
+        protocol: "anthropic",
+        model: "m",
+        accountId: null,
+      }),
+    ).resolves.toEqual({ "x-demo": "qoder" });
   });
 
   it("runs the per-try hooks: body, account skip, and one event", async () => {

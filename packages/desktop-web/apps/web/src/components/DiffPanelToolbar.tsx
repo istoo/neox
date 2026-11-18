@@ -46,6 +46,7 @@ import {
   type DiffPanelChangeNavigation,
 } from "./DiffPanelChangeNavigation";
 import { DiffPanelCompareRefMenuSection } from "./DiffPanelCompareRefMenuSection";
+import { DiffPanelCommitsMenuSection } from "./DiffPanelCommitsMenu";
 import { DiffPanelFileJumpMenu } from "./DiffPanelFileJumpMenu";
 import { ComposerPickerMenuPopup } from "./chat/ComposerPickerMenuPopup";
 import { EnvironmentRowBody, EnvironmentRowChevron } from "./chat/environment/EnvironmentRow";
@@ -111,6 +112,10 @@ export function DiffPanelCloseButton({ onClose }: { onClose: () => void }) {
 interface DiffPanelToolbarProps {
   activeCwd: string | null;
   activeThreadId: ThreadId | null;
+  /** Non-null while the panel shows one commit's diff instead of the working tree. */
+  activeCommit: { sha: string; shortSha: string; subject: string } | null;
+  onSelectCommit: (sha: string) => void;
+  onClearCommit: () => void;
   viewSource: DiffPanelViewSource;
   turnScopeIntent: DiffPanelTurnScopeIntent;
   scopeFileCounts: Partial<Record<RepoDiffScope, number>>;
@@ -195,24 +200,28 @@ export const DiffPanelToolbar = function DiffPanelToolbar(props: DiffPanelToolba
   const { t, formatLocale } = useTranslation();
 
   const [visibleTurnCount, setVisibleTurnCount] = useState(INITIAL_VISIBLE_TURN_COUNT);
-  const scopePickerLabel = resolveDiffPanelPickerLabel(
-    props.viewSource,
-    props.turnScopeIntent,
-    props.compareRef,
-  );
+  const [viewOptionsOpen, setViewOptionsOpen] = useState(false);
+  const scopePickerLabel = props.activeCommit
+    ? t("common:diff_commitView", { value0: props.activeCommit.shortSha })
+    : resolveDiffPanelPickerLabel(props.viewSource, props.turnScopeIntent, props.compareRef);
 
   let scopePickerIcon: ReactNode;
-  if (props.viewSource.kind === "turn") {
+  if (props.activeCommit) {
+    scopePickerIcon = <GitCommitIcon className={DIFF_PANEL_PICKER_ICON_CLASS_NAME} />;
+  } else if (props.viewSource.kind === "turn") {
     scopePickerIcon = <FaPlusMinus className="size-2.5 text-[var(--color-text-foreground)]" />;
   } else {
     scopePickerIcon = <ChangesIcon className={DIFF_PANEL_PICKER_ICON_CLASS_NAME} />;
   }
 
-  const scopePickerCount =
-    props.viewSource.kind === "repo" ? props.scopeFileCounts[props.viewSource.scope] : undefined;
+  const scopePickerCount = props.activeCommit
+    ? undefined
+    : props.viewSource.kind === "repo"
+      ? props.scopeFileCounts[props.viewSource.scope]
+      : undefined;
 
   const scopePickerDescription = [
-    scopePickerLabel,
+    props.activeCommit ? props.activeCommit.subject : scopePickerLabel,
     scopePickerCount ? `${scopePickerCount} files` : null,
     props.activeStats ? `+${props.activeStats.additions} -${props.activeStats.deletions}` : null,
   ]
@@ -234,12 +243,14 @@ export const DiffPanelToolbar = function DiffPanelToolbar(props: DiffPanelToolba
         : t("common:diff_turns");
 
   const latestTurnId = props.orderedTurnDiffSummaries[0]?.turnId ?? null;
-  const scopePickerValue = resolveDiffPanelScopePickerValue({
-    viewSource: props.viewSource,
-    latestTurnId,
-    turnScopeIntent: props.turnScopeIntent,
-    compareRef: props.compareRef,
-  });
+  const scopePickerValue = props.activeCommit
+    ? null
+    : resolveDiffPanelScopePickerValue({
+        viewSource: props.viewSource,
+        latestTurnId,
+        turnScopeIntent: props.turnScopeIntent,
+        compareRef: props.compareRef,
+      });
   const selectedTurnIndex = props.selectedTurnId
     ? props.orderedTurnDiffSummaries.findIndex((summary) => summary.turnId === props.selectedTurnId)
     : -1;
@@ -362,7 +373,7 @@ export const DiffPanelToolbar = function DiffPanelToolbar(props: DiffPanelToolba
             <RefreshCwIcon className={cn("size-3.5", props.reloading && "animate-spin")} />
           </IconButton>
 
-          <Menu>
+          <Menu open={viewOptionsOpen} onOpenChange={setViewOptionsOpen}>
             <MenuTrigger
               render={
                 <IconButton
@@ -382,6 +393,13 @@ export const DiffPanelToolbar = function DiffPanelToolbar(props: DiffPanelToolba
               sideOffset={6}
               className="w-60 min-w-60"
             >
+              <DiffPanelCommitsMenuSection
+                cwd={props.activeCwd}
+                open={viewOptionsOpen}
+                activeCommitSha={props.activeCommit?.sha ?? null}
+                onSelectCommit={props.onSelectCommit}
+                onClearCommit={props.onClearCommit}
+              />
               <MenuGroup>
                 <MenuGroupLabel>{t("common:diff_view")}</MenuGroupLabel>
                 <MenuRadioGroup

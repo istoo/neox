@@ -133,7 +133,6 @@ test("repository config guards request paths while allowing startup APIs and tes
   for (const filename of [
     "packages/server/src/server/config.ts",
     "packages/server/src/server/probe.test.ts",
-    "packages/app/src/probe.ts",
   ]) {
     const result = lintWithConfig(source, config, filename);
     assert.equal(result.failed, false, result.output);

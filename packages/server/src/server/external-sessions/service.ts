@@ -8,7 +8,14 @@ import { renderSessionMarkdown } from "./markdown.js";
 import { openCodeStoreOf, readOpenCodeListing, readOpenCodeTranscript } from "./opencode.js";
 import { readCodexConfig, type CodexConfig } from "./codex-config.js";
 import { readAgySummaries, readOpenCodeSessions, type AgySummary } from "./sqlite.js";
-import { cleanTitle, readSessionFile, type SessionPricer } from "./read-session.js";
+import { readParseCache, writeParseCache, type CachedParse } from "./parse-cache.js";
+import {
+  cleanTitle,
+  readSessionFile,
+  readSessionHeader,
+  type SessionHeader,
+  type SessionPricer,
+} from "./read-session.js";
 import {
   ActiveExternalSessionError,
   applyClaudeRelocation,
@@ -65,6 +72,13 @@ import type {
 // debt: only the newest files are parsed and listed; move the list to a paged reader when older sessions must show.
 const PARSE_LIMIT = 1000;
 const PARSE_CONCURRENCY = 8;
+/**
+ * Background warming shares the daemon with every interactive RPC, so it runs
+ * fewer reads and yields between files instead of taking the whole event loop.
+ */
+const WARM_CONCURRENCY = 2;
+/** An agent whose file keeps growing is re-read at most this often. */
+const WARM_COOLDOWN_MS = 15_000;
 const ACTIVE_WINDOW_MS = 60_000;
 const SEARCH_BUDGET_MS = 8_000;
 const WSL_FILE_MAX = 4_000;
@@ -81,6 +95,17 @@ export interface ExternalSessionsList {
   home: string;
   recording: boolean;
   recorded: boolean;
+  /** Set by a `fast` list: some rows are headers while their files are read. */
+  partial?: boolean;
+}
+
+export interface ExternalSessionsListOptions {
+  activityDays?: number;
+  /**
+   * Answer from the parse cache and file headers, then read the files in the
+   * background. The caller polls until `partial` clears.
+   */
+  fast?: boolean;
 }
 
 export interface ExternalSessionsServiceOptions {
@@ -96,13 +121,6 @@ export interface ExternalSessionsServiceOptions {
   reads?: () => SessionReads;
 }
 
-interface CachedParse {
-  mtimeMs: number;
-  size: number;
-  metaKey: string;
-  parse: SessionParse;
-}
-
 export class ExternalSessionsService {
   private readonly neolixHome: string;
   private readonly homeDir: string;
@@ -114,6 +132,12 @@ export class ExternalSessionsService {
   private readonly reads: () => SessionReads;
   private readonly parses = new Map<string, CachedParse>();
   private readonly parsing = new Map<string, Promise<SessionParse>>();
+  private readonly headers = new Map<string, CachedHeader>();
+  private readonly warming = new Map<string, Promise<void>>();
+  private readonly warmedAt = new Map<string, number>();
+  private persistedParses: Map<string, CachedParse> | null = null;
+  private readingParses: Promise<Map<string, CachedParse>> | null = null;
+  private parseCacheDirty = false;
   private readonly previewed = new Map<string, { from: string; to: string; at: number }>();
   private codexConfig: Promise<CodexConfig> | null = null;
   private openCodeCache: {
@@ -140,7 +164,18 @@ export class ExternalSessionsService {
 
   public async list(
     requestedAgent?: string,
-    options: { activityDays?: number } = {},
+    options: ExternalSessionsListOptions = {},
+  ): Promise<ExternalSessionsList> {
+    if (options.fast === true) {
+      return this.listFast(requestedAgent);
+    }
+    return this.listFull(requestedAgent, options);
+  }
+
+  /** The established listing: every file read before the response is sent. */
+  private async listFull(
+    requestedAgent: string | undefined,
+    options: ExternalSessionsListOptions,
   ): Promise<ExternalSessionsList> {
     await this.conversations?.prune(this.now());
     const [filesByAgent, gatewayUsage, allTrash] = await Promise.all([
@@ -175,6 +210,7 @@ export class ExternalSessionsService {
       Promise.resolve(this.conversations?.isEnabled() ?? false),
       this.conversations?.hasContent() ?? Promise.resolve(false),
     ]);
+    await this.persistParseCache(filePathsOf(filesByAgent));
     return {
       agents,
       agent,
@@ -184,6 +220,74 @@ export class ExternalSessionsService {
       home: this.homeDir,
       recording,
       recorded,
+    };
+  }
+
+  /**
+   * Answers from the parse cache and each file's first few lines, then reads
+   * the chosen agent's files in the background. Counts and gateway-only rows
+   * still come from the same rules as the full listing; only rows whose file
+   * is read in full are missing their message and token totals.
+   */
+  private async listFast(requestedAgent?: string): Promise<ExternalSessionsList> {
+    await this.conversations?.prune(this.now());
+    const [filesByAgent, gatewayUsage, allTrash] = await Promise.all([
+      this.allFiles(),
+      readGatewaySessionUsage(this.neolixHome),
+      listTrash(this.neolixHome),
+    ]);
+    const trash = allTrash.filter((entry) => this.mayRead(entry.agent));
+    const sessionsByAgent = new Map<string, ExternalSession[]>();
+    const nativeIds = new Map<string, Set<string>>();
+    const fileIds = new Map<string, Set<string>>();
+    for (const agent of EXTERNAL_SESSION_AGENTS) {
+      const files = this.mayRead(agent) ? (filesByAgent.get(agent) ?? []) : [];
+      sessionsByAgent.set(agent, []);
+      const ids = new Set(files.map((file) => file.id));
+      fileIds.set(agent, ids);
+      nativeIds.set(agent, new Set(ids));
+    }
+    const openCode = this.mayRead("opencode") ? await this.openCodeSessions() : [];
+    if (openCode.length > 0) {
+      sessionsByAgent.set("opencode", openCode);
+      const ids = new Set(openCode.map((session) => session.id));
+      fileIds.set("opencode", ids);
+      nativeIds.set("opencode", new Set(ids));
+    }
+    await this.addSavedWslSessions(sessionsByAgent, nativeIds);
+    await this.addGatewaySessions(sessionsByAgent, nativeIds, gatewayUsage);
+    const agents = this.agentsWithCountsOf(
+      this.sessionCounts(filesByAgent, sessionsByAgent, fileIds),
+    );
+    const agent = pickAgent(agents, requestedAgent);
+    const files =
+      isExternalAgent(agent) && agent !== "opencode" && this.mayRead(agent)
+        ? (filesByAgent.get(agent) ?? [])
+        : [];
+    const partial =
+      files.length === 0 ? false : await this.fillHeaderSessions(agent, files, sessionsByAgent);
+    // Native rows were absent when the gateway pass ran, so read their via now.
+    this.attachGatewayVia(sessionsByAgent, nativeIds, gatewayUsage);
+    const sessions = sessionsByAgent.get(agent) ?? [];
+    sessions.sort((a, b) => b.last.localeCompare(a.last));
+    if (files.length > 0) {
+      this.warmAgent(agent, files, filePathsOf(filesByAgent));
+    }
+    const [recording, recorded] = await Promise.all([
+      Promise.resolve(this.conversations?.isEnabled() ?? false),
+      this.conversations?.hasContent() ?? Promise.resolve(false),
+    ]);
+    await this.persistParseCache(filePathsOf(filesByAgent));
+    return {
+      agents,
+      agent,
+      sessions,
+      trash,
+      trashDir: sessionsTrashDir(this.neolixHome),
+      home: this.homeDir,
+      recording,
+      recorded,
+      partial,
     };
   }
 
@@ -203,6 +307,7 @@ export class ExternalSessionsService {
     if (this.mayRead("opencode")) {
       out.push(...(await this.openCodeSessions()));
     }
+    await this.persistParseCache(filePathsOf(filesByAgent));
     return out;
   }
 
@@ -326,7 +431,7 @@ export class ExternalSessionsService {
           now: this.now(),
           sqliteHome: config.sqliteHome,
         });
-        this.parses.delete(file.path);
+        this.forgetParsed(file.path);
         moved.push(result);
       } catch (error) {
         refused.push({
@@ -391,6 +496,8 @@ export class ExternalSessionsService {
     this.previewed.delete(input.token);
     // Every session path this service remembered moved with the folder.
     this.parses.clear();
+    this.persistedParses?.clear();
+    this.parseCacheDirty = this.persistedParses !== null;
     return { preview: null, token: null, backup: applied.backup };
   }
 
@@ -882,6 +989,212 @@ export class ExternalSessionsService {
     return out;
   }
 
+  /**
+   * Builds the chosen agent's rows from cached parses and headers. Returns
+   * whether any row still lacks its full read.
+   */
+  private async fillHeaderSessions(
+    agent: string,
+    files: readonly SessionFile[],
+    sessionsByAgent: Map<string, ExternalSession[]>,
+  ): Promise<boolean> {
+    const target = sessionsByAgent.get(agent) ?? [];
+    const newest = files.slice(0, PARSE_LIMIT);
+    let partial = false;
+    let cursor = 0;
+    const worker = async (): Promise<void> => {
+      while (cursor < newest.length) {
+        const index = cursor;
+        cursor += 1;
+        const file = newest[index];
+        if (file === undefined) {
+          return;
+        }
+        const { parse, complete } = await this.fastParse(file);
+        if (!complete) {
+          partial = true;
+        }
+        const session = this.toSession(file, parse);
+        await this.attachProvider(session, file);
+        target.push(session);
+      }
+    };
+    await Promise.all(
+      Array.from({ length: Math.min(PARSE_CONCURRENCY, newest.length) }, () => worker()),
+    );
+    sessionsByAgent.set(agent, target);
+    return partial;
+  }
+
+  /**
+   * A parse the last daemon or this one finished, or what the top of the file
+   * says. A header answer is replaced by the full parse once it arrives.
+   */
+  private async fastParse(file: SessionFile): Promise<{ parse: SessionParse; complete: boolean }> {
+    const meta = file.agent === "agy" ? await this.agyMeta(file.id) : undefined;
+    const metaKey = meta === undefined ? "" : `${meta.title}\u0000${meta.cwd}`;
+    const cached = this.parses.get(file.path);
+    if (
+      cached !== undefined &&
+      cached.mtimeMs === file.mtimeMs &&
+      cached.size === file.size &&
+      cached.metaKey === metaKey
+    ) {
+      return { parse: cached.parse, complete: true };
+    }
+    const persisted = await this.persistedParseCache();
+    const stored = persisted.get(file.path);
+    if (
+      stored !== undefined &&
+      stored.mtimeMs === file.mtimeMs &&
+      stored.size === file.size &&
+      stored.metaKey === metaKey
+    ) {
+      const parse = repriced(stored.parse, this.pricer);
+      this.parses.set(file.path, { mtimeMs: stored.mtimeMs, size: stored.size, metaKey, parse });
+      return { parse, complete: true };
+    }
+    if (file.agent === "agy" && file.path.endsWith(".db")) {
+      // Its conversation is the summary row, which is cheap to read in full.
+      return { parse: await this.parse(file), complete: true };
+    }
+    const header = await this.headerOf(file);
+    return { parse: headerParse(header, meta), complete: false };
+  }
+
+  /** A file's first lines, kept until its mtime or size moves. */
+  private async headerOf(file: SessionFile): Promise<SessionHeader> {
+    const cached = this.headers.get(file.path);
+    if (cached !== undefined && cached.mtimeMs === file.mtimeMs && cached.size === file.size) {
+      return cached.header;
+    }
+    const header = await readSessionHeader({ agent: file.agent, path: file.path }).catch(
+      (): SessionHeader => ({ title: "", cwd: "", start: "" }),
+    );
+    this.headers.set(file.path, { mtimeMs: file.mtimeMs, size: file.size, header });
+    return header;
+  }
+
+  /**
+   * Reads the chosen agent's files in the background, newest first, and saves
+   * the parses. A later listing sees them complete without waiting.
+   */
+  private warmAgent(agent: string, files: readonly SessionFile[], keep: ReadonlySet<string>): void {
+    const running = this.warming.get(agent);
+    if (running !== undefined) {
+      return;
+    }
+    const last = this.warmedAt.get(agent);
+    if (last !== undefined && this.now() - last < WARM_COOLDOWN_MS) {
+      return;
+    }
+    const newest = files.slice(0, PARSE_LIMIT);
+    // The timer lets the listing that asked for this leave the socket first.
+    const run = new Promise<void>((resolve) => setTimeout(resolve, 0))
+      .then(() => this.warmParses(newest))
+      .then(() => this.persistParseCache(keep))
+      .catch(() => {})
+      .finally(() => {
+        this.warming.delete(agent);
+        this.warmedAt.set(agent, this.now());
+      });
+    this.warming.set(agent, run);
+  }
+
+  private async warmParses(files: readonly SessionFile[]): Promise<void> {
+    let cursor = 0;
+    const worker = async (): Promise<void> => {
+      while (cursor < files.length) {
+        const index = cursor;
+        cursor += 1;
+        const file = files[index];
+        if (file === undefined) {
+          return;
+        }
+        await this.parse(file).catch(() => {});
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+    };
+    await Promise.all(
+      Array.from({ length: Math.min(WARM_CONCURRENCY, files.length) }, () => worker()),
+    );
+  }
+
+  /**
+   * Adds a stopped WSL distro's last listing without rewriting the saved
+   * snapshots: a fast listing only read the chosen agent's files in full.
+   */
+  private async addSavedWslSessions(
+    sessionsByAgent: Map<string, ExternalSession[]>,
+    nativeIds: Map<string, Set<string>>,
+  ): Promise<void> {
+    if (!this.wslEnabled()) return;
+    this.wslRoots ??= discoverWslRoots();
+    const roots = await this.wslRoots;
+    const running = new Set(roots.map((entry) => entry.distro));
+    this.wslSaved ??= await readWslSaved(this.neolixHome);
+    for (const [distro, entry] of Object.entries(this.wslSaved.distros)) {
+      if (running.has(distro)) {
+        continue;
+      }
+      for (const saved of entry.sessions) {
+        if (!this.mayRead(saved.agent)) {
+          continue;
+        }
+        const native = nativeIds.get(saved.agent);
+        if (native?.has(saved.id) === true) {
+          continue;
+        }
+        const sessions = sessionsByAgent.get(saved.agent) ?? [];
+        if (sessions.some((session) => session.id === saved.id)) {
+          continue;
+        }
+        sessions.push(saved);
+        sessionsByAgent.set(saved.agent, sessions);
+        native?.add(saved.id);
+      }
+    }
+  }
+
+  /** How many rows a full listing of each agent would return, without parsing. */
+  private sessionCounts(
+    filesByAgent: Map<ExternalSessionAgentId, SessionFile[]>,
+    sessionsByAgent: Map<string, ExternalSession[]>,
+    fileIds: Map<string, Set<string>>,
+  ): Map<string, number> {
+    const counts = new Map<string, number>();
+    for (const agent of EXTERNAL_SESSION_AGENTS) {
+      const known = fileIds.get(agent) ?? new Set<string>();
+      const sessions = sessionsByAgent.get(agent) ?? [];
+      let count =
+        agent === "opencode"
+          ? sessions.filter((session) => known.has(session.id)).length
+          : Math.min((filesByAgent.get(agent) ?? []).length, PARSE_LIMIT);
+      for (const session of sessions) {
+        if (!known.has(session.id)) {
+          count += 1;
+        }
+      }
+      counts.set(agent, count);
+    }
+    return counts;
+  }
+
+  private agentsWithCountsOf(counts: ReadonlyMap<string, number>): ExternalSessionAgent[] {
+    const agents: ExternalSessionAgent[] = [];
+    for (const agent of EXTERNAL_SESSION_AGENTS) {
+      const count = counts.get(agent) ?? 0;
+      if (count === 0) {
+        continue;
+      }
+      agents.push({ agent, name: agentLabel(agent), count, deletable: canDelete(agent) });
+    }
+    agents.sort((a, b) =>
+      a.count === b.count ? a.agent.localeCompare(b.agent) : b.count - a.count,
+    );
+    return agents;
+  }
+
   private async parse(file: SessionFile): Promise<SessionParse> {
     const meta = file.agent === "agy" ? await this.agyMeta(file.id) : undefined;
     const metaKey = meta === undefined ? "" : `${meta.title}\u0000${meta.cwd}`;
@@ -898,20 +1211,89 @@ export class ExternalSessionsService {
     if (pending !== undefined) {
       return pending;
     }
-    const run = readSessionFile({
-      agent: file.agent,
-      path: file.path,
-      ...(this.pricer === undefined ? {} : { pricer: this.pricer }),
-      ...(meta === undefined ? {} : { meta }),
-    })
-      .catch((): SessionParse => emptyParse(file))
-      .then((parse) => {
-        this.parses.set(file.path, { mtimeMs: file.mtimeMs, size: file.size, metaKey, parse });
-        this.parsing.delete(file.path);
-        return parse;
-      });
+    const run = this.readParse(file, meta, metaKey);
     this.parsing.set(file.path, run);
     return run;
+  }
+
+  /** A session file's parse, from the last daemon that read it or from disk. */
+  private async readParse(
+    file: SessionFile,
+    meta: { title?: string; cwd?: string } | undefined,
+    metaKey: string,
+  ): Promise<SessionParse> {
+    try {
+      const persisted = await this.persistedParseCache();
+      const stored = persisted.get(file.path);
+      if (
+        stored !== undefined &&
+        stored.mtimeMs === file.mtimeMs &&
+        stored.size === file.size &&
+        stored.metaKey === metaKey
+      ) {
+        // Cost belongs to the pricer reading now, not the one that cached it.
+        const parse = repriced(stored.parse, this.pricer);
+        this.parses.set(file.path, {
+          mtimeMs: stored.mtimeMs,
+          size: stored.size,
+          metaKey,
+          parse,
+        });
+        return parse;
+      }
+      const parse = await readSessionFile({
+        agent: file.agent,
+        path: file.path,
+        ...(this.pricer === undefined ? {} : { pricer: this.pricer }),
+        ...(meta === undefined ? {} : { meta }),
+      }).catch((): SessionParse => emptyParse(file));
+      const entry = { mtimeMs: file.mtimeMs, size: file.size, metaKey, parse };
+      this.parses.set(file.path, entry);
+      persisted.set(file.path, entry);
+      this.parseCacheDirty = true;
+      return parse;
+    } finally {
+      this.parsing.delete(file.path);
+    }
+  }
+
+  private persistedParseCache(): Promise<Map<string, CachedParse>> {
+    this.readingParses ??= readParseCache(this.neolixHome).then((entries) => {
+      this.persistedParses = entries;
+      return entries;
+    });
+    return this.readingParses;
+  }
+
+  /**
+   * Writes the parses read since the last write, dropping sessions the latest
+   * listing no longer contains. A write failure only costs a reread next time.
+   */
+  private async persistParseCache(keep: ReadonlySet<string>): Promise<void> {
+    const persisted = this.persistedParses ?? (await this.persistedParseCache());
+    const entries = new Map<string, CachedParse>();
+    for (const [key, cached] of persisted) {
+      if (keep.has(key)) {
+        entries.set(key, cached);
+      }
+    }
+    if (!this.parseCacheDirty && entries.size === persisted.size) {
+      return;
+    }
+    try {
+      await writeParseCache(this.neolixHome, entries);
+      this.persistedParses = entries;
+      this.parseCacheDirty = false;
+    } catch {
+      this.parseCacheDirty = true;
+    }
+  }
+
+  private forgetParsed(sessionPath: string): void {
+    this.parses.delete(sessionPath);
+    if (this.persistedParses?.delete(sessionPath) === true) {
+      this.parseCacheDirty = true;
+    }
   }
 
   private toSession(file: SessionFile, parse: SessionParse): ExternalSession {
@@ -970,6 +1352,15 @@ export class ExternalSessionsService {
       sessions.push(session);
       sessionsByAgent.set(entry.agent, sessions);
     }
+    this.attachGatewayVia(sessionsByAgent, nativeIds, usage);
+  }
+
+  /** A native session that also went through the gateway names what served it. */
+  private attachGatewayVia(
+    sessionsByAgent: Map<string, ExternalSession[]>,
+    nativeIds: Map<string, Set<string>>,
+    usage: Map<string, GatewaySessionUsage>,
+  ): void {
     for (const [agent, sessions] of sessionsByAgent) {
       const native = nativeIds.get(agent) ?? new Set<string>();
       for (const session of sessions) {
@@ -1063,6 +1454,67 @@ async function companionPaths(agent: string, file: SessionFile): Promise<string[
   } catch {
     return [];
   }
+}
+
+function filePathsOf(filesByAgent: Map<ExternalSessionAgentId, SessionFile[]>): Set<string> {
+  const paths = new Set<string>();
+  for (const files of filesByAgent.values()) {
+    for (const file of files) {
+      paths.add(file.path);
+    }
+  }
+  return paths;
+}
+
+/** The cached tokens priced by the pricer reading the list now. */
+function repriced(parse: SessionParse, pricer: SessionPricer | undefined): SessionParse {
+  const models = parse.models.map((model) => {
+    const price = pricer?.(model.model) ?? null;
+    return {
+      ...model,
+      cost:
+        price === null
+          ? 0
+          : (model.tokens.input / 1_000_000) * price.inputPerMTok +
+            (model.tokens.output / 1_000_000) * price.outputPerMTok,
+      priced: price !== null,
+    };
+  });
+  let cost = 0;
+  let priced = false;
+  for (const model of models) {
+    cost += model.cost;
+    priced ||= model.priced;
+  }
+  return { ...parse, models, cost, priced };
+}
+
+interface CachedHeader {
+  mtimeMs: number;
+  size: number;
+  header: SessionHeader;
+}
+
+/** A row that says what the file's top says and nothing about its totals yet. */
+function headerParse(
+  header: SessionHeader,
+  meta: { title?: string | undefined; cwd?: string | undefined } | undefined,
+): SessionParse {
+  const title =
+    meta?.title !== undefined && meta.title.length > 0 ? cleanTitle(meta.title) : header.title;
+  const cwd = meta?.cwd !== undefined && meta.cwd.length > 0 ? meta.cwd : header.cwd;
+  return {
+    title,
+    cwd,
+    start: header.start,
+    last: "",
+    messages: 0,
+    tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    models: [],
+    cost: 0,
+    priced: false,
+    ...(header.provider === undefined ? {} : { provider: header.provider }),
+  };
 }
 
 function emptyParse(file: SessionFile): SessionParse {

@@ -189,6 +189,13 @@ interface BurstProfile {
   gapMs: number;
 }
 
+/**
+ * A paced stream advances one event per interval of wall clock. A stalled event loop
+ * wakes to many overdue intervals at once; emitting them in bounded batches keeps the
+ * advertised duration and content intact instead of silently truncating the reply.
+ */
+const MOCK_MAX_CATCH_UP_EVENTS_PER_TICK = 128;
+
 function nextBurstSize(profile: BurstProfile, sequence: number): number {
   // Deterministic hash of the burst index; no Math.random so runs are repeatable.
   let hash = (sequence + 1) * 2654435761;
@@ -212,6 +219,8 @@ interface ActiveTurn {
   completed: Promise<AgentRunResult>;
   queue: CycleEvent[];
   emittedTokens: number;
+  /** Every event dispatched this turn, including tools; drives wall-clock pacing. */
+  emittedEvents: number;
   turnStarted: boolean;
   burst: BurstProfile | null;
   burstIndex: number;
@@ -260,6 +269,10 @@ interface MockQuestionPromptRequest {
 
 function shouldEmitPlanApprovalPrompt(prompt: AgentPromptInput): boolean {
   return /emit\s+(?:a\s+)?synthetic\s+plan\s+approval/i.test(promptToText(prompt));
+}
+
+function shouldEmitProviderApprovalPrompt(prompt: AgentPromptInput): boolean {
+  return /emit\s+(?:a\s+)?synthetic\s+provider\s+approval/i.test(promptToText(prompt));
 }
 
 function shouldEmitTurnFailure(prompt: AgentPromptInput): boolean {
@@ -615,7 +628,7 @@ function buildCycleQueue(turnId: string, cycle: number): CycleEvent[] {
 
   const readDetail: ToolCallDetail = {
     type: "read",
-    filePath: "packages/app/src/components/conversation-list.tsx",
+    filePath: "packages/desktop-web/apps/web/src/components/conversation-list.tsx",
   };
   const readId = `${turnId}:read:${cycle}`;
   queue.push({ kind: "tool_running", callId: readId, name: "read", detail: readDetail });
@@ -645,8 +658,8 @@ function buildCycleQueue(turnId: string, cycle: number): CycleEvent[] {
     detail: {
       ...grepDetail,
       filePaths: [
-        "packages/app/src/components/conversation-list.tsx",
-        "packages/app/src/hooks/use-scroll-anchor.ts",
+        "packages/desktop-web/apps/web/src/components/conversation-list.tsx",
+        "packages/desktop-web/apps/web/src/hooks/use-scroll-anchor.ts",
       ],
       numFiles: 2,
       numMatches: 5,
@@ -657,7 +670,7 @@ function buildCycleQueue(turnId: string, cycle: number): CycleEvent[] {
     queue.push({ kind: "assistant_token", text: tok });
   }
 
-  const editFile = "packages/app/src/hooks/use-scroll-anchor.ts";
+  const editFile = "packages/desktop-web/apps/web/src/hooks/use-scroll-anchor.ts";
   const editDetail: ToolCallDetail = {
     type: "edit",
     filePath: editFile,
@@ -760,7 +773,10 @@ export class MockLoadTestAgentClient implements AgentClient {
 
   async importSession(input: ImportProviderSessionInput, context: ImportProviderSessionContext) {
     return importSessionFromPersistence({
-      provider: MOCK_LOAD_TEST_PROVIDER_ID,
+      // The subclass's provider, not the base mock id: a Codex-shaped test client that imports
+      // a session must record `codex` on the persistence handle, or the import catalog cannot
+      // match it back to the external session it came from.
+      provider: this.provider,
       request: input,
       context,
       resumeSession: this.resumeSession.bind(this),
@@ -896,6 +912,7 @@ export class MockLoadTestAgentSession implements AgentSession {
       completed,
       queue: [],
       emittedTokens: 0,
+      emittedEvents: 0,
       turnStarted: false,
       burst: profile.burst,
       burstIndex: 0,
@@ -925,6 +942,8 @@ export class MockLoadTestAgentSession implements AgentSession {
         this.scheduleSettledAssistantTurn(turn, settledAssistantImageMarkdown);
       } else if (shouldEmitPlanApprovalPrompt(prompt)) {
         this.schedulePlanApprovalTurn(turn);
+      } else if (shouldEmitProviderApprovalPrompt(prompt)) {
+        this.scheduleProviderApprovalTurn(turn);
       } else if (questionPrompt) {
         this.scheduleQuestionPromptTurn(turn, questionPrompt);
       } else if (largePayload) {
@@ -1069,12 +1088,22 @@ export class MockLoadTestAgentSession implements AgentSession {
     });
 
     if (turn) {
-      this.finishTurnWithText(
-        turn,
-        request.kind === "question"
-          ? "Synthetic questions resolved"
-          : "Synthetic plan approval resolved",
-      );
+      let finalText = "Synthetic plan approval resolved";
+      if (request.kind === "question") {
+        finalText = "Synthetic questions resolved";
+      } else if (request.name === "MockProviderApproval") {
+        finalText = `Provider approval resolved: ${response.selectedActionId ?? "none"}`;
+      }
+      if (request.name === "MockProviderApproval") {
+        // Visible proof of the chosen action for browser tests; `finishTurnWithText` only
+        // completes the turn and leaves the text in the run result.
+        this.emitTimeline(turn.turnId, {
+          type: "assistant_message",
+          text: finalText,
+          messageId: randomUUID(),
+        });
+      }
+      this.finishTurnWithText(turn, finalText);
     }
     return undefined;
   }
@@ -1283,6 +1312,13 @@ export class MockLoadTestAgentSession implements AgentSession {
     turn.timer.unref?.();
   }
 
+  private scheduleProviderApprovalTurn(turn: ActiveTurn): void {
+    turn.timer = setTimeout(() => {
+      this.emitProviderApprovalTurn(turn);
+    }, 0);
+    turn.timer.unref?.();
+  }
+
   private scheduleQuestionPromptTurn(
     turn: ActiveTurn,
     questionPrompt: MockQuestionPromptRequest,
@@ -1399,6 +1435,62 @@ export class MockLoadTestAgentSession implements AgentSession {
       ],
       metadata: {
         source: "mock_plan_approval",
+      },
+    };
+
+    this.pendingPermissions.set(request.id, request);
+    this.emit({
+      type: "permission_requested",
+      provider: this.provider,
+      request,
+      turnId: turn.turnId,
+    });
+  }
+
+  /**
+   * An approval whose actions include one the standard allow/deny pair cannot express, so the
+   * client has to render it as a provider-defined choice (the `implement_resume` shape Claude
+   * and Codex plans use). The chosen action id comes back on the resolution; the completed turn
+   * spells it out so a browser test can prove the selection crossed the whole wire.
+   */
+  private emitProviderApprovalTurn(turn: ActiveTurn): void {
+    if (this.activeTurn !== turn) {
+      return;
+    }
+
+    this.clearTurnTimer(turn);
+    this.emitTurnStarted(turn);
+
+    const request: AgentPermissionRequest = {
+      id: `mock-provider-approval-${turn.turnId}`,
+      provider: this.provider,
+      name: "MockProviderApproval",
+      kind: "tool",
+      title: "Provider approval",
+      description: "Pick a provider-defined approval action.",
+      input: { command: "echo provider-approval" },
+      actions: [
+        {
+          id: "allow-once",
+          label: "Allow once",
+          behavior: "allow",
+          variant: "primary",
+        },
+        {
+          id: "deny-once",
+          label: "Deny once",
+          behavior: "deny",
+          variant: "secondary",
+        },
+        {
+          id: "implement-resume",
+          label: "Implement and resume",
+          behavior: "allow",
+          intent: "implement_resume",
+        },
+      ],
+      metadata: {
+        source: "mock_provider_approval",
       },
     };
 
@@ -1596,7 +1688,9 @@ export class MockLoadTestAgentSession implements AgentSession {
       return;
     }
 
-    const eventsThisTick = turn.burst ? nextBurstSize(turn.burst, turn.burstIndex) : 1;
+    const eventsThisTick = turn.burst
+      ? nextBurstSize(turn.burst, turn.burstIndex)
+      : this.pacedEventsDue(turn, elapsedMs);
     turn.burstIndex += 1;
 
     for (let emitted = 0; emitted < eventsThisTick; emitted += 1) {
@@ -1611,9 +1705,24 @@ export class MockLoadTestAgentSession implements AgentSession {
         break;
       }
       this.dispatchCycleEvent(turn, event);
+      turn.emittedEvents += 1;
     }
 
-    this.schedule(turn, turn.burst ? turn.burst.gapMs : turn.intervalMs);
+    if (turn.burst) {
+      this.schedule(turn, turn.burst.gapMs);
+      return;
+    }
+    // Keep draining with zero-delay batches while the wall clock is still owed
+    // events, so a long stall cannot leave the reply cut off inside a paragraph.
+    const due = this.pacedEventsDue(turn, Date.now() - turn.startedAt);
+    this.schedule(turn, turn.emittedEvents < due ? 0 : turn.intervalMs);
+  }
+
+  /** Events a paced stream owes by `elapsedMs`, capped for one batch. */
+  private pacedEventsDue(turn: ActiveTurn, elapsedMs: number): number {
+    const intervalMs = Math.max(1, turn.intervalMs);
+    const owed = Math.floor(elapsedMs / intervalMs) + 1 - turn.emittedEvents;
+    return Math.min(MOCK_MAX_CATCH_UP_EVENTS_PER_TICK, Math.max(1, owed));
   }
 
   private dispatchCycleEvent(turn: ActiveTurn, event: CycleEvent): void {

@@ -9,6 +9,7 @@ import {
   settleBrowserCallback,
   startGatewaySignIn,
   statusGatewaySignIn,
+  type GatewaySignInState,
   type SignInContext,
 } from "./gateway-signin.js";
 import { loadSubscriptionAccounts } from "./subscription-store.js";
@@ -31,6 +32,26 @@ function jsonAnswer(body: unknown, status = 200): Response {
 
 function jwt(claims: Record<string, unknown>): string {
   return `e30.${Buffer.from(JSON.stringify(claims)).toString("base64url")}.sig`;
+}
+
+/**
+ * Reads the sign-in until it leaves `waiting`. A device flow finishes on its
+ * own after it saves the account, and that save is real file I/O, so one read
+ * after a fixed sleep can observe the flow mid-flight.
+ */
+async function waitForSignInOutcome(
+  id: string,
+  context: SignInContext,
+): Promise<GatewaySignInState> {
+  let status = await statusGatewaySignIn(id, context);
+  await vi.waitFor(
+    async () => {
+      status = await statusGatewaySignIn(id, context);
+      expect(status.state).not.toBe("waiting");
+    },
+    { timeout: 5_000, interval: 10 },
+  );
+  return status;
 }
 
 afterEach(() => {
@@ -80,11 +101,13 @@ describe("gateway sign-in: Copilot", () => {
       code: "ABCD-1234",
     });
     // The flow finishes on its own once GitHub gives the token.
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    const status = await statusGatewaySignIn(started.id, context);
+    const status = await waitForSignInOutcome(started.id, context);
     expect(status).toMatchObject({ state: "done", user: "octocat", plan: "Pro" });
     const file = join(dir, "copilot-accounts.json");
-    expect(statSync(file).mode & 0o777).toBe(0o600);
+    // Windows cannot express POSIX permissions; the file is private by location there.
+    if (process.platform !== "win32") {
+      expect(statSync(file).mode & 0o777).toBe(0o600);
+    }
     expect(await loadSubscriptionAccounts(file, "copilot")).toEqual([
       expect.objectContaining({ user: "octocat", githubToken: "gho_x", host: "" }),
     ]);

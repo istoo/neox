@@ -112,4 +112,6 @@ export interface SubscriptionProviderMetadata {
     apiKey?: { label: string; placeholder?: string };
   }>;
   options?: Record<string, unknown>;
+  /** The plugin checks its accounts in itself (`checkin`). */
+  checkin?: true;
 }

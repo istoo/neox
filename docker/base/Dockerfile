@@ -5,6 +5,9 @@ FROM --platform=$BUILDPLATFORM ${NODE_IMAGE} AS source-pack
 
 ARG NEOLIX_VERSION
 
+# The server's tsc build and the web app's Vite build outgrow Node's default
+# old-space limit. 2560 MiB covers both and still fits a 4 GiB Docker VM.
+ARG NODE_OPTIONS=--max-old-space-size=2560
 ENV ONNXRUNTIME_NODE_INSTALL=skip
 
 WORKDIR /tmp/neolix-src
@@ -26,6 +29,19 @@ RUN set -eux; \
     npm pack --workspace=@neolix/plugin --pack-destination /tmp/neolix-packs; \
     npm pack --workspace=@neolix/server --pack-destination /tmp/neolix-packs; \
     npm pack --workspace=@neolix/cli --pack-destination /tmp/neolix-packs
+
+# The desktop web app the daemon serves from its own port and from Browser
+# access. It is its own Bun workspace and is not part of the npm packs above.
+# Built after them: their prepack rebuilds dist and would wipe this output.
+# Bun stays in this stage; the final image carries only the built page.
+RUN set -eux; \
+    npm install -g bun@1; \
+    cd packages/desktop-web; \
+    bun install --frozen-lockfile; \
+    cd ../..; \
+    node scripts/build-daemon-web-app.mjs; \
+    test -f packages/server/dist/server/web-app/embed.js; \
+    test -f packages/server/dist/server/web-app/web/index.html
 
 FROM ${NODE_IMAGE}
 
@@ -58,14 +74,21 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/*
 
 COPY --from=source-pack /tmp/neolix-packs /tmp/neolix-packs
+COPY --from=source-pack /tmp/neolix-src/packages/server/dist/server/web-app /opt/neolix-web-app
 RUN set -eux; \
 	npm install -g /tmp/neolix-packs/*.tgz; \
     rm -rf /tmp/neolix-packs; \
     npm cache clean --force; \
-    server_entry="$(npm root -g)/@neolix/server/dist/scripts/supervisor-entrypoint.js"; \
+    server_root="$(npm root -g)/@neolix/server"; \
+    server_entry="$server_root/dist/scripts/supervisor-entrypoint.js"; \
     test -f "$server_entry"; \
     printf '%s\n' "$server_entry" > /etc/neolix-server-entry; \
-    node --check "$server_entry"
+    node --check "$server_entry"; \
+    mkdir -p "$server_root/dist/server"; \
+    cp -a /opt/neolix-web-app "$server_root/dist/server/web-app"; \
+    rm -rf /opt/neolix-web-app; \
+    test -f "$server_root/dist/server/web-app/embed.js"; \
+    test -f "$server_root/dist/server/web-app/web/index.html"
 
 RUN set -eux; \
     existing_group="$(getent group 1000 | cut -d: -f1 || true)"; \

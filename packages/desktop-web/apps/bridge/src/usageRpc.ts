@@ -1,6 +1,6 @@
-// Neox provider usage → Synara's provider-usage snapshots. Neox reports account-level
-// windows, balances and detail rows without Synara's instance scoping; each source id maps to
-// the Synara driver that owns it so the UI can attach the snapshot to an instance.
+// Neox usage reports → Synara's provider-usage snapshots. The daemon reports one entry per
+// usage source and signed-in account, with the last successful values kept beside a failed
+// attempt; this bridge maps those onto the account-level rows the desktop UI already draws.
 import type {
   ProviderKind,
   ServerGetProviderUsageSnapshotResult,
@@ -8,50 +8,10 @@ import type {
   ServerListProviderUsageResult,
   ServerProviderUsageSnapshot,
 } from "@synara/contracts";
+import type { UsageReportEntry } from "../../../../protocol/dist/messages.js";
 
 import type { DaemonClient } from "./neolix.ts";
 import { driverForProvider, instanceIdForProvider } from "./providers.ts";
-
-export interface NeolixUsageWindow {
-  readonly id: string;
-  readonly label: string;
-  readonly usedPct?: number | null;
-  readonly resetsAt?: string | null;
-}
-
-export interface NeolixUsageBalance {
-  readonly id: string;
-  readonly label: string;
-  readonly used?: number | null;
-  readonly remaining?: number | null;
-  readonly limit?: number | null;
-  readonly unit: string;
-  readonly resetsAt?: string | null;
-}
-
-export interface NeolixUsageDetail {
-  readonly id: string;
-  readonly label: string;
-  readonly value: string;
-}
-
-export interface NeolixProviderUsage {
-  readonly providerId: string;
-  readonly displayName: string;
-  readonly status: "available" | "unavailable" | "error";
-  readonly planLabel?: string | null;
-  readonly sourceLabel?: string | null;
-  readonly fetchedAt?: string | null;
-  readonly windows: readonly NeolixUsageWindow[];
-  readonly balances?: readonly NeolixUsageBalance[];
-  readonly details?: readonly NeolixUsageDetail[];
-  readonly error?: string | null;
-}
-
-export interface NeolixUsageList {
-  readonly fetchedAt: string;
-  readonly providers: readonly NeolixProviderUsage[];
-}
 
 /** Neox reports titles and branch names that may be empty; Synara's schema requires text. */
 function nonEmpty(value: unknown): string | undefined {
@@ -67,111 +27,148 @@ function percentOrUndefined(value: unknown): number | undefined {
   return Math.min(100, Math.max(0, value));
 }
 
-function usageStatus(status: NeolixProviderUsage["status"]): "ok" | "needs-auth" | "error" {
-  switch (status) {
-    case "available":
-      return "ok";
-    case "error":
-      return "error";
-    default:
-      return "needs-auth";
-  }
+/** The percent a window used, from either side of the report. */
+function usedPercent(window: {
+  readonly usedPct?: number | null | undefined;
+  readonly remainingPct?: number | null | undefined;
+}): number | undefined {
+  const used = percentOrUndefined(window.usedPct);
+  if (used !== undefined) return used;
+  const remaining = percentOrUndefined(window.remainingPct);
+  return remaining === undefined ? undefined : 100 - remaining;
 }
 
-function balanceLine(balance: NeolixUsageBalance): { label: string; value: string } | null {
+function usageStatus(entry: UsageReportEntry): "ok" | "needs-auth" | "error" {
+  if (entry.report.status === "available" || entry.lastSuccessful !== undefined) return "ok";
+  return entry.report.status === "error" ? "error" : "needs-auth";
+}
+
+type UsageProblem = Extract<UsageReportEntry["report"], { status: "unavailable" }>["problem"];
+
+function problemText(problem: UsageProblem): string {
+  if (problem.kind === "no_quota") return problem.detail;
+  const remedy = problem.refreshedBy
+    ? `Run ${problem.refreshedBy} to refresh it.`
+    : "Sign in again.";
+  if (problem.kind === "rejected") {
+    return `Login rejected (HTTP ${problem.status}). ${remedy}`;
+  }
+  const elapsed = Math.max(0, Date.now() - Date.parse(problem.expiresAt));
+  let ago = "just now";
+  if (elapsed >= 86_400_000) ago = `${Math.floor(elapsed / 86_400_000)}d ago`;
+  else if (elapsed >= 3_600_000) ago = `${Math.floor(elapsed / 3_600_000)}h ago`;
+  else if (elapsed >= 60_000) ago = `${Math.floor(elapsed / 60_000)}m ago`;
+  return `Login expired ${ago}. ${remedy}`;
+}
+
+/** Why the latest attempt failed, or null when it succeeded. */
+function failureText(entry: UsageReportEntry): string | null {
+  if (entry.report.status === "available") return null;
+  if (entry.report.status === "error") return entry.report.error;
+  const logins = entry.loginErrors ?? [];
+  if (logins.length > 0) {
+    return logins
+      .map(
+        (login) =>
+          `${login.harness}: ${
+            login.report.status === "error" ? login.report.error : problemText(login.report.problem)
+          }`,
+      )
+      .join("\n");
+  }
+  return problemText(entry.report.problem);
+}
+
+function balanceLine(balance: {
+  readonly label: string;
+  readonly used?: number | null | undefined;
+  readonly remaining?: number | null | undefined;
+  readonly limit?: number | null | undefined;
+  readonly unit: string;
+}): { label: string; value: string } | null {
   const label = nonEmpty(balance.label);
   const amount = balance.remaining ?? balance.used ?? balance.limit;
   if (!label || typeof amount !== "number" || !Number.isFinite(amount)) return null;
   return { label, value: `${Math.round(amount * 100) / 100} ${balance.unit}`.trim() };
 }
 
+/**
+ * One id per report. The default account keeps its provider's instance id; every other
+ * signed-in account gets `<instance>-<account key>` so each account draws its own row.
+ */
+function instanceIdForReport(entry: UsageReportEntry): string {
+  const base = instanceIdForProvider(entry.sourceId);
+  const prefix = `${entry.sourceId}:`;
+  if (!entry.id.startsWith(prefix)) return base;
+  const key = entry.id
+    .slice(prefix.length)
+    .replace(/[^A-Za-z0-9_-]/gu, "-")
+    .slice(0, Math.max(0, 63 - base.length));
+  return key === "" ? base : `${base}-${key}`;
+}
+
 /** One Synara snapshot, or null when Synara has no driver for the source. */
-export function toUsageSnapshot(
-  usage: NeolixProviderUsage,
-  fetchedAt: string,
-): ServerProviderUsageSnapshot | null {
-  const driver: ProviderKind = driverForProvider(usage.providerId);
+export function toUsageSnapshot(entry: UsageReportEntry): ServerProviderUsageSnapshot | null {
+  const driver: ProviderKind = driverForProvider(entry.sourceId);
   // `driverForProvider` falls back to Claude for unknown sources; usage cards must not claim a
   // provider they do not belong to, so only known driver ids are reported.
-  if (driver === "claudeAgent" && usage.providerId !== "claude") return null;
-  const updatedAt = isoOrUndefined(usage.fetchedAt) ?? isoOrUndefined(fetchedAt);
-  if (!updatedAt) return null;
-  const limits = usage.windows.flatMap((window) => {
+  if (driver === "claudeAgent" && entry.sourceId !== "claude") return null;
+  const retained = entry.report.status !== "available" ? entry.lastSuccessful : undefined;
+  const content = entry.report.status === "available" ? entry.report : (retained?.report ?? null);
+  const updatedAt =
+    isoOrUndefined(entry.successfulAt) ??
+    isoOrUndefined(retained?.fetchedAt) ??
+    isoOrUndefined(entry.fetchedAt) ??
+    new Date().toISOString();
+  const limits = (content?.windows ?? []).flatMap((window) => {
     const label = nonEmpty(window.label) ?? nonEmpty(window.id);
     if (!label) return [];
-    const usedPercent = percentOrUndefined(window.usedPct);
+    const used = usedPercent(window);
     const resetsAt = isoOrUndefined(window.resetsAt);
     return [
       {
         window: label,
-        ...(usedPercent !== undefined ? { usedPercent } : {}),
+        ...(used !== undefined ? { usedPercent: used } : {}),
         ...(resetsAt ? { resetsAt } : {}),
       },
     ];
   });
   const lines: Array<{ label: string; value: string }> = [];
-  for (const detail of usage.details ?? []) {
+  for (const detail of content?.details ?? []) {
     const label = nonEmpty(detail.label);
     const value = nonEmpty(detail.value);
     if (label && value) lines.push({ label, value });
   }
-  for (const balance of usage.balances ?? []) {
+  for (const balance of content?.balances ?? []) {
     const line = balanceLine(balance);
     if (line) lines.push(line);
   }
-  const detail = nonEmpty(usage.error);
-  const planName = nonEmpty(usage.planLabel);
+  const detail = failureText(entry);
+  const planName = nonEmpty(content?.planLabel);
+  const accountLabel = nonEmpty(entry.account.label);
   return {
     provider: driver,
-    instanceId: instanceIdForProvider(
-      usage.providerId,
-    ) as ServerProviderUsageSnapshot["instanceId"],
+    instanceId: instanceIdForReport(entry) as ServerProviderUsageSnapshot["instanceId"],
     updatedAt: updatedAt as ServerProviderUsageSnapshot["updatedAt"],
     limits,
     usageLines: lines,
-    source: nonEmpty(usage.sourceLabel) ?? "neolix",
-    status: usageStatus(usage.status),
+    source: nonEmpty(entry.sourceLabel) ?? nonEmpty(entry.sourceId) ?? "neolix",
+    status: usageStatus(entry),
+    ...(accountLabel ? { accountLabel } : {}),
     ...(planName ? { planName } : {}),
     ...(detail ? { detail } : {}),
+    // A failed attempt keeps the last successful values on screen, still dated when they
+    // were fetched, exactly as the app shows them beside the failure message.
+    ...(retained === undefined ? {} : { stale: true }),
   };
 }
 
-export function toUsageSnapshots(list: NeolixUsageList): ServerProviderUsageSnapshot[] {
-  return list.providers.flatMap((usage) => {
-    const snapshot = toUsageSnapshot(usage, list.fetchedAt);
-    return snapshot ? [snapshot] : [];
-  });
-}
-
-/**
- * Last successful snapshot per daemon connection and provider instance. The legacy usage list
- * carries no history, so a single failed poll would flip a healthy "30 days 100%" row to
- * "Unavailable". Like the native app, a transient error keeps the last good values (still dated
- * by their own `updatedAt`); a sign-out (`needs-auth`) is shown and forgets them.
- */
-const lastSuccessfulByClient = new WeakMap<
-  DaemonClient,
-  Map<string, ServerProviderUsageSnapshot>
->();
-
-function withLastSuccessful(
-  client: DaemonClient,
-  snapshots: readonly ServerProviderUsageSnapshot[],
+export function toUsageSnapshots(
+  reports: readonly UsageReportEntry[],
 ): ServerProviderUsageSnapshot[] {
-  let remembered = lastSuccessfulByClient.get(client);
-  if (!remembered) {
-    remembered = new Map();
-    lastSuccessfulByClient.set(client, remembered);
-  }
-  return snapshots.map((snapshot) => {
-    const key = `${snapshot.provider}:${snapshot.instanceId}`;
-    if (snapshot.status === "ok") {
-      remembered.set(key, snapshot);
-      return snapshot;
-    }
-    if (snapshot.status === "error") return remembered.get(key) ?? snapshot;
-    remembered.delete(key);
-    return snapshot;
+  return reports.flatMap((entry) => {
+    const snapshot = toUsageSnapshot(entry);
+    return snapshot ? [snapshot] : [];
   });
 }
 
@@ -180,8 +177,8 @@ export async function listProviderUsage(
   client: DaemonClient,
   input: ServerListProviderUsageInput,
 ): Promise<ServerListProviderUsageResult> {
-  const payload = (await client.listProviderUsage()) as unknown as NeolixUsageList;
-  const snapshots = withLastSuccessful(client, toUsageSnapshots(payload));
+  const { reports } = await client.listUsageReports({ forceRefresh: input.forceRefresh === true });
+  const snapshots = toUsageSnapshots(reports);
   if (!input.provider) return snapshots;
   return snapshots.filter((snapshot) => snapshot.provider === input.provider);
 }

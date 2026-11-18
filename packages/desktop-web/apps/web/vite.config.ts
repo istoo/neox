@@ -95,6 +95,7 @@ const PRECOMPRESS_EXTENSIONS = new Set([".js", ".mjs", ".css", ".html", ".svg", 
 // Below this size, compression savings don't beat the extra header bytes and
 // the sidecar file overhead.
 const PRECOMPRESS_MIN_BYTES = 1024;
+const PRECOMPRESS_CONCURRENCY = 4;
 
 // Emits .gz and .br sidecars next to compressible build outputs so the server
 // can serve precompressed bytes by Accept-Encoding instead of compressing on
@@ -132,37 +133,48 @@ function precompressPlugin(): Plugin {
         await fs.rename(tempPath, sidecarPath);
       };
       let sidecarCount = 0;
-      await Promise.all(
-        files.map(async (file) => {
-          const source = await fs.readFile(file);
-          if (source.byteLength < PRECOMPRESS_MIN_BYTES) {
-            await Promise.all([removeStale(`${file}.gz`), removeStale(`${file}.br`)]);
-            return;
+      // Compressing every file at once keeps hundreds of native brotli encoder
+      // states alive (max-quality brotli reserves large hash tables), adding a
+      // large spike on top of the transform and render peaks. Bound the
+      // in-flight files; output is identical.
+      const pending = [...files];
+      const workers = Array.from(
+        { length: Math.min(PRECOMPRESS_CONCURRENCY, pending.length) },
+        async () => {
+          while (pending.length > 0) {
+            const file = pending.shift();
+            if (!file) return;
+            const source = await fs.readFile(file);
+            if (source.byteLength < PRECOMPRESS_MIN_BYTES) {
+              await Promise.all([removeStale(`${file}.gz`), removeStale(`${file}.br`)]);
+              continue;
+            }
+            // Max-quality brotli on thousands of small files dominates plugin
+            // wall-clock; below 16 KiB quality 9 is byte-for-byte competitive.
+            const brotliQuality =
+              source.byteLength < 16 * 1024 ? 9 : zlib.constants.BROTLI_MAX_QUALITY;
+            const [gzipped, brotlied] = await Promise.all([
+              gzip(source, { level: zlib.constants.Z_BEST_COMPRESSION }),
+              brotliCompress(source, {
+                params: {
+                  [zlib.constants.BROTLI_PARAM_QUALITY]: brotliQuality,
+                  [zlib.constants.BROTLI_PARAM_SIZE_HINT]: source.byteLength,
+                },
+              }),
+            ]);
+            await Promise.all([
+              gzipped.byteLength < source.byteLength
+                ? writeSidecarAtomically(`${file}.gz`, gzipped)
+                : removeStale(`${file}.gz`),
+              brotlied.byteLength < source.byteLength
+                ? writeSidecarAtomically(`${file}.br`, brotlied)
+                : removeStale(`${file}.br`),
+            ]);
+            sidecarCount += 1;
           }
-          // Max-quality brotli on thousands of small files dominates plugin
-          // wall-clock; below 16 KiB quality 9 is byte-for-byte competitive.
-          const brotliQuality =
-            source.byteLength < 16 * 1024 ? 9 : zlib.constants.BROTLI_MAX_QUALITY;
-          const [gzipped, brotlied] = await Promise.all([
-            gzip(source, { level: zlib.constants.Z_BEST_COMPRESSION }),
-            brotliCompress(source, {
-              params: {
-                [zlib.constants.BROTLI_PARAM_QUALITY]: brotliQuality,
-                [zlib.constants.BROTLI_PARAM_SIZE_HINT]: source.byteLength,
-              },
-            }),
-          ]);
-          await Promise.all([
-            gzipped.byteLength < source.byteLength
-              ? writeSidecarAtomically(`${file}.gz`, gzipped)
-              : removeStale(`${file}.gz`),
-            brotlied.byteLength < source.byteLength
-              ? writeSidecarAtomically(`${file}.br`, brotlied)
-              : removeStale(`${file}.br`),
-          ]);
-          sidecarCount += 1;
-        }),
+        },
       );
+      await Promise.all(workers);
       console.info(`[precompress] emitted gzip+brotli sidecars for ${sidecarCount} files.`);
     },
   };

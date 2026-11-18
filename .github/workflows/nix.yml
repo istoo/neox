@@ -28,6 +28,12 @@ jobs:
       - name: Build Nix package
         run: nix build .#default -o result
 
+      - name: Verify the daemon ships the web client
+        run: |
+          set -euo pipefail
+          test -f result/lib/neolix/packages/server/dist/server/web-app/embed.js
+          test -f result/lib/neolix/packages/server/dist/server/web-app/web/index.html
+
       - name: Smoke Nix daemon
         run: |
           set -euo pipefail
@@ -47,7 +53,7 @@ jobs:
           }
           trap cleanup EXIT
 
-          NEOLIX_WEB_UI_ENABLED=true NEOLIX_RELAY_ENABLED=false ./result/bin/neolix daemon run >"$WRAPPER_LOG" 2>&1 &
+          NEOLIX_RELAY_ENABLED=false ./result/bin/neolix daemon run >"$WRAPPER_LOG" 2>&1 &
           DAEMON_PID=$!
 
           deadline=$((SECONDS + 30))
@@ -55,8 +61,18 @@ jobs:
             if STATUS_JSON="$(./result/bin/neolix daemon status --json)" \
               && jq -e '.connectedDaemon == "reachable"' <<<"$STATUS_JSON" >/dev/null; then
               echo "$STATUS_JSON"
-              curl --fail --silent --show-error http://127.0.0.1:6767/ >"$NEOLIX_HOME/web-ui.html"
-              [[ -s "$NEOLIX_HOME/web-ui.html" ]]
+              curl --fail --silent --show-error http://127.0.0.1:6767/api/health >/dev/null
+
+              # The web client is built from a separate Bun workspace; the
+              # daemon answers 503 until its embed.js module finishes loading.
+              for _ in $(seq 1 30); do
+                if curl --fail --silent --show-error http://127.0.0.1:6767/ | grep -q 'id="root"'; then
+                  break
+                fi
+                sleep 1
+              done
+              curl --fail --silent --show-error http://127.0.0.1:6767/ | grep -q 'id="root"'
+
               if ! TERMINAL_JSON="$(./result/bin/neolix terminal create --cwd "$NEOLIX_HOME" --name nix-smoke --json)"; then
                 break
               fi

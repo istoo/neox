@@ -38,6 +38,10 @@ describe("plugin protocol compatibility", () => {
                 },
               ],
               sidebarItems: [{ id: "main", title: "Example", section: "header", view: "main" }],
+              panels: [
+                { id: "usage-strip", slot: "usage", title: "Usage", view: "main", height: 240 },
+                { id: "provider-strip", slot: "provider", view: "main" },
+              ],
               composerPills: [
                 {
                   id: "greet-pill",

@@ -4,15 +4,15 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stopDaemonInstance } from "@neolix/server/daemon-control";
+import { resolveNeolixHome } from "@neolix/server/neolix-home";
 import {
   describeUninstallReport,
   libraryKeepPath,
   resolveNeolixDataDirectories,
-  resolveNeolixHome,
   runUninstall,
   uninstallFailed,
   type UninstallAgent,
-} from "@neolix/server";
+} from "@neolix/server/uninstall";
 import { connectToDaemon } from "../utils/client.js";
 import type { CommandOptions } from "../output/index.js";
 import { addDaemonHostOption, withGlobalOptions } from "../utils/command-options.js";

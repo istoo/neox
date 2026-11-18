@@ -204,9 +204,66 @@ describe("UsagePoller", () => {
     const polls = fetchMock.mock.calls.length;
     expect(polls).toBeGreaterThan(0);
 
-    poller.dispose();
+    await poller.dispose();
     await vi.advanceTimersByTimeAsync(30 * 60_000);
     expect(fetchMock.mock.calls.length).toBe(polls);
+  });
+
+  it("waits for the read in flight and starts none once disposed", async () => {
+    let started!: () => void;
+    const startedReading = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    let release!: (response: Response) => void;
+    const reading = new Promise<Response>((resolve) => {
+      release = resolve;
+    });
+    const fetchMock = vi.fn(() => {
+      started();
+      return reading;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const state = createAccountRoutingState(new RestTable());
+    const provider: GatewayProvider = {
+      id: "p",
+      protocol: "anthropic",
+      baseUrl: "https://example.test/v1",
+      accounts: [
+        {
+          id: "a",
+          priority: 0,
+          weight: 1,
+          models: [],
+          enabled: true,
+          usageUrl: "https://example.test/usage",
+        },
+      ],
+      models: [{ id: "m" }],
+      maxAccounts: undefined,
+      queueWaitMs: 0,
+      sink: false,
+      priceRate: 1,
+    };
+    const poller = new UsagePoller({
+      state,
+      providers: () => [provider],
+      logger: pino({ level: "silent" }),
+    });
+
+    poller.start();
+    await startedReading;
+    const disposing = poller.dispose();
+    expect(await Promise.race([disposing.then(() => "settled"), Promise.resolve("pending")])).toBe(
+      "pending",
+    );
+
+    release(new Response(JSON.stringify({ remaining: 1, limit: 2 }), { status: 200 }));
+    await disposing;
+    // The in-flight read finished before dispose resolved.
+    expect(state.usage.get("p/a")).toMatchObject({ usedPercent: 50 });
+
+    await poller.refreshAll(1_000);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -255,7 +312,7 @@ describe("UsagePoller and myna's quotaReads", () => {
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(requests).toEqual([]);
     await poller.refreshAll(1_000);
-    poller.dispose();
+    await poller.dispose();
     expect(requests).toEqual(["https://vendor.test/usage"]);
     expect(state.usage.get("p/a")).toMatchObject({ usedPercent: 50 });
   });
@@ -278,7 +335,7 @@ describe("UsagePoller and myna's quotaReads", () => {
     });
     poller.start();
     await vi.waitFor(() => expect(requests).toHaveLength(1));
-    poller.dispose();
+    await poller.dispose();
   });
 });
 

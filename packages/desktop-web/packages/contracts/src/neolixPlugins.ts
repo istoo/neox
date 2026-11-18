@@ -83,15 +83,38 @@ export const NeolixPluginSlashCommand = Schema.Struct({
 });
 export type NeolixPluginSlashCommand = typeof NeolixPluginSlashCommand.Type;
 
+export const NeolixPluginReplaceablePage = Schema.Literals([
+  "sessions",
+  "library",
+  "routing",
+  "usage",
+]);
+export type NeolixPluginReplaceablePage = typeof NeolixPluginReplaceablePage.Type;
+
 export const NeolixPluginSidebarItem = Schema.Struct({
   id: ContributionId,
   title: ContributionTitle,
   icon: Schema.optional(Schema.String),
   section: Schema.optional(Schema.Literals(["header", "footer"])),
   order: Schema.optional(Schema.Int),
+  /** Takes this built-in page's place while the plugin is installed. */
+  replaces: Schema.optional(NeolixPluginReplaceablePage),
   view: ContributionId,
 });
 export type NeolixPluginSidebarItem = typeof NeolixPluginSidebarItem.Type;
+
+/** A built-in page a plugin's panel joins: Agents, Usage, Settings > Plugins, or a provider editor. */
+export const NeolixPluginPanelSlot = Schema.Literals(["agents", "usage", "settings", "provider"]);
+export type NeolixPluginPanelSlot = typeof NeolixPluginPanelSlot.Type;
+
+export const NeolixPluginPanel = Schema.Struct({
+  id: ContributionId,
+  slot: NeolixPluginPanelSlot,
+  title: Schema.optional(ContributionTitle),
+  height: Schema.optional(Schema.Int),
+  view: ContributionId,
+});
+export type NeolixPluginPanel = typeof NeolixPluginPanel.Type;
 
 export const NeolixPluginComposerPill = Schema.Struct({
   id: ContributionId,
@@ -203,6 +226,7 @@ export const NeolixPluginContributions = Schema.Struct({
   commands: Schema.optional(Schema.Array(NeolixPluginCommand)),
   slashCommands: Schema.optional(Schema.Array(NeolixPluginSlashCommand)),
   sidebarItems: Schema.optional(Schema.Array(NeolixPluginSidebarItem)),
+  panels: Schema.optional(Schema.Array(NeolixPluginPanel)),
   composerPills: Schema.optional(Schema.Array(NeolixPluginComposerPill)),
   attachmentSources: Schema.optional(Schema.Array(NeolixPluginAttachmentSource)),
   themes: Schema.optional(Schema.Array(NeolixPluginTheme)),
@@ -399,6 +423,8 @@ export type NeolixPluginMarketHit = typeof NeolixPluginMarketHit.Type;
 export const NeolixPluginsListInput = Schema.Struct({});
 export const NeolixPluginsListResult = Schema.Struct({
   plugins: Schema.Array(NeolixPlugin),
+  /** Absent on older hosts; false means plugin execution is globally off. */
+  pluginsEnabled: Schema.optional(Schema.Boolean),
 });
 export type NeolixPluginsListResult = typeof NeolixPluginsListResult.Type;
 

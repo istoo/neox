@@ -1432,7 +1432,16 @@ export class GatewayConfigStore {
   }
 
   private async reload(): Promise<void> {
-    const parsed = GatewayConfigSchema.safeParse(withLegacyMaskingPersonal(await this.readJson()));
+    const raw = await this.readJson();
+    // No file is the default state of a fresh home, not a broken config.
+    if (raw === MISSING_CONFIG_FILE) {
+      this.installProxy(EMPTY_GATEWAY_CONFIG);
+      this.config = EMPTY_GATEWAY_CONFIG;
+      this.loggedError = null;
+      this.publish(this.config);
+      return;
+    }
+    const parsed = GatewayConfigSchema.safeParse(withLegacyMaskingPersonal(raw));
     if (parsed.success) {
       const config = normalizeWarmAtConfig(normalizeRateWindows(parsed.data));
       this.installProxy(config);
@@ -1464,8 +1473,11 @@ export class GatewayConfigStore {
       try {
         return await readJsonLastGood(this.filePath);
       } catch {
-        return null;
+        return (error as NodeJS.ErrnoException).code === "ENOENT" ? MISSING_CONFIG_FILE : null;
       }
     }
   }
 }
+
+/** `readJson`'s answer when neither the file nor a last good generation exists. */
+const MISSING_CONFIG_FILE: unique symbol = Symbol("missing gateway config");

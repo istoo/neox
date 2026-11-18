@@ -11,11 +11,23 @@ import { workspaceRoute } from "../lib/hosts/workspaceFrame";
 // Layer: Web UI dialog
 // Exports: CreateProjectDialog, CreateProjectSubmitValue
 
-import { type GitHubProjectProvisionProgressEvent, type SpaceId } from "@synara/contracts";
+import {
+  type GitHubProjectProvisionProgressEvent,
+  type GitHubRepositorySummary,
+  type SpaceId,
+} from "@synara/contracts";
 import { parseGitHubRepositoryInput } from "@synara/shared/githubRepository";
 import { findProjectFolderProblem } from "@synara/shared/projectFolders";
 import { normalizeProjectDirectoryName } from "@synara/shared/projectDirectoryName";
-import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type KeyboardEvent,
+} from "react";
 
 import { isElectron } from "../env";
 import { useWindowFolderDrop } from "../hooks/useWindowFolderDrop";
@@ -40,6 +52,10 @@ import {
 import { ProjectFolderList } from "./ProjectFolderList";
 import { ProjectSourceSegmentedPicker } from "./ProjectSourceSegmentedPicker";
 import { describeAddProjectError } from "./Sidebar.logic";
+import {
+  applyGitHubRepositorySuggestion,
+  githubRepositorySearchQuery,
+} from "./githubRepositorySearch.logic";
 import { SpaceEditorDialog, type SpaceEditorValue } from "./SpaceEditorDialog";
 import { SpaceIcon } from "./SpaceIcon";
 import { Button } from "./ui/button";
@@ -310,6 +326,14 @@ export function CreateProjectDialog(props: {
   const [destinationParent, setDestinationParent] = useState("");
   const [directoryName, setDirectoryName] = useState("");
   const [directoryNameEdited, setDirectoryNameEdited] = useState(false);
+  const [repositorySuggestions, setRepositorySuggestions] = useState<
+    ReadonlyArray<GitHubRepositorySummary>
+  >([]);
+  const [repositorySearchStatus, setRepositorySearchStatus] = useState<
+    "idle" | "loading" | "error"
+  >("idle");
+  const [repositorySearchError, setRepositorySearchError] = useState<string | null>(null);
+  const repositorySearchGeneration = useRef(0);
   const [provisionProgress, setProvisionProgress] = useState<string | null>(null);
   /**
    * The last path delivered verbatim by the native picker or an OS drop. Those
@@ -343,7 +367,10 @@ export function CreateProjectDialog(props: {
   const spaceLabelId = `${fieldId}-space`;
   const errorId = `${fieldId}-error`;
 
-  useEffect(() => {
+  // Layout effect: the reset has to land in the same commit that makes the dialog visible.
+  // A passive effect runs after paint, so a caller that starts typing as soon as the popup is
+  // visible (automation, paste, assistive input) can have its value wiped by the seed below.
+  useLayoutEffect(() => {
     // Seed on the closed -> open transition only, mirroring SpaceEditorDialog.
     if (props.open === openedRef.current) return;
     openedRef.current = props.open;
@@ -361,6 +388,9 @@ export function CreateProjectDialog(props: {
     setAdditionalFolders([]);
     setAdditionalFolderInput("");
     setRepositoryInput("");
+    setRepositorySuggestions([]);
+    setRepositorySearchStatus("idle");
+    setRepositorySearchError(null);
     setDestinationParent(props.defaultCloneParent);
     setDirectoryName("");
     setDirectoryNameEdited(false);
@@ -385,6 +415,53 @@ export function CreateProjectDialog(props: {
       setSource("local");
     }
   }, [githubAvailable, source]);
+
+  // Repository suggestions: only a partial name searches; a complete remote or owner/repo is
+  // already a clone target and must not race a search against it.
+  useEffect(() => {
+    const query =
+      props.open && source === "github" && githubAvailable
+        ? githubRepositorySearchQuery(repositoryInput)
+        : null;
+    if (!query) {
+      // Invalidate an in-flight search so its response cannot repopulate the cleared list.
+      repositorySearchGeneration.current += 1;
+      setRepositorySuggestions([]);
+      setRepositorySearchStatus("idle");
+      setRepositorySearchError(null);
+      return;
+    }
+    const generation = repositorySearchGeneration.current + 1;
+    repositorySearchGeneration.current = generation;
+    const timer = setTimeout(() => {
+      const api = readNativeApi();
+      if (!api) return;
+      setRepositorySearchStatus("loading");
+      setRepositorySearchError(null);
+      void api.projects
+        .searchGitHubRepositories({ query, limit: 20 })
+        .then((result) => {
+          if (generation !== repositorySearchGeneration.current) return;
+          if (result.status !== "success") {
+            setRepositorySuggestions([]);
+            setRepositorySearchStatus("error");
+            setRepositorySearchError(result.error);
+            return;
+          }
+          setRepositorySuggestions(result.repositories);
+          setRepositorySearchStatus("idle");
+        })
+        .catch((error: unknown) => {
+          if (generation !== repositorySearchGeneration.current) return;
+          setRepositorySuggestions([]);
+          setRepositorySearchStatus("error");
+          setRepositorySearchError(
+            error instanceof Error ? error.message : t("git:githubRepositorySearchUnavailable"),
+          );
+        });
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [githubAvailable, props.open, repositoryInput, source, t]);
 
   const trimmedPath = path.trim();
   const parsedRepository = parseGitHubRepositoryInput(repositoryInput);
@@ -873,6 +950,18 @@ export function CreateProjectDialog(props: {
               isElectron={isElectron || Boolean(remote)}
               isPickingFolder={isPickingFolder}
               submitting={submitting}
+              repositorySuggestions={repositorySuggestions}
+              repositorySearchStatus={repositorySearchStatus}
+              repositorySearchError={repositorySearchError}
+              onSelectRepositorySuggestion={(repository) => {
+                const pick = applyGitHubRepositorySuggestion(repository);
+                setRepositoryInput(pick.repository);
+                setDirectoryName(pick.directoryName);
+                setDirectoryNameEdited(false);
+                setRepositorySuggestions([]);
+                setRepositorySearchStatus("idle");
+                setFormError(null);
+              }}
               onRepositoryChange={(nextInput) => {
                 setRepositoryInput(nextInput);
                 const nextRepository = parseGitHubRepositoryInput(nextInput);

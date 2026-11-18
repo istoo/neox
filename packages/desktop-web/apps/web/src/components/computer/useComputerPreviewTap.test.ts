@@ -172,6 +172,7 @@ function render(input: {
 function stubVisibleDocument(): { visibilityState: string; listener: (() => void) | null } {
   const doc = {
     visibilityState: "visible",
+    documentElement: { lang: "", dir: "" },
     listener: null as (() => void) | null,
     addEventListener: vi.fn((_type: string, update: () => void) => {
       doc.listener = update;

@@ -37,6 +37,63 @@ interface Accumulator {
 
 const MESSAGE_LINE_MAX = 2_000_000;
 const SEEN_MAX = 50_000;
+/**
+ * The first screen needs a title and folder, not the whole conversation. Every
+ * real session names both within the first few lines; the cap only bounds the
+ * odd file that never does, so one file cannot stall the listing.
+ */
+const HEADER_MAX_BYTES = 4_000_000;
+
+/** What a session file says near its top, before its conversation is tallied. */
+export interface SessionHeader {
+  title: string;
+  cwd: string;
+  start: string;
+  provider?: string;
+}
+
+/**
+ * Reads only as far as the title, folder and start time, then stops. Used when
+ * the list must appear before its sessions are fully read.
+ */
+export async function readSessionHeader(input: {
+  agent: string;
+  path: string;
+}): Promise<SessionHeader> {
+  if (input.agent === "agy" && input.path.endsWith(".db")) {
+    return { title: "", cwd: "", start: "" };
+  }
+  const acc = emptyAccumulator();
+  const stream = createLineStream(input.path);
+  const lines = createInterface({ input: stream, crlfDelay: Number.POSITIVE_INFINITY });
+  let bytes = 0;
+  try {
+    for await (const line of lines) {
+      bytes += Buffer.byteLength(line) + 1;
+      if (line.length > 0 && line.length <= MESSAGE_LINE_MAX) {
+        const event = parseObject(line);
+        if (event !== null) {
+          readLine(input.agent, acc, event);
+        }
+      }
+      if (acc.title.length > 0 && acc.cwd.length > 0 && !Number.isNaN(acc.startMs)) {
+        break;
+      }
+      if (bytes >= HEADER_MAX_BYTES) {
+        break;
+      }
+    }
+  } finally {
+    lines.close();
+    stream.destroy();
+  }
+  return {
+    title: acc.title,
+    cwd: acc.cwd,
+    start: toIso(acc.startMs),
+    ...(acc.codexProvider.length === 0 ? {} : { provider: acc.codexProvider }),
+  };
+}
 
 export async function readSessionFile(input: {
   agent: string;
@@ -60,15 +117,7 @@ export async function readSessionFile(input: {
       if (event === null) {
         continue;
       }
-      if (input.agent === "claude") {
-        readClaudeLine(acc, event);
-      } else if (input.agent === "codex") {
-        readCodexLine(acc, event);
-      } else if (input.agent === "pi") {
-        readPiLine(acc, event);
-      } else if (input.agent === "agy") {
-        readAgyLine(acc, event);
-      }
+      readLine(input.agent, acc, event);
     }
   } finally {
     lines.close();
@@ -78,6 +127,19 @@ export async function readSessionFile(input: {
     return finishAgy(acc, input.pricer, input.meta);
   }
   return finish(acc, input.pricer);
+}
+
+/** One parsed line, read the way its agent writes it. */
+function readLine(agent: string, acc: Accumulator, event: Record<string, unknown>): void {
+  if (agent === "claude") {
+    readClaudeLine(acc, event);
+  } else if (agent === "codex") {
+    readCodexLine(acc, event);
+  } else if (agent === "pi") {
+    readPiLine(acc, event);
+  } else if (agent === "agy") {
+    readAgyLine(acc, event);
+  }
 }
 
 function emptyAccumulator(): Accumulator {

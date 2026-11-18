@@ -21,6 +21,12 @@ function spec(overrides: Partial<ServiceSpec>): ServiceSpec {
   };
 }
 
+// The launchd GUI domain is the current user's, which the plan takes from the
+// host rather than the spec. CI runners don't run as uid 501.
+function currentUid(): number {
+  return typeof process.getuid === "function" ? process.getuid() : 501;
+}
+
 describe("neox daemon install", () => {
   it("writes myna's launch agent on macOS", () => {
     const plan = installPlan(spec({ platform: "darwin" }));
@@ -35,7 +41,11 @@ describe("neox daemon install", () => {
       "<key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>",
     );
     expect(plan.contents).toContain("<key>NEOLIX_HOME</key><string>/Users/me/.neox</string>");
-    expect(plan.commands[0]).toEqual(["launchctl", "bootout", "gui/501/com.neolix.serve"]);
+    expect(plan.commands[0]).toEqual([
+      "launchctl",
+      "bootout",
+      `gui/${currentUid()}/com.neolix.serve`,
+    ]);
     expect(plan.commands[1]?.slice(0, 2)).toEqual(["launchctl", "bootstrap"]);
     expect(plan.logs).toContain("tail -f");
   });
@@ -69,7 +79,7 @@ describe("neox daemon install", () => {
 
   it("removes the service the same way myna does", () => {
     expect(uninstallPlan(spec({ platform: "darwin" })).commands).toEqual([
-      ["launchctl", "bootout", "gui/501/com.neolix.serve"],
+      ["launchctl", "bootout", `gui/${currentUid()}/com.neolix.serve`],
     ]);
     expect(uninstallPlan(spec({ platform: "linux" })).commands).toEqual([
       ["systemctl", "--user", "disable", "--now", "neolix.service"],

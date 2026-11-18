@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { antigravityCloak } from "./provider-shaping.js";
 import {
@@ -40,7 +41,95 @@ describe("codeAssistEnvelope", () => {
       codeAssistEnvelope({ model: "gemini-2.5-pro", project: "", request: { contents: [] } }),
     ).toEqual({ model: "gemini-2.5-pro", request: { contents: [] } });
   });
+
+  it("names a Gemini prompt with the id the CLI sends", () => {
+    const envelope = codeAssistEnvelope({
+      model: "gemini-2.5-pro",
+      project: "proj-1",
+      request: { contents: [] },
+      agent: "gemini",
+    });
+    expect(envelope.model).toBe("gemini-2.5-pro");
+    expect(envelope.project).toBe("proj-1");
+    expect(envelope.user_prompt_id).toMatch(/^[A-Za-z0-9_-]{16}$/);
+    expect(envelope.requestType).toBeUndefined();
+    expect(envelope.requestId).toBeUndefined();
+  });
+
+  it("names an Antigravity conversation from its first user prompt", () => {
+    const request = {
+      contents: [
+        { role: "user", parts: [{ text: "Fix the build" }] },
+        { role: "model", parts: [{ text: "ok" }] },
+        { role: "user", parts: [{ text: "and the tests" }] },
+      ],
+    };
+    const first = codeAssistEnvelope({
+      model: "claude-sonnet-4-6",
+      project: "ag-proj",
+      request,
+      agent: "antigravity",
+    });
+    expect(first.userAgent).toBe("antigravity");
+    expect(first.requestType).toBe("agent");
+    expect(first.requestId).toMatch(/^agent-[A-Za-z0-9_-]{16}$/);
+    expect(first.user_prompt_id).toBeUndefined();
+    const session = (first.request as Record<string, unknown>).sessionId;
+    expect(session).toBe(sessionOf("Fix the build"));
+    expect(session).toMatch(/^-\d+$/);
+
+    const again = codeAssistEnvelope({
+      model: "claude-sonnet-4-6",
+      project: "ag-proj",
+      request,
+      agent: "antigravity",
+    });
+    expect((again.request as Record<string, unknown>).sessionId).toBe(session);
+    expect(again.requestId).not.toBe(first.requestId);
+    // The caller's request keeps the shape it came with.
+    expect(request.contents[0]).toEqual({ role: "user", parts: [{ text: "Fix the build" }] });
+    expect((request as Record<string, unknown>).sessionId).toBeUndefined();
+  });
+
+  it("falls back to a random Antigravity session without user text", () => {
+    const request = {
+      contents: [{ role: "model", parts: [{ text: "only the model spoke" }] }],
+    };
+    const envelope = codeAssistEnvelope({
+      model: "claude-sonnet-4-6",
+      project: "ag-proj",
+      request,
+      agent: "antigravity",
+    });
+    const session = (envelope.request as Record<string, unknown>).sessionId;
+    expect(session).toMatch(/^-\d+$/);
+    expect(session).not.toBe(sessionOf("only the model spoke"));
+  });
+
+  it("does not borrow a later user turn's text for the session", () => {
+    const request = {
+      contents: [
+        { role: "user", parts: [{ inlineData: { mimeType: "image/png", data: "AA==" } }] },
+        { role: "user", parts: [{ text: "later" }] },
+      ],
+    };
+    const envelope = codeAssistEnvelope({
+      model: "claude-sonnet-4-6",
+      project: "ag-proj",
+      request,
+      agent: "antigravity",
+    });
+    const session = (envelope.request as Record<string, unknown>).sessionId;
+    expect(session).toMatch(/^-\d+$/);
+    expect(session).not.toBe(sessionOf("later"));
+  });
 });
+
+/** Antigravity's session id for a conversation: myna's antigravitySession. */
+function sessionOf(first: string): string {
+  const sum = createHash("sha256").update(first).digest();
+  return `-${(sum.readBigUInt64BE(0) & 0x7fffffffffffffffn).toString()}`;
+}
 
 describe("codeAssistAnswer", () => {
   it("unwraps a chunk", () => {

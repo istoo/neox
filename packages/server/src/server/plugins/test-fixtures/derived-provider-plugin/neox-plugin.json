@@ -1,0 +1,4 @@
+{
+  "id": "derived-provider-plugin",
+  "requirements": { "neolix": ">=0.14.0-beta.1" }
+}

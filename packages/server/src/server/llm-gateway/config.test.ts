@@ -33,6 +33,28 @@ describe("GatewayConfigStore", () => {
     store.dispose();
   });
 
+  it("logs no error for a fresh home that has no config file yet", async () => {
+    const lines: string[] = [];
+    const capturing = pino({ level: "error" }, { write: (line: string) => lines.push(line) });
+    const store = new GatewayConfigStore({ neolixHome: createHome(), logger: capturing });
+    await store.start();
+
+    expect(lines).toEqual([]);
+    store.dispose();
+  });
+
+  it("still logs a file that is there but not a gateway config", async () => {
+    const neolixHome = createHome();
+    writeFileSync(path.join(neolixHome, "gateway.json"), "null");
+    const lines: string[] = [];
+    const capturing = pino({ level: "error" }, { write: (line: string) => lines.push(line) });
+    const store = new GatewayConfigStore({ neolixHome, logger: capturing });
+    await store.start();
+
+    expect(lines.join("")).toContain("Invalid LLM gateway config");
+    store.dispose();
+  });
+
   it("parses providers and groups", async () => {
     const neolixHome = createHome();
     writeFileSync(

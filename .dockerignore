@@ -29,11 +29,9 @@ valknut-report.json
 **/dist
 **/build
 **/.cache
-**/.expo
 **/test-results
 **/*.tsbuildinfo
 artifacts
-packages/app/android
 packages/desktop/release
 plan.*.log
 *.log

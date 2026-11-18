@@ -352,7 +352,9 @@ const RULES: MaskRule[] = [
   {
     kind: "SERIAL",
     pattern:
-      /(?:序列号|序列號|シリアル番号|(?i:seriennummer))[ \t]*[:：=]?[ \t]*["']?([A-Za-z0-9][A-Za-z0-9-]{4,39})/g,
+      // Inline flag groups ((?i:...)) need Node 23+; spell out the case classes so
+      // the daemon still loads on the supported Node 22 runtime.
+      /(?:序列号|序列號|シリアル番号|[Ss][Ee][Rr][Ii][Ee][Nn][Nn][Uu][Mm][Mm][Ee][Rr])[ \t]*[:：=]?[ \t]*["']?([A-Za-z0-9][A-Za-z0-9-]{4,39})/g,
     group: 1,
     validate: serialValue,
   },

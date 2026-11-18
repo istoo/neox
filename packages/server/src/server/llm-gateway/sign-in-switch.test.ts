@@ -9,6 +9,7 @@ import {
   readSignInReturn,
   SignInSwitchScheduler,
   switchSignInWhenSpent,
+  type LookResult,
 } from "./sign-in-switch.js";
 import {
   BACK_SHARE,
@@ -24,9 +25,70 @@ import {
 
 const NOW = Date.UTC(2026, 10, 6, 12, 0, 0);
 
+// Windows briefly refuses a file another program holds open ("Access is
+// denied"): these tests make the next rename or read of one named file fail
+// once, as a reader or scanner does, and check the switch survives it.
+const transient = vi.hoisted(() => ({
+  rename: { destination: "", remaining: 0, code: "EPERM" },
+  read: { path: "", remaining: 0, code: "EBUSY" },
+}));
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  const readFileImpl = actual.readFile as (...args: unknown[]) => Promise<unknown>;
+  return {
+    ...actual,
+    readFile: (async (path: unknown, ...rest: unknown[]) => {
+      if (String(path) === transient.read.path && transient.read.remaining > 0) {
+        transient.read.remaining -= 1;
+        throw Object.assign(new Error("the file is held open"), { code: transient.read.code });
+      }
+      return readFileImpl(path, ...rest);
+    }) as typeof actual.readFile,
+    rename: (async (source: string, destination: string) => {
+      if (destination === transient.rename.destination && transient.rename.remaining > 0) {
+        transient.rename.remaining -= 1;
+        throw Object.assign(new Error("the file is held open"), { code: transient.rename.code });
+      }
+      return actual.rename(source, destination);
+    }) as typeof actual.rename,
+  };
+});
+
+// The retrying helpers steady.ts calls come from `node:fs`'s `promises`, so
+// the same one-shot failures are injected there too.
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  const readFileImpl = actual.promises.readFile as (...args: unknown[]) => Promise<unknown>;
+  return {
+    ...actual,
+    promises: {
+      ...actual.promises,
+      readFile: async (path: unknown, ...rest: unknown[]) => {
+        if (String(path) === transient.read.path && transient.read.remaining > 0) {
+          transient.read.remaining -= 1;
+          throw Object.assign(new Error("the file is held open"), { code: transient.read.code });
+        }
+        return readFileImpl(path, ...rest);
+      },
+      rename: async (source: string, destination: string) => {
+        if (destination === transient.rename.destination && transient.rename.remaining > 0) {
+          transient.rename.remaining -= 1;
+          throw Object.assign(new Error("the file is held open"), { code: transient.rename.code });
+        }
+        return actual.promises.rename(source, destination);
+      },
+    },
+  };
+});
+
 const dirs: string[] = [];
 
 afterEach(async () => {
+  transient.rename.destination = "";
+  transient.rename.remaining = 0;
+  transient.read.path = "";
+  transient.read.remaining = 0;
   await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
@@ -111,6 +173,22 @@ function codexConfig(overrides: Record<string, unknown> = {}): GatewayConfig {
 
 function windows(usedPercent: number, resetAt: number | null = null): SignInWindow[] {
   return [{ usedPercent, resetAt }];
+}
+
+/** One Codex switch where the account it is on is spent and the spare has room. */
+async function switchCodexNow(home: Home) {
+  const config = codexConfig();
+  return switchSignInWhenSpent({
+    agent: "codex",
+    provider: config.providers[0]!,
+    config,
+    gatewayDir: home.gatewayDir,
+    homeDir: home.homeDir,
+    codexHome: home.codexHome,
+    env: {},
+    now: NOW,
+    windowsOf: (_agent, account) => (account.id === "neolix:acct-a" ? windows(99) : windows(10)),
+  });
 }
 
 async function codexAuthRefresh(home: Home): Promise<string> {
@@ -540,10 +618,83 @@ describe("the automatic sign-in switch", () => {
       });
       const look = await scheduler.lookNow("codex");
       expect(look.status).toBe("skipped");
-      scheduler.dispose();
+      await scheduler.dispose();
       expect(await codexAuthRefresh(home)).toBe("r-acct-a");
       expect(await readSignInReturn(home.gatewayDir, "codex")).toBeNull();
     }
+  });
+
+  it("switches when Windows briefly refuses to replace Codex's sign-in", async () => {
+    const home = await tempHome();
+    await writeCodexHome(home, "r-acct-a", "acct-a");
+    await writeCodexPool(home);
+    transient.rename.destination = join(home.codexHome, "auth.json");
+    transient.rename.remaining = 1;
+    expect(await switchCodexNow(home)).toMatchObject({
+      status: "switched",
+      to: "neolix:acct-b",
+    });
+    expect(await codexAuthRefresh(home)).toBe("r-acct-b");
+  });
+
+  it("switches when Windows briefly refuses to read Codex's sign-in", async () => {
+    const home = await tempHome();
+    await writeCodexHome(home, "r-acct-a", "acct-a");
+    await writeCodexPool(home);
+    transient.read.path = join(home.codexHome, "auth.json");
+    transient.read.remaining = 1;
+    expect(await switchCodexNow(home)).toMatchObject({
+      status: "switched",
+      to: "neolix:acct-b",
+    });
+    expect(await codexAuthRefresh(home)).toBe("r-acct-b");
+  });
+
+  it("keeps the return record when Windows briefly refuses to replace it", async () => {
+    const home = await tempHome();
+    await writeCodexHome(home, "r-acct-a", "acct-a");
+    await writeCodexPool(home);
+    transient.rename.destination = join(home.gatewayDir, "sign-in-returns.json");
+    transient.rename.remaining = 1;
+    expect(await switchCodexNow(home)).toMatchObject({ status: "switched" });
+    expect(await readSignInReturn(home.gatewayDir, "codex")).toEqual({
+      back: "neolix:acct-a",
+      to: "neolix:acct-b",
+    });
+  });
+
+  it("puts a sign-in Codex already holds into the pool when Windows refuses its replace", async () => {
+    const home = await tempHome();
+    await writeCodexHome(home, "r-acct-a", "acct-a");
+    // The pool holds only the spare: Codex's own sign-in was made with
+    // `codex login`, outside Neolix, and goes into the pool first.
+    await writeFile(
+      join(home.gatewayDir, "codex-accounts.json"),
+      JSON.stringify([
+        {
+          id: "neolix:acct-b",
+          label: "b@example.com",
+          plan: "plus",
+          accountId: "acct-b",
+          accessToken: "access-acct-b",
+          refreshToken: "r-acct-b",
+          idToken: null,
+          expiresAt: null,
+          addedAt: 1,
+        },
+      ]),
+      "utf8",
+    );
+    transient.rename.destination = join(home.gatewayDir, "codex-accounts.json");
+    transient.rename.remaining = 1;
+    expect(await switchCodexNow(home)).toMatchObject({
+      status: "switched",
+      to: "neolix:acct-b",
+    });
+    const pool = JSON.parse(
+      await readFile(join(home.gatewayDir, "codex-accounts.json"), "utf8"),
+    ) as { id: string }[];
+    expect(pool.map((entry) => entry.id)).toContain("neolix:acct-a");
   });
 
   it("switches on its timer, and again back at the account's reset under order", async () => {
@@ -581,14 +732,21 @@ describe("the automatic sign-in switch", () => {
     });
     scheduler.start();
     try {
+      // Wait for the whole switch, not just Codex's own sign-in: the return
+      // record is written after it, and observing the auth file alone leaves a
+      // window where the record is not on disk yet.
       await vi.waitFor(
         async () => {
           expect(await codexAuthRefresh(home)).toBe("r-acct-b");
+          expect(await readSignInReturn(home.gatewayDir, "codex")).toEqual({
+            back: "neolix:acct-a",
+            to: "neolix:acct-b",
+          });
         },
         { timeout: 5000, interval: 10 },
       );
     } finally {
-      scheduler.dispose();
+      await scheduler.dispose();
     }
     expect(await readSignInReturn(home.gatewayDir, "codex")).toEqual({
       back: "neolix:acct-a",
@@ -680,6 +838,47 @@ describe("the automatic sign-in switch", () => {
       back: false,
     });
     expect(await readFile(home.claudeCredentials, "utf8")).toBe(credentials("b"));
+  });
+
+  it("waits for the look in flight and starts none once disposed", async () => {
+    const home = await tempHome();
+    let started!: () => void;
+    const lookStarted = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    let release!: (result: LookResult) => void;
+    const lookResult = new Promise<LookResult>((resolve) => {
+      release = resolve;
+    });
+    const scheduler = new SignInSwitchScheduler({
+      config: () => ({ providers: [] }) as unknown as GatewayConfig,
+      gatewayDir: home.gatewayDir,
+      logger: { info: () => undefined, warn: () => undefined, debug: () => undefined },
+      homeDir: home.homeDir,
+      codexHome: home.codexHome,
+      env: {},
+      firstLookMs: 1,
+      everyMs: 60_000,
+      windowsOf: () => null,
+    });
+    const look = vi.spyOn(scheduler, "lookNow").mockImplementation(async () => {
+      started();
+      return lookResult;
+    });
+
+    scheduler.start();
+    await lookStarted;
+    const disposing = scheduler.dispose();
+    expect(await Promise.race([disposing.then(() => "settled"), Promise.resolve("pending")])).toBe(
+      "pending",
+    );
+
+    release({ status: "stayed", near: false });
+    await disposing;
+    // Both agents were looked at before dispose resolved; none after it.
+    expect(look).toHaveBeenCalledTimes(2);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(look).toHaveBeenCalledTimes(2);
   });
 
   it("clears the record the user's own switch replaces", async () => {

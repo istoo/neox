@@ -85,14 +85,12 @@ describe("localized tool presentation", () => {
           status: "running",
         }),
       ).toBe("Synara is reading a thread");
-      expect(deriveReadableCommandDisplay("rg Settings ..").target).toBe(
-        "在 父目录 中查找 Settings",
-      );
+      expect(deriveReadableCommandDisplay("rg Settings ..").target).toBe("在父目录中查找 Settings");
       expect(deriveReadableCommandDisplay('rg Settings "current directory"').target).toBe(
         "在 current directory 中查找 Settings",
       );
       expect(deriveReadableCommandDisplay("rg Settings .").target).toBe(
-        "在 当前目录 中查找 Settings",
+        "在当前目录中查找 Settings",
       );
       setLanguagePreference("en");
       expect(deriveReadableCommandDisplay("cat Settings", true).verb).toBe("Reading");

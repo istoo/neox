@@ -5,10 +5,25 @@ import path from "node:path";
 import os from "node:os";
 import { mkdtemp, rm } from "node:fs/promises";
 import { Writable } from "node:stream";
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 
 import { generateLocalPairingOffer } from "../pairing-offer.js";
 import { createTestNeolixDaemon } from "../test-utils/neolix-daemon.js";
+
+const PROCESS_STOP_GRACE_MS = 10_000;
+
+/** Asks the process to stop and resolves once it has exited, forcing it after a grace period. */
+async function stopProcess(proc: ChildProcess): Promise<void> {
+  if (proc.exitCode !== null || proc.signalCode !== null) return;
+  const exited = new Promise<void>((resolve) => proc.once("exit", () => resolve()));
+  proc.kill("SIGTERM");
+  const forced = setTimeout(() => proc.kill("SIGKILL"), PROCESS_STOP_GRACE_MS);
+  try {
+    await exited;
+  } finally {
+    clearTimeout(forced);
+  }
+}
 
 function createCapturingLogger() {
   const lines: string[] = [];
@@ -34,7 +49,8 @@ async function getPairingOfferUrl(args: {
     relayEnabled: args.relayEnabled,
     relayEndpoint: args.relayEndpoint,
     relayPublicEndpoint: args.relayPublicEndpoint,
-    appBaseUrl: args.appBaseUrl,
+    // No default app address ships (a test daemon's is ""), and an offer needs one.
+    appBaseUrl: args.appBaseUrl || "https://app.neox.test",
     includeQr: false,
   });
   if (!pairing.url) {
@@ -128,6 +144,7 @@ describe("ConnectionOfferV2 (daemon E2E)", () => {
       listen: "0.0.0.0",
       logger: logger1,
       relayEnabled: true,
+      relayEndpoint: "relay.example.com:443",
       neolixHomeRoot: tempHomeRoot,
       cleanup: false,
     });
@@ -156,6 +173,7 @@ describe("ConnectionOfferV2 (daemon E2E)", () => {
         listen: "0.0.0.0",
         logger: logger2,
         relayEnabled: true,
+        relayEndpoint: "relay.example.com:443",
         neolixHomeRoot: tempHomeRoot,
         cleanup: false,
       });
@@ -202,7 +220,9 @@ describe("ConnectionOfferV2 (daemon E2E)", () => {
 
     const serverRoot = path.resolve(import.meta.dirname, "../../..");
     const supervisorPath = path.join(serverRoot, "scripts/supervisor-entrypoint.ts");
-    const tsxBin = path.resolve(serverRoot, "../../node_modules/.bin/tsx");
+    // node_modules/.bin/tsx is a POSIX shell script; Windows only has tsx.cmd,
+    // so spawning the bin path fails with ENOENT. Run tsx's Node entry directly.
+    const tsxCli = path.resolve(serverRoot, "../../node_modules/tsx/dist/cli.mjs");
 
     const env = {
       ...process.env,
@@ -215,7 +235,7 @@ describe("ConnectionOfferV2 (daemon E2E)", () => {
     };
 
     const stdoutLines: string[] = [];
-    const proc = spawn(tsxBin, [supervisorPath, "--dev", "--no-relay"], {
+    const proc = spawn(process.execPath, [tsxCli, supervisorPath, "--dev", "--no-relay"], {
       env,
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -263,7 +283,9 @@ describe("ConnectionOfferV2 (daemon E2E)", () => {
         cause: err,
       });
     } finally {
-      proc.kill();
+      // The daemon still writes to its home while it shuts down, so remove the
+      // home only after the process has exited.
+      await stopProcess(proc);
       await rm(tempHome, { recursive: true, force: true });
     }
   }, 30000);

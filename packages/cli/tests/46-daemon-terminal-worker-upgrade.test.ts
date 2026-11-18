@@ -87,11 +87,11 @@ function linkEntries(source: string, target: string, taken: Set<string>): void {
 function createInstallation(name: string, version: string): Installation {
   const dir = join(root, `install-${name}`);
   const modules = join(dir, "node_modules");
-  mkdirSync(join(modules, "@Neox"), { recursive: true });
+  mkdirSync(join(modules, "@neolix"), { recursive: true });
 
   // Real copies: the server (its version marks the installation), the CLI (so it resolves this
   // installation's server), and node-pty (so moving it away breaks only this installation).
-  const serverDir = join(modules, "@Neox", "server");
+  const serverDir = join(modules, "@neolix", "server");
   const serverPackage = JSON.parse(
     readFileSync(join(repoRoot, "packages/server/package.json"), "utf8"),
   ) as Record<string, unknown>;
@@ -105,7 +105,7 @@ function createInstallation(name: string, version: string): Installation {
       recursive: true,
     });
   }
-  const cliDir = join(modules, "@Neox", "cli");
+  const cliDir = join(modules, "@neolix", "cli");
   mkdirSync(cliDir, { recursive: true });
   cpSync(join(repoRoot, "packages/cli/package.json"), join(cliDir, "package.json"));
   cpSync(join(repoRoot, "packages/cli/dist"), join(cliDir, "dist"), { recursive: true });

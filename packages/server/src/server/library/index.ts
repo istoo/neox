@@ -144,6 +144,11 @@ export interface LibraryService {
   warm(): Promise<void>;
   /** Looks for the agents again, after noWslAgents changed. */
   refreshTargets(): Promise<void>;
+  /**
+   * Waits for the library work already queued, then refuses new work. A stopped
+   * daemon must not keep creating `$NEOLIX_HOME/library` after `stop()` returns.
+   */
+  dispose(): Promise<void>;
   /** The daemon's cached CLI versions, for the agents that read as of one. */
   setAgentVersionSource(source: ((agent: string) => Promise<string | null>) | null): void;
   /** The MCP servers ticked for an agent, merged into its launch config. */
@@ -368,6 +373,7 @@ export function createLibraryService(options: LibraryServiceOptions): LibrarySer
     return rows;
   };
   let queue: Promise<unknown> = Promise.resolve();
+  let disposed = false;
   let rtk: RtkStatus | null = null;
   let current: StoredLibrary | null = null;
   let hubProvider: LibraryHubProvider | null = null;
@@ -407,6 +413,9 @@ export function createLibraryService(options: LibraryServiceOptions): LibrarySer
   setLibraryHub(hub);
 
   const withLock = <T>(work: () => Promise<T>): Promise<T> => {
+    if (disposed) {
+      return Promise.reject(new Error("The library service is disposed"));
+    }
     const next = queue.then(work, work);
     queue = next.catch(() => undefined);
     return next;
@@ -739,6 +748,16 @@ export function createLibraryService(options: LibraryServiceOptions): LibrarySer
         targets = null;
         await load();
       }),
+
+    dispose: () => {
+      disposed = true;
+      // Queued work may already be writing; let it finish so `stop()` returns
+      // with no library write left behind.
+      return queue.then(
+        () => undefined,
+        () => undefined,
+      );
+    },
 
     setAgentVersionSource: (source) => {
       agentVersion = source;

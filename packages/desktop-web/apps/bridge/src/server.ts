@@ -5,12 +5,19 @@ import {
   WS_BOOTSTRAP_PATH,
   WS_FEATURE_PATH,
   WS_NEGOTIATE_HTTP_PATH,
+  WS_REMOTE_PATH_PREFIX,
   WsBootstrapRpcGroup,
   WsComputerRpcGroup,
   WsDeviceRpcGroup,
   NeolixLibraryRpcGroup,
   NeolixGatewayRpcGroup,
+  NeolixAgentConnectRpcGroup,
+  NeolixAgentSkillsRpcGroup,
+  NeolixAppSettingsRpcGroup,
+  NeolixProjectIconsRpcGroup,
+  NeolixWorkspaceSetupRpcGroup,
   WsFeatureRpcGroup,
+  WsBrowserAutomationRpcGroup,
   WsNeolixHostRpcGroup,
   WsProjectAgentRpcGroup,
   WsProjectFileRpcGroup,
@@ -35,6 +42,7 @@ import {
   negotiateWsCompatibility,
   parseWsNegotiateSearchParams,
   validateWsFeatureCompatibility,
+  type WsNegotiationOptions,
 } from "./compatibility.ts";
 import { makeProjectFaviconHandler, PROJECT_FAVICON_PATH } from "./favicon.ts";
 import { makeSiteFaviconHandler, SITE_FAVICON_PATH } from "./siteFavicon.ts";
@@ -58,9 +66,15 @@ export const BridgeRpcGroup = WsFeatureRpcGroup.merge(WsDeviceRpcGroup)
   .merge(WsComputerRpcGroup)
   .merge(WsProjectAgentRpcGroup)
   .merge(WsProjectFileRpcGroup)
+  .merge(WsBrowserAutomationRpcGroup)
   .merge(WsNeolixHostRpcGroup)
   .merge(NeolixLibraryRpcGroup)
   .merge(NeolixGatewayRpcGroup)
+  .merge(NeolixAgentConnectRpcGroup)
+  .merge(NeolixAgentSkillsRpcGroup)
+  .merge(NeolixAppSettingsRpcGroup)
+  .merge(NeolixProjectIconsRpcGroup)
+  .merge(NeolixWorkspaceSetupRpcGroup)
   .merge(WsRealtimeVoiceRpcGroup)
   .merge(NeolixManagementRpcGroup);
 
@@ -96,7 +110,28 @@ export interface BridgeServerOptions {
   readonly resolveHostHandlers?: (
     hostId: string,
   ) => { readonly key: string; readonly handlers: Record<string, AnyHandler> } | null;
+  /** What negotiation reports for the controller's own daemon (version, capabilities). */
+  readonly negotiation?: WsNegotiationOptions;
+  /** The same for a connected host, whose daemon version may differ. */
+  readonly resolveHostNegotiation?: (hostId: string) => WsNegotiationOptions | undefined;
 }
+
+/** What the routes need, without where they listen: the daemon mounts them on its own server. */
+export type BridgeRouteOptions = Omit<BridgeServerOptions, "host" | "port"> & {
+  /**
+   * Accept a socket whose Origin names the Host it was requested under. Only the
+   * daemon mount sets this: its own port already rejects non-loopback Host, and
+   * Browser access checks its key and Host first. A standalone bridge has no Host
+   * filter in front of it, so same-origin there would admit DNS rebinding.
+   */
+  readonly hostFilteredUpstream?: boolean;
+};
+
+// A connected host's execution environment mirrors the controller's RPC paths under
+// `/rpc/remote/<hostId>`, since the renderer resolves them against the controller URL.
+const REMOTE_NEGOTIATE_PATH = `${WS_REMOTE_PATH_PREFIX}:hostId${WS_NEGOTIATE_HTTP_PATH}` as const;
+const REMOTE_BOOTSTRAP_PATH = `${WS_REMOTE_PATH_PREFIX}:hostId${WS_BOOTSTRAP_PATH}` as const;
+const REMOTE_FEATURE_PATH = `${WS_REMOTE_PATH_PREFIX}:hostId${WS_FEATURE_PATH}` as const;
 
 /** Loopback-only bridge: any localhost origin may negotiate, nothing else. */
 function isLoopbackOrigin(origin: string | undefined): origin is string {
@@ -109,11 +144,32 @@ function isLoopbackOrigin(origin: string | undefined): origin is string {
   }
 }
 
+/**
+ * The page and its socket are the same origin, so behind a Host filter a socket
+ * accepts the name it was requested under. Without one only loopback origins pass.
+ */
+export function isPageOrigin(
+  request: HttpServerRequest.HttpServerRequest,
+  origin: string | undefined,
+  hostFilteredUpstream: boolean,
+): boolean {
+  if (isLoopbackOrigin(origin)) return true;
+  if (!origin || !hostFilteredUpstream) return false;
+  const host = request.headers.host;
+  if (!host) return false;
+  try {
+    return new URL(origin).host.toLowerCase() === host.toLowerCase();
+  } catch {
+    return false;
+  }
+}
+
 function requestUrl(request: HttpServerRequest.HttpServerRequest): URL | null {
   return HttpServerRequest.toURL(request) ?? null;
 }
 
-export function makeBridgeServerLayer(options: BridgeServerOptions) {
+export function makeBridgeRoutes(options: BridgeRouteOptions) {
+  const hostFilteredUpstream = options.hostFilteredUpstream === true;
   const makeFeatureSocket = (handlers: Record<string, AnyHandler>) => {
     const resolved = withStubs(BridgeRpcGroup, handlers, options.log);
     return RpcServer.toHttpEffectWebsocket(BridgeRpcGroup, {
@@ -156,12 +212,16 @@ export function makeBridgeServerLayer(options: BridgeServerOptions) {
   }).pipe(
     Effect.provide(
       WsBootstrapRpcGroup.toLayer(
-        Effect.succeed(WsBootstrapRpcGroup.of({ [WS_BOOTSTRAP_METHOD]: negotiateWsCompatibility })),
+        Effect.succeed(
+          WsBootstrapRpcGroup.of({
+            [WS_BOOTSTRAP_METHOD]: (input) => negotiateWsCompatibility(input, options.negotiation),
+          }),
+        ),
       ).pipe(Layer.provideMerge(RpcSerialization.layerJson)),
     ),
   );
 
-  const routes = HttpRouter.use((router) =>
+  return HttpRouter.use((router) =>
     Effect.gen(function* () {
       const feature = yield* featureSocket;
       const bootstrap = yield* bootstrapSocket;
@@ -183,7 +243,7 @@ export function makeBridgeServerLayer(options: BridgeServerOptions) {
           if (!("protocolEpoch" in input) || "_tag" in input) {
             return HttpServerResponse.jsonUnsafe(input, { status: 426, headers });
           }
-          return yield* negotiateWsCompatibility(input).pipe(
+          return yield* negotiateWsCompatibility(input, options.negotiation).pipe(
             Effect.map((result) => HttpServerResponse.jsonUnsafe(result, { status: 200, headers })),
             Effect.catch((error) =>
               Effect.succeed(HttpServerResponse.jsonUnsafe(error, { status: 426, headers })),
@@ -244,7 +304,7 @@ export function makeBridgeServerLayer(options: BridgeServerOptions) {
           const url = requestUrl(request);
           if (!url) return HttpServerResponse.text("Bad request", { status: 400 });
           const origin = request.headers.origin;
-          if (origin !== undefined && !isLoopbackOrigin(origin)) {
+          if (origin !== undefined && !isPageOrigin(request, origin, hostFilteredUpstream)) {
             return HttpServerResponse.text("Forbidden", { status: 403 });
           }
           const compatibilityError = validateWsFeatureCompatibility(url.searchParams);
@@ -258,11 +318,10 @@ export function makeBridgeServerLayer(options: BridgeServerOptions) {
         }),
       );
 
-      // A connected host's execution environment. The renderer resolved these paths
-      // against the controller URL, so each path mirrors `/ws` under `/ws/remote/<hostId>`.
+      // A connected host's execution environment, mirrored under its remote prefix.
       yield* router.add(
         "GET",
-        "/ws/remote/:hostId/ws/negotiate",
+        REMOTE_NEGOTIATE_PATH,
         Effect.gen(function* () {
           const params = yield* HttpRouter.params;
           if (!params.hostId || !hasHost(params.hostId)) {
@@ -281,7 +340,10 @@ export function makeBridgeServerLayer(options: BridgeServerOptions) {
           if (!("protocolEpoch" in input) || "_tag" in input) {
             return HttpServerResponse.jsonUnsafe(input, { status: 426, headers });
           }
-          return yield* negotiateWsCompatibility(input).pipe(
+          return yield* negotiateWsCompatibility(
+            input,
+            options.resolveHostNegotiation?.(params.hostId),
+          ).pipe(
             Effect.map((result) => HttpServerResponse.jsonUnsafe(result, { status: 200, headers })),
             Effect.catch((error) =>
               Effect.succeed(HttpServerResponse.jsonUnsafe(error, { status: 426, headers })),
@@ -292,7 +354,7 @@ export function makeBridgeServerLayer(options: BridgeServerOptions) {
 
       yield* router.add(
         "GET",
-        "/ws/remote/:hostId/ws/bootstrap",
+        REMOTE_BOOTSTRAP_PATH,
         Effect.gen(function* () {
           const params = yield* HttpRouter.params;
           if (!params.hostId || !hasHost(params.hostId)) {
@@ -304,14 +366,14 @@ export function makeBridgeServerLayer(options: BridgeServerOptions) {
 
       yield* router.add(
         "GET",
-        "/ws/remote/:hostId/ws",
+        REMOTE_FEATURE_PATH,
         Effect.gen(function* () {
           const params = yield* HttpRouter.params;
           const request = yield* HttpServerRequest.HttpServerRequest;
           const url = requestUrl(request);
           if (!url) return HttpServerResponse.text("Bad request", { status: 400 });
           const origin = request.headers.origin;
-          if (origin !== undefined && !isLoopbackOrigin(origin)) {
+          if (origin !== undefined && !isPageOrigin(request, origin, hostFilteredUpstream)) {
             return HttpServerResponse.text("Forbidden", { status: 403 });
           }
           if (!params.hostId) return HttpServerResponse.text("Not found", { status: 404 });
@@ -357,7 +419,15 @@ export function makeBridgeServerLayer(options: BridgeServerOptions) {
 
       if (options.webDistDir) {
         const webDistDir = options.webDistDir;
-        const reservedPrefixes = ["/api/", "/mcp/", "/ws/", "/attachments/", "/remote-resources/"];
+        // `/ws` is the daemon's own socket when these routes are mounted on the daemon.
+        const reservedPrefixes = [
+          "/api/",
+          "/mcp/",
+          "/rpc/",
+          "/ws/",
+          "/attachments/",
+          "/remote-resources/",
+        ];
         // Catch-all after every API/WebSocket route: exact routes win in the
         // router, and only GET falls back here for the SPA's static files.
         yield* router.add(
@@ -389,8 +459,11 @@ export function makeBridgeServerLayer(options: BridgeServerOptions) {
       }
     }),
   );
+}
 
-  return HttpRouter.serve(routes).pipe(
+/** The routes on a server of their own: the standalone bridge (`main.ts`). */
+export function makeBridgeServerLayer(options: BridgeServerOptions) {
+  return HttpRouter.serve(makeBridgeRoutes(options)).pipe(
     Layer.provide(
       NodeHttpServer.layer(() => http.createServer(), { host: options.host, port: options.port }),
     ),

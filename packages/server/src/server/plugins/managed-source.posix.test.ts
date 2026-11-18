@@ -297,7 +297,9 @@ describe("registry plugin sources", () => {
   it("explains how to choose a revision when --ref is used with a registry id", async () => {
     const home = await mkdtemp(path.join(tmpdir(), "neolix-registry-ref-home-"));
     roots.push(home);
-    const sources = new ManagedPluginSources(home);
+    const sources = new ManagedPluginSources(home, {
+      defaultUrl: "https://registry.example.test",
+    });
     await expect(
       sources.prepareInstall({ source: "fixture/example", ref: "main" }),
     ).rejects.toThrow(

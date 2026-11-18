@@ -125,6 +125,22 @@ export function parseStoredAgentRecord(value: unknown): StoredAgentRecord {
   return STORED_AGENT_SCHEMA.parse(value);
 }
 
+/**
+ * Captured intent must survive the idle snapshot a provider emits while its turn is being
+ * interrupted for shutdown; otherwise graceful restart recovery never fires. Outside
+ * shutdown, an idle or failed agent consumes the intent as before.
+ */
+function resolveSnapshotResumeOnStartup(
+  existing: StoredAgentRecord | null | undefined,
+  agent: ManagedAgent,
+  preserveResumeOnStartup: boolean | undefined,
+): boolean | undefined {
+  if (preserveResumeOnStartup) {
+    return existing?.resumeOnStartup === true;
+  }
+  return existing?.resumeOnStartup && agent.lifecycle !== "idle" && agent.lifecycle !== "error";
+}
+
 export class AgentStorage {
   private cache: Map<string, StoredAgentRecord> = new Map();
   private pathById: Map<string, string> = new Map();
@@ -422,7 +438,12 @@ export class AgentStorage {
 
   async applySnapshot(
     agent: ManagedAgent,
-    options?: { title?: string | null; internal?: boolean },
+    options?: {
+      title?: string | null;
+      internal?: boolean;
+      /** Keep captured restart-recovery intent across a shutdown close. */
+      preserveResumeOnStartup?: boolean;
+    },
   ): Promise<void> {
     await this.load();
     const hasTitleOverride =
@@ -447,8 +468,11 @@ export class AgentStorage {
       }
       // Background is fixed at creation; a runtime opened without it cannot clear it.
       if (existing?.background) record.background = true;
-      record.resumeOnStartup =
-        existing?.resumeOnStartup && agent.lifecycle !== "idle" && agent.lifecycle !== "error";
+      record.resumeOnStartup = resolveSnapshotResumeOnStartup(
+        existing,
+        agent,
+        options?.preserveResumeOnStartup,
+      );
       return record;
     });
   }

@@ -11,6 +11,11 @@ import {
   SavedInboxRecapIdInput,
 } from "./inboxRecaps";
 import { RemoteAgentCall, RemoteAgentResult } from "./remoteAgentGateway";
+import {
+  BrowserAutomationHostRequest,
+  BrowserAutomationHostResponseInput,
+  BrowserAutomationHostSubscribeInput,
+} from "./browserAutomationHost";
 import { RemoteAccessInput, RemoteAccessResult } from "./remotePairing";
 import {
   EditorDebugStartInput,
@@ -40,8 +45,10 @@ import {
   NeolixExternalTranscript,
   NeolixGithubTokenStatus,
   NeolixHostDiagnostics,
+  NeolixHostFeatures,
   NeolixHostRevealResult,
   NeolixHostStatus,
+  NeolixHostUpdateProgress,
   NeolixProviderDiagnostic,
   NeolixRelocateResult,
   NeolixResolvedProvider,
@@ -51,11 +58,18 @@ import {
   NeolixSyncConfig,
   NeolixSyncRemoteVersion,
   NeolixSyncStatus,
+  NeolixSyncUsage,
+  NeolixThirdPartyNotices,
   NeolixWebPage,
   NeolixWebPageMode,
 } from "./neolixHost";
 import { EditorIntelligenceInput, EditorIntelligenceResult } from "./editorIntelligence";
 import * as Gateway from "./neolixGateway";
+import * as AgentConnect from "./neolixAgentConnect";
+import * as WorkspaceSetup from "./neolixWorkspaceSetup";
+import * as AgentSkills from "./neolixAgentSkills";
+import * as AppSettings from "./neolixAppSettings";
+import * as ProjectIcons from "./neolixProjectIcons";
 import * as Rpc from "effect/unstable/rpc/Rpc";
 import * as RpcGroup from "effect/unstable/rpc/RpcGroup";
 
@@ -256,6 +270,8 @@ import { FilesystemBrowseInput, FilesystemBrowseResult } from "./filesystem";
 import {
   GitHubProjectProvisionInput,
   GitHubProjectProvisionProgressEvent,
+  GitHubRepositorySearchInput,
+  GitHubRepositorySearchResult,
 } from "./githubProjectProvisioning";
 import { StudioListThreadOutputsInput, StudioListThreadOutputsResult } from "./studio";
 import {
@@ -278,8 +294,12 @@ import {
   GitHandoffThreadResult,
   GitInitInput,
   GitListBranchesInput,
+  GitListCommitsInput,
   GitListRecentCommitsInput,
+  GitCommitDiffInput,
+  GitCommitDiffResult,
   GitListBranchesResult,
+  GitListCommitsResult,
   GitListRecentCommitsResult,
   GitPreparePullRequestThreadInput,
   GitPreparePullRequestThreadResult,
@@ -319,6 +339,9 @@ import {
   PullRequestDetail,
   PullRequestDetailInput,
   PullRequestDiffResult,
+  PullRequestPipelineInput,
+  PullRequestPipelineResult,
+  PullRequestSetAutoMergeInput,
   PullRequestSetPinnedInput,
   PullRequestSetPinnedResult,
   PullRequestsUnavailableError,
@@ -374,6 +397,7 @@ import * as Library from "./neolixLibrary";
 import * as NeolixPlugins from "./neolixPlugins";
 import * as NeolixSubagents from "./neolixSubagents";
 import * as NeolixWorkspaces from "./neolixWorkspaces";
+import * as NeolixAttention from "./neolixAttention";
 import {
   ProjectCreateEntryInput,
   ProjectCreateLocalFilePreviewGrantInput,
@@ -906,6 +930,15 @@ export const WsProjectsProvisionFromGitHubRpc = Rpc.make(WS_METHODS.projectsProv
   stream: true,
 });
 
+export const WsProjectsSearchGitHubRepositoriesRpc = Rpc.make(
+  WS_METHODS.projectsSearchGitHubRepositories,
+  {
+    payload: GitHubRepositorySearchInput,
+    success: GitHubRepositorySearchResult,
+    error: WsRpcError,
+  },
+);
+
 export const WsStudioListThreadOutputsRpc = Rpc.make(WS_METHODS.studioListThreadOutputs, {
   payload: StudioListThreadOutputsInput,
   success: StudioListThreadOutputsResult,
@@ -1358,6 +1391,12 @@ export const WsPullRequestsDetailRpc = Rpc.make(WS_METHODS.pullRequestsDetail, {
   error: PullRequestsRpcError,
 });
 
+export const WsPullRequestsPipelineRpc = Rpc.make(WS_METHODS.pullRequestsPipeline, {
+  payload: PullRequestPipelineInput,
+  success: PullRequestPipelineResult,
+  error: PullRequestsRpcError,
+});
+
 export const WsPullRequestsDiffRpc = Rpc.make(WS_METHODS.pullRequestsDiff, {
   payload: PullRequestDetailInput,
   success: PullRequestDiffResult,
@@ -1366,6 +1405,12 @@ export const WsPullRequestsDiffRpc = Rpc.make(WS_METHODS.pullRequestsDiff, {
 
 export const WsPullRequestsActionRpc = Rpc.make(WS_METHODS.pullRequestsAction, {
   payload: PullRequestActionInput,
+  success: PullRequestActionResult,
+  error: PullRequestsRpcError,
+});
+
+export const WsPullRequestsSetAutoMergeRpc = Rpc.make(WS_METHODS.pullRequestsSetAutoMerge, {
+  payload: PullRequestSetAutoMergeInput,
   success: PullRequestActionResult,
   error: PullRequestsRpcError,
 });
@@ -1405,6 +1450,18 @@ export const WsGitListBranchesRpc = Rpc.make(WS_METHODS.gitListBranches, {
 export const WsGitListRecentCommitsRpc = Rpc.make(WS_METHODS.gitListRecentCommits, {
   payload: GitListRecentCommitsInput,
   success: GitListRecentCommitsResult,
+  error: WsRpcError,
+});
+
+export const WsGitListCommitsRpc = Rpc.make(WS_METHODS.gitListCommits, {
+  payload: GitListCommitsInput,
+  success: GitListCommitsResult,
+  error: WsRpcError,
+});
+
+export const WsGitCommitDiffRpc = Rpc.make(WS_METHODS.gitCommitDiff, {
+  payload: GitCommitDiffInput,
+  success: GitCommitDiffResult,
   error: WsRpcError,
 });
 
@@ -2520,6 +2577,7 @@ export type WsFeatureRpc =
   | typeof WsProjectsListDevServersRpc
   | typeof WsSubscribeProjectDevServerEventsRpc
   | typeof WsProjectsProvisionFromGitHubRpc
+  | typeof WsProjectsSearchGitHubRepositoriesRpc
   | typeof WsStudioListThreadOutputsRpc
   | typeof WsFilesystemBrowseRpc
   | typeof WsShellOpenInEditorRpc
@@ -2539,14 +2597,18 @@ export type WsFeatureRpc =
   | typeof WsGitHubInboxIssueDetailRpc
   | typeof WsGitHubInboxIssueCommentRpc
   | typeof WsPullRequestsDetailRpc
+  | typeof WsPullRequestsPipelineRpc
   | typeof WsPullRequestsDiffRpc
   | typeof WsPullRequestsActionRpc
+  | typeof WsPullRequestsSetAutoMergeRpc
   | typeof WsPullRequestsCommentRpc
   | typeof WsPullRequestsSetPinnedRpc
   | typeof WsPullRequestsGetAutoFixRpc
   | typeof WsPullRequestsSetAutoFixRpc
   | typeof WsGitListBranchesRpc
   | typeof WsGitListRecentCommitsRpc
+  | typeof WsGitListCommitsRpc
+  | typeof WsGitCommitDiffRpc
   | typeof WsGitCreateWorktreeRpc
   | typeof WsGitCreateDetachedWorktreeRpc
   | typeof WsGitRemoveWorktreeRpc
@@ -2733,6 +2795,7 @@ const wsApplicationRpcGroup = RpcGroup.make(
   WsProjectsListDevServersRpc,
   WsSubscribeProjectDevServerEventsRpc,
   WsProjectsProvisionFromGitHubRpc,
+  WsProjectsSearchGitHubRepositoriesRpc,
   WsStudioListThreadOutputsRpc,
   WsFilesystemBrowseRpc,
   WsShellOpenInEditorRpc,
@@ -2752,14 +2815,18 @@ const wsApplicationRpcGroup = RpcGroup.make(
   WsGitHubInboxIssueDetailRpc,
   WsGitHubInboxIssueCommentRpc,
   WsPullRequestsDetailRpc,
+  WsPullRequestsPipelineRpc,
   WsPullRequestsDiffRpc,
   WsPullRequestsActionRpc,
+  WsPullRequestsSetAutoMergeRpc,
   WsPullRequestsCommentRpc,
   WsPullRequestsSetPinnedRpc,
   WsPullRequestsGetAutoFixRpc,
   WsPullRequestsSetAutoFixRpc,
   WsGitListBranchesRpc,
   WsGitListRecentCommitsRpc,
+  WsGitListCommitsRpc,
+  WsGitCommitDiffRpc,
   WsGitCreateWorktreeRpc,
   WsGitCreateDetachedWorktreeRpc,
   WsGitRemoveWorktreeRpc,
@@ -3413,6 +3480,24 @@ export const NeolixLibraryRpcGroup = RpcGroup.make(
 
 const neolixHostPayload = Schema.Struct({});
 
+export const WsNeolixHostGetFeaturesRpc = Rpc.make(NEOLIX_HOST_WS_METHODS.getFeatures, {
+  payload: neolixHostPayload,
+  success: NeolixHostFeatures,
+  error: WsRpcError,
+});
+
+/**
+ * Re-announces the host's feature flags whenever its `server_info` arrives again. A bridged
+ * host can restart while the bridge's own session survives, so the front end cannot wait for
+ * its socket to reopen before refetching the flags.
+ */
+export const WsNeolixHostSubscribeFeaturesRpc = Rpc.make(NEOLIX_HOST_WS_METHODS.subscribeFeatures, {
+  payload: neolixHostPayload,
+  success: NeolixHostFeatures,
+  error: WsRpcError,
+  stream: true,
+});
+
 export const WsNeolixHostGetConfigRpc = Rpc.make(NEOLIX_HOST_WS_METHODS.getConfig, {
   payload: neolixHostPayload,
   success: Schema.Struct({ config: Schema.Json }),
@@ -3455,6 +3540,20 @@ export const WsNeolixHostUpdateRpc = Rpc.make(NEOLIX_HOST_WS_METHODS.update, {
   }),
   error: WsRpcError,
 });
+
+/**
+ * Forwards the daemon's `daemon.update.progress` events while an update runs, so the
+ * settings panel can name the phase instead of showing a single indefinite "updating".
+ */
+export const WsNeolixHostSubscribeUpdateProgressRpc = Rpc.make(
+  NEOLIX_HOST_WS_METHODS.subscribeUpdateProgress,
+  {
+    payload: neolixHostPayload,
+    success: NeolixHostUpdateProgress,
+    error: WsRpcError,
+    stream: true,
+  },
+);
 
 export const WsNeolixHostGetDiagnosticsRpc = Rpc.make(NEOLIX_HOST_WS_METHODS.getDiagnostics, {
   payload: neolixHostPayload,
@@ -3680,6 +3779,13 @@ export const WsNeolixHostGetSyncStatusRpc = Rpc.make(NEOLIX_HOST_WS_METHODS.getS
   error: WsRpcError,
 });
 
+/** Every computer's shared usage, by day, as the Usage page draws it. */
+export const WsNeolixHostGetSyncUsageRpc = Rpc.make(NEOLIX_HOST_WS_METHODS.getSyncUsage, {
+  payload: neolixHostPayload,
+  success: NeolixSyncUsage,
+  error: WsRpcError,
+});
+
 export const WsNeolixHostListSyncRemoteRpc = Rpc.make(NEOLIX_HOST_WS_METHODS.listSyncRemote, {
   payload: neolixHostPayload,
   success: Schema.Struct({
@@ -3823,6 +3929,15 @@ export const WsNeolixHostSetWebPageRpc = Rpc.make(NEOLIX_HOST_WS_METHODS.setWebP
   error: WsRpcError,
 });
 
+export const WsNeolixHostGetThirdPartyNoticesRpc = Rpc.make(
+  NEOLIX_HOST_WS_METHODS.getThirdPartyNotices,
+  {
+    payload: neolixHostPayload,
+    success: NeolixThirdPartyNotices,
+    error: WsRpcError,
+  },
+);
+
 export const WsNeolixHostGetLibraryGithubTokenRpc = Rpc.make(
   NEOLIX_HOST_WS_METHODS.getLibraryGithubToken,
   {
@@ -3842,12 +3957,15 @@ export const WsNeolixHostSetLibraryGithubTokenRpc = Rpc.make(
 );
 
 export const WsNeolixHostRpcGroup = RpcGroup.make(
+  WsNeolixHostGetFeaturesRpc,
+  WsNeolixHostSubscribeFeaturesRpc,
   WsNeolixHostGetConfigRpc,
   WsNeolixHostPatchConfigRpc,
   WsNeolixHostGetStatusRpc,
   WsNeolixHostListSessionTerminalsRpc,
   WsNeolixHostRestartRpc,
   WsNeolixHostUpdateRpc,
+  WsNeolixHostSubscribeUpdateProgressRpc,
   WsNeolixHostGetDiagnosticsRpc,
   WsNeolixHostGetProviderDiagnosticRpc,
   WsNeolixHostRevealPathRpc,
@@ -3872,6 +3990,7 @@ export const WsNeolixHostRpcGroup = RpcGroup.make(
   WsNeolixHostGetSyncConfigRpc,
   WsNeolixHostSetSyncConfigRpc,
   WsNeolixHostGetSyncStatusRpc,
+  WsNeolixHostGetSyncUsageRpc,
   WsNeolixHostListSyncRemoteRpc,
   WsNeolixHostRunSyncRpc,
   WsNeolixHostRestoreSyncRpc,
@@ -3890,6 +4009,7 @@ export const WsNeolixHostRpcGroup = RpcGroup.make(
   WsNeolixHostRevealBackupsRpc,
   WsNeolixHostGetWebPageRpc,
   WsNeolixHostSetWebPageRpc,
+  WsNeolixHostGetThirdPartyNoticesRpc,
   WsNeolixHostGetLibraryGithubTokenRpc,
   WsNeolixHostSetLibraryGithubTokenRpc,
 );
@@ -4017,6 +4137,27 @@ export const WsNeolixSubagentsTimelineRpc = Rpc.make(WS_METHODS.neolixSubagentsT
   error: WsRpcError,
 });
 
+export const WsNeolixSubagentsDetachRpc = Rpc.make(WS_METHODS.neolixSubagentsDetach, {
+  payload: NeolixSubagents.NeolixSubagentDetachInput,
+  success: NeolixSubagents.NeolixSubagentDetachResult,
+  error: WsRpcError,
+});
+
+export const WsNeolixAttentionClearAgentRpc = Rpc.make(WS_METHODS.neolixAttentionClearAgent, {
+  payload: NeolixAttention.NeolixAgentAttentionClearInput,
+  success: NeolixAttention.NeolixAttentionClearResult,
+  error: WsRpcError,
+});
+
+export const WsNeolixAttentionClearWorkspaceRpc = Rpc.make(
+  WS_METHODS.neolixAttentionClearWorkspace,
+  {
+    payload: NeolixAttention.NeolixWorkspaceAttentionClearInput,
+    success: NeolixAttention.NeolixAttentionClearResult,
+    error: WsRpcError,
+  },
+);
+
 export const WsNeolixWorkspacesListRpc = Rpc.make(WS_METHODS.neolixWorkspacesList, {
   payload: NeolixWorkspaces.NeolixWorkspacesListInput,
   success: NeolixWorkspaces.NeolixWorkspacesListResult,
@@ -4122,6 +4263,9 @@ export const NeolixManagementRpcGroup = RpcGroup.make(
   WsNeolixProvidersRunInstallRpc,
   WsNeolixSubagentsListRpc,
   WsNeolixSubagentsTimelineRpc,
+  WsNeolixSubagentsDetachRpc,
+  WsNeolixAttentionClearAgentRpc,
+  WsNeolixAttentionClearWorkspaceRpc,
   WsNeolixWorkspacesListRpc,
   WsNeolixWorkspacesLabelsRpc,
   WsNeolixWorkspacesSetPinnedRpc,
@@ -4221,6 +4365,19 @@ export const WsNeolixGatewayArchiveRpc = Rpc.make(Gateway.NEOLIX_GATEWAY_WS_METH
   payload: Gateway.GatewayArchiveInput,
   ...gatewayJsonSuccess,
 });
+
+export const WsNeolixGatewayPromptTextRpc = Rpc.make(Gateway.NEOLIX_GATEWAY_WS_METHODS.promptText, {
+  payload: Gateway.GatewayPromptTextInput,
+  ...gatewayJsonSuccess,
+});
+
+export const WsNeolixGatewayPromptReplyRpc = Rpc.make(
+  Gateway.NEOLIX_GATEWAY_WS_METHODS.promptReply,
+  {
+    payload: Gateway.GatewayReplyInput,
+    ...gatewayJsonSuccess,
+  },
+);
 
 export const WsNeolixGatewayRouteEventsRpc = Rpc.make(
   Gateway.NEOLIX_GATEWAY_WS_METHODS.getRouteEvents,
@@ -4616,6 +4773,8 @@ export const NeolixGatewayRpcGroup = RpcGroup.make(
   WsNeolixGatewayRoutingHistoryRpc,
   WsNeolixGatewayTraceRpc,
   WsNeolixGatewayArchiveRpc,
+  WsNeolixGatewayPromptTextRpc,
+  WsNeolixGatewayPromptReplyRpc,
   WsNeolixGatewayRouteEventsRpc,
   WsNeolixGatewayPricingRpc,
   WsNeolixGatewayProviderModelsRpc,
@@ -4668,6 +4827,269 @@ export const NeolixGatewayRpcGroup = RpcGroup.make(
   WsNeolixGatewaySignInStatusRpc,
   WsNeolixGatewaySignInCancelRpc,
   WsNeolixGatewaySignInCallbackRpc,
+);
+
+// ── Agent Connect ──────────────────────────────────────────────────────────
+// Settings › Agents › Agent Connect. Each method forwards to the daemon's
+// `agent.connect.*` request; every write answers with the new snapshot, so the
+// web reads that instead of subscribing to changes.
+
+export const WsNeolixAgentConnectGetRpc = Rpc.make(
+  AgentConnect.NEOLIX_AGENT_CONNECT_WS_METHODS.get,
+  {
+    payload: AgentConnect.AgentConnectEmptyInput,
+    success: AgentConnect.AgentConnectResult,
+    error: WsRpcError,
+  },
+);
+
+export const WsNeolixAgentConnectSetRpc = Rpc.make(
+  AgentConnect.NEOLIX_AGENT_CONNECT_WS_METHODS.set,
+  {
+    payload: AgentConnect.AgentConnectSetInput,
+    success: AgentConnect.AgentConnectResult,
+    error: WsRpcError,
+  },
+);
+
+export const WsNeolixAgentConnectProfileListRpc = Rpc.make(
+  AgentConnect.NEOLIX_AGENT_CONNECT_WS_METHODS.profileList,
+  {
+    payload: AgentConnect.AgentConnectEmptyInput,
+    success: AgentConnect.AgentConnectResult,
+    error: WsRpcError,
+  },
+);
+
+export const WsNeolixAgentConnectProfileSaveRpc = Rpc.make(
+  AgentConnect.NEOLIX_AGENT_CONNECT_WS_METHODS.profileSave,
+  {
+    payload: AgentConnect.AgentConnectNameInput,
+    success: AgentConnect.AgentConnectResult,
+    error: WsRpcError,
+  },
+);
+
+export const WsNeolixAgentConnectProfileApplyRpc = Rpc.make(
+  AgentConnect.NEOLIX_AGENT_CONNECT_WS_METHODS.profileApply,
+  {
+    payload: AgentConnect.AgentConnectNameInput,
+    success: AgentConnect.AgentConnectResult,
+    error: WsRpcError,
+  },
+);
+
+export const WsNeolixAgentConnectProfileDeleteRpc = Rpc.make(
+  AgentConnect.NEOLIX_AGENT_CONNECT_WS_METHODS.profileDelete,
+  {
+    payload: AgentConnect.AgentConnectNameInput,
+    success: AgentConnect.AgentConnectResult,
+    error: WsRpcError,
+  },
+);
+
+export const WsNeolixAgentConnectProfileRenameRpc = Rpc.make(
+  AgentConnect.NEOLIX_AGENT_CONNECT_WS_METHODS.profileRename,
+  {
+    payload: AgentConnect.AgentConnectRenameInput,
+    success: AgentConnect.AgentConnectResult,
+    error: WsRpcError,
+  },
+);
+
+export const WsNeolixAgentConnectLayoutSetRpc = Rpc.make(
+  AgentConnect.NEOLIX_AGENT_CONNECT_WS_METHODS.layoutSet,
+  {
+    payload: AgentConnect.AgentConnectLayoutInput,
+    success: AgentConnect.AgentConnectResult,
+    error: WsRpcError,
+  },
+);
+
+export const WsNeolixAgentConnectModelsSetRpc = Rpc.make(
+  AgentConnect.NEOLIX_AGENT_CONNECT_WS_METHODS.modelsSet,
+  {
+    payload: AgentConnect.AgentConnectModelsInput,
+    success: AgentConnect.AgentConnectResult,
+    error: WsRpcError,
+  },
+);
+
+export const WsNeolixAgentConnectShellSetRpc = Rpc.make(
+  AgentConnect.NEOLIX_AGENT_CONNECT_WS_METHODS.shellSet,
+  {
+    payload: AgentConnect.AgentConnectShellInput,
+    success: AgentConnect.AgentConnectResult,
+    error: WsRpcError,
+  },
+);
+
+export const WsNeolixAgentConnectStaleRestartRpc = Rpc.make(
+  AgentConnect.NEOLIX_AGENT_CONNECT_WS_METHODS.staleRestart,
+  {
+    payload: AgentConnect.AgentConnectStaleRestartInput,
+    success: AgentConnect.AgentConnectResult,
+    error: WsRpcError,
+  },
+);
+
+export const NeolixAgentConnectRpcGroup = RpcGroup.make(
+  WsNeolixAgentConnectGetRpc,
+  WsNeolixAgentConnectSetRpc,
+  WsNeolixAgentConnectProfileListRpc,
+  WsNeolixAgentConnectProfileSaveRpc,
+  WsNeolixAgentConnectProfileApplyRpc,
+  WsNeolixAgentConnectProfileDeleteRpc,
+  WsNeolixAgentConnectProfileRenameRpc,
+  WsNeolixAgentConnectLayoutSetRpc,
+  WsNeolixAgentConnectModelsSetRpc,
+  WsNeolixAgentConnectShellSetRpc,
+  WsNeolixAgentConnectStaleRestartRpc,
+);
+
+// ── Bundled (orchestration) skills ─────────────────────────────────────────
+// Settings › Host. Each method forwards to the daemon's `agent.skills.*`
+// request; every write answers with the resulting status, so the web replaces
+// its cache instead of re-reading.
+
+export const WsNeolixAgentSkillsGetRpc = Rpc.make(AgentSkills.NEOLIX_AGENT_SKILLS_WS_METHODS.get, {
+  payload: AgentSkills.AgentSkillsEmptyInput,
+  success: AgentSkills.AgentSkillsStatus,
+  error: WsRpcError,
+});
+
+export const WsNeolixAgentSkillsReconcileRpc = Rpc.make(
+  AgentSkills.NEOLIX_AGENT_SKILLS_WS_METHODS.reconcile,
+  {
+    payload: AgentSkills.AgentSkillsEmptyInput,
+    success: AgentSkills.AgentSkillsStatus,
+    error: WsRpcError,
+  },
+);
+
+export const WsNeolixAgentSkillsUninstallRpc = Rpc.make(
+  AgentSkills.NEOLIX_AGENT_SKILLS_WS_METHODS.uninstall,
+  {
+    payload: AgentSkills.AgentSkillsEmptyInput,
+    success: AgentSkills.AgentSkillsStatus,
+    error: WsRpcError,
+  },
+);
+
+export const WsNeolixAgentSkillsSaveSelectionRpc = Rpc.make(
+  AgentSkills.NEOLIX_AGENT_SKILLS_WS_METHODS.saveSelection,
+  {
+    payload: AgentSkills.AgentSkillsSaveInput,
+    success: AgentSkills.AgentSkillsSaveResult,
+    error: WsRpcError,
+  },
+);
+
+export const NeolixAgentSkillsRpcGroup = RpcGroup.make(
+  WsNeolixAgentSkillsGetRpc,
+  WsNeolixAgentSkillsReconcileRpc,
+  WsNeolixAgentSkillsUninstallRpc,
+  WsNeolixAgentSkillsSaveSelectionRpc,
+);
+
+// ── Worktree setup observation ─────────────────────────────────────────────
+// One stream per workspace: the bridge subscribes to the daemon's owned setup
+// subscription and republishes each snapshot. `run` restarts setup (and, on a
+// blocked workspace, clears the automation block first).
+
+export const WsNeolixWorkspaceSetupSubscribeRpc = Rpc.make(
+  WS_METHODS.neolixWorkspaceSetupSubscribe,
+  {
+    payload: WorkspaceSetup.WorkspaceSetupSubscribeInput,
+    success: WorkspaceSetup.WorkspaceSetupEvent,
+    error: WsRpcError,
+    stream: true,
+  },
+);
+
+export const WsNeolixWorkspaceSetupRunRpc = Rpc.make(WS_METHODS.neolixWorkspaceSetupRun, {
+  payload: WorkspaceSetup.WorkspaceSetupRunInput,
+  success: WorkspaceSetup.WorkspaceSetupRunResult,
+  error: WsRpcError,
+});
+
+export const NeolixWorkspaceSetupRpcGroup = RpcGroup.make(
+  WsNeolixWorkspaceSetupSubscribeRpc,
+  WsNeolixWorkspaceSetupRunRpc,
+);
+
+// ── Project icons ──────────────────────────────────────────────────────────
+// The daemon owns automatic discovery and the custom upload. `request` is the
+// pre-custom-icon lookup for older hosts; `get` also reports whether the host
+// accepts uploads, so the edit sheet can hide the field instead of failing.
+
+export const WsNeolixProjectIconsGetRpc = Rpc.make(
+  ProjectIcons.NEOLIX_PROJECT_ICON_WS_METHODS.get,
+  {
+    payload: ProjectIcons.ProjectIconGetInput,
+    success: ProjectIcons.ProjectIconGetResult,
+    error: WsRpcError,
+  },
+);
+
+export const WsNeolixProjectIconsRequestRpc = Rpc.make(
+  ProjectIcons.NEOLIX_PROJECT_ICON_WS_METHODS.request,
+  {
+    payload: ProjectIcons.ProjectIconRequestInput,
+    success: ProjectIcons.ProjectIconRequestResult,
+    error: WsRpcError,
+  },
+);
+
+export const WsNeolixProjectIconsSetRpc = Rpc.make(
+  ProjectIcons.NEOLIX_PROJECT_ICON_WS_METHODS.set,
+  {
+    payload: ProjectIcons.ProjectIconSetInput,
+    success: ProjectIcons.ProjectIconSetResult,
+    error: WsRpcError,
+  },
+);
+
+export const NeolixProjectIconsRpcGroup = RpcGroup.make(
+  WsNeolixProjectIconsGetRpc,
+  WsNeolixProjectIconsRequestRpc,
+  WsNeolixProjectIconsSetRpc,
+);
+
+// ── App settings sync ──────────────────────────────────────────────────────
+// The daemon keeps the app's settings where other computers can reach them.
+// `get` also reports the keys the CLI patched while the app was closed;
+// `subscribe` pushes edits made elsewhere so the app applies them live.
+
+export const WsNeolixAppSettingsGetRpc = Rpc.make(AppSettings.NEOLIX_APP_SETTINGS_WS_METHODS.get, {
+  payload: Schema.Struct({}),
+  success: AppSettings.AppSettingsGetResult,
+  error: WsRpcError,
+});
+
+export const WsNeolixAppSettingsExportRpc = Rpc.make(
+  AppSettings.NEOLIX_APP_SETTINGS_WS_METHODS.export,
+  {
+    payload: AppSettings.AppSettingsExportInput,
+    success: AppSettings.AppSettingsExportResult,
+    error: WsRpcError,
+  },
+);
+
+export const WsNeolixAppSettingsSubscribeRpc = Rpc.make(
+  AppSettings.NEOLIX_APP_SETTINGS_WS_METHODS.subscribe,
+  {
+    payload: Schema.Struct({}),
+    success: AppSettings.AppSettingsApplyEvent,
+    error: WsRpcError,
+    stream: true,
+  },
+);
+
+export const NeolixAppSettingsRpcGroup = RpcGroup.make(
+  WsNeolixAppSettingsGetRpc,
+  WsNeolixAppSettingsExportRpc,
+  WsNeolixAppSettingsSubscribeRpc,
 );
 
 // ── Realtime voice ─────────────────────────────────────────────────────────
@@ -4733,4 +5155,28 @@ export const WsProjectFileRpcGroup = RpcGroup.make(
   WsProjectsDuplicateEntryRpc,
   WsProjectsDeleteEntryRpc,
   WsProjectsDownloadFileRpc,
+);
+
+// ── Browser automation host ────────────────────────────────────────────────
+// The bridge is the daemon's browser host, but the webviews live in the renderer. A page
+// holds the subscribe stream open while it can execute; the bridge registers the daemon
+// host only while at least one such stream is connected. Results come back unary because
+// the stream is server→client only.
+
+export const WsBrowserAutomationSubscribeRpc = Rpc.make(WS_METHODS.browserAutomationSubscribe, {
+  payload: BrowserAutomationHostSubscribeInput,
+  success: BrowserAutomationHostRequest,
+  error: WsRpcError,
+  stream: true,
+});
+
+export const WsBrowserAutomationRespondRpc = Rpc.make(WS_METHODS.browserAutomationRespond, {
+  payload: BrowserAutomationHostResponseInput,
+  success: Schema.Boolean,
+  error: WsRpcError,
+});
+
+export const WsBrowserAutomationRpcGroup = RpcGroup.make(
+  WsBrowserAutomationSubscribeRpc,
+  WsBrowserAutomationRespondRpc,
 );

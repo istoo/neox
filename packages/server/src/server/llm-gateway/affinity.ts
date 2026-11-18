@@ -30,6 +30,9 @@ export class AffinityStore {
   private readonly logger: Logger;
   private timer: NodeJS.Timeout | null = null;
   private pending: Map<string, string> | null = null;
+  private disposed = false;
+  /** The last save written or in flight; `dispose()` waits for it. */
+  private flushing: Promise<void> = Promise.resolve();
   /** Each binding's own time, so an unrelated save does not refresh it. */
   private saved = new Map<string, { value: string; at: number }>();
 
@@ -57,6 +60,9 @@ export class AffinityStore {
   }
 
   public scheduleSave(bindings: ReadonlyMap<string, string>): void {
+    if (this.disposed) {
+      return;
+    }
     this.pending = new Map(bindings);
     if (this.timer !== null) {
       return;
@@ -66,22 +72,27 @@ export class AffinityStore {
       const snapshot = this.pending;
       this.pending = null;
       if (snapshot !== null) {
-        void this.flush(snapshot);
+        this.flushing = this.flushing.then(() => this.flush(snapshot));
       }
     }, SAVE_DEBOUNCE_MS);
     this.timer.unref();
   }
 
-  public dispose(): void {
-    if (this.timer !== null) {
-      clearTimeout(this.timer);
-      this.timer = null;
-    }
-    if (this.pending !== null) {
+  /** Waits for the save in flight, then refuses new ones. */
+  public async dispose(): Promise<void> {
+    if (!this.disposed) {
+      this.disposed = true;
+      if (this.timer !== null) {
+        clearTimeout(this.timer);
+        this.timer = null;
+      }
       const snapshot = this.pending;
       this.pending = null;
-      void this.flush(snapshot);
+      if (snapshot !== null) {
+        this.flushing = this.flushing.then(() => this.flush(snapshot));
+      }
     }
+    await this.flushing;
   }
 
   private async flush(bindings: ReadonlyMap<string, string>): Promise<void> {

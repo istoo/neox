@@ -555,9 +555,10 @@ interface CliInstallStatus {
 
 /**
  * Installs the `neolix` command into the user's PATH. The shell owns the shim;
- * a plain browser has nothing to install, so this section renders nothing there.
+ * a plain browser has nothing to install, so the row renders nothing there.
+ * About and Desktop › Developer tools show the same row.
  */
-export function DesktopCliSettingsSection({ active }: { readonly active: boolean }) {
+export function DesktopCommandLineSettingsRow({ active }: { readonly active: boolean }) {
   const { t } = useTranslation();
   const available = desktopShellAvailable();
   const [status, setStatus] = useState<CliInstallStatus | null>(null);
@@ -603,33 +604,41 @@ export function DesktopCliSettingsSection({ active }: { readonly active: boolean
   };
 
   return (
-    <SettingsSection title={t("settings:desktop_developerTools")}>
-      <SettingsRow
-        id="setting-command-line-tool"
-        title={t("settings:desktop_cli")}
-        description={t("settings:desktop_cliDescription")}
-        status={
-          status === null
+    <SettingsRow
+      id="setting-command-line-tool"
+      title={t("settings:desktop_cli")}
+      description={t("settings:desktop_cliDescription")}
+      status={
+        status === null
+          ? t("settings:host_loading")
+          : status.installed
+            ? t("settings:desktop_cliInstalledStatus")
+            : t("settings:desktop_cliNotInstalled")
+      }
+      control={
+        <Button
+          size="xs"
+          variant="outline"
+          disabled={busy || status === null}
+          onClick={() => void run(status?.installed ? "uninstall_cli" : "install_cli")}
+        >
+          {busy
             ? t("settings:host_loading")
-            : status.installed
-              ? t("settings:desktop_cliInstalledStatus")
-              : t("settings:desktop_cliNotInstalled")
-        }
-        control={
-          <Button
-            size="xs"
-            variant="outline"
-            disabled={busy || status === null}
-            onClick={() => void run(status?.installed ? "uninstall_cli" : "install_cli")}
-          >
-            {busy
-              ? t("settings:host_loading")
-              : status?.installed
-                ? t("settings:desktop_uninstall")
-                : t("settings:desktop_install")}
-          </Button>
-        }
-      />
+            : status?.installed
+              ? t("settings:desktop_uninstall")
+              : t("settings:desktop_install")}
+        </Button>
+      }
+    />
+  );
+}
+
+export function DesktopCliSettingsSection({ active }: { readonly active: boolean }) {
+  const { t } = useTranslation();
+  if (!active || !desktopShellAvailable()) return null;
+  return (
+    <SettingsSection title={t("settings:desktop_developerTools")}>
+      <DesktopCommandLineSettingsRow active={active} />
     </SettingsSection>
   );
 }

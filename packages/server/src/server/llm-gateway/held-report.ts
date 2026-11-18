@@ -159,13 +159,13 @@ export function revealCommand(
   if (platform === "darwin") {
     return {
       command: "open",
-      args: file === undefined ? [folder] : ["-R", path.join(folder, file)],
+      args: file === undefined ? [folder] : ["-R", path.posix.join(folder, file)],
     };
   }
   if (platform === "win32") {
     return {
       command: "explorer",
-      args: file === undefined ? [folder] : [`/select,${path.join(folder, file)}`],
+      args: file === undefined ? [folder] : [`/select,${path.win32.join(folder, file)}`],
     };
   }
   // Most Linux file managers open the folder; selecting one file is not

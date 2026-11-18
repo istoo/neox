@@ -3,6 +3,7 @@ import { playwright } from "@vitest/browser-playwright";
 import { defineConfig, mergeConfig } from "vitest/config";
 
 import viteConfig from "./vite.config";
+import { mynaPluginWebHarness } from "./test/mynaPluginWebHarness";
 
 const srcPath = fileURLToPath(new URL("./src", import.meta.url));
 
@@ -18,6 +19,8 @@ export default mergeConfig(
         "~": srcPath,
       },
     },
+    // Serves the converted myna fixture page the way the bridge does: same origin, same CSP.
+    plugins: [mynaPluginWebHarness()],
     test: {
       include: [
         "src/components/**/*.browser.tsx",

@@ -1,106 +1,142 @@
 import { rememberVerifiedController } from "./controllerRecovery";
 import {
+  WS_FEATURE_PATH,
   WS_METHODS,
   RemoteConnectionUnavailable,
   type AccountStatus,
   type ExecutionEnvironmentDescriptor,
   type HostConnection,
   type ListHostConnectionsResponse,
+  type RemoteExecutionScope,
 } from "@synara/contracts";
 import { Schema } from "effect";
+import {
+  EnvironmentConnections,
+  type EnvironmentConnectionTarget,
+  type EnvironmentLease,
+} from "@synara/client-runtime/environmentConnections";
 import { WsTransport, rawSocketUrl } from "../../wsTransport";
 import { readActiveHost } from "./activeHost";
 import { readWorkspaceFrame } from "./workspaceFrame";
 import { initializeExecutionContext } from "./executionContext";
 
-let clients: { controller: WsTransport; execution: WsTransport } | undefined;
+let connections: EnvironmentConnections | undefined;
 let generationChanged: (() => void) | undefined;
 let unregisterConnectionRecovery: (() => void) | undefined;
 let bootstrapLifetime: AbortController | undefined;
+const openedDescriptors = new Map<string, ExecutionEnvironmentDescriptor>();
+
 export function setExecutionGenerationHandler(handler: () => void): void {
   generationChanged = handler;
 }
-export function getConnectionClients(): { controller: WsTransport; execution: WsTransport } {
-  if (!clients) {
-    const local = new WsTransport(undefined, {
-      onGenerationChanged: () => {
-        if (clients?.execution === local) generationChanged?.();
-      },
-    });
-    clients = { controller: local, execution: local };
-  }
-  return clients;
+
+function ensureConnections(): EnvironmentConnections {
+  if (connections) return connections;
+  let created!: EnvironmentConnections;
+  created = new EnvironmentConnections({
+    createController: () => {
+      let local!: WsTransport;
+      local = new WsTransport(undefined, {
+        onGenerationChanged: () => {
+          if (created.execution() === local) generationChanged?.();
+        },
+      });
+      return local;
+    },
+    connectEnvironment: (target) => openHostConnection(target),
+  });
+  connections = created;
+  return created;
 }
-export async function bootstrapExecutionContext(): Promise<void> {
-  const current = getConnectionClients();
-  const local = await current.controller.request<ExecutionEnvironmentDescriptor>(
-    WS_METHODS.serverGetEnvironment,
-  );
-  rememberVerifiedController(local);
-  const selected = readActiveHost();
-  if (!selected) {
-    initializeExecutionContext({ controller: local, execution: local, remote: null });
-    return;
-  }
-  const selectedScope = selected.executionScope;
-  if (!selectedScope)
-    throw new Error(
-      "Choose this host again from local Connections to verify its account and identity.",
-    );
-  const lifetime = new AbortController();
-  bootstrapLifetime = lifetime;
-  try {
-    let execution: WsTransport | undefined;
-    let recoveryVersion = 0;
-    let resumeBootstrap: (() => void) | undefined;
+
+export function getConnectionClients(): { controller: WsTransport; execution: WsTransport } {
+  const current = ensureConnections();
+  return { controller: current.controller(), execution: current.execution() };
+}
+
+/** The channel for one environment, when this frame has it open. */
+export function forEnvironment(environmentId: string): WsTransport | undefined {
+  return ensureConnections().forEnvironment(environmentId);
+}
+
+/**
+ * Opens or reuses a host channel for a reader that is not the selected
+ * execution (History). The lease only closes the socket this frame opened.
+ */
+export function acquireEnvironment(input: {
+  readonly hostId: string;
+  readonly executionScope: RemoteExecutionScope;
+  readonly signal?: AbortSignal | undefined;
+}): Promise<EnvironmentLease> {
+  return ensureConnections().acquire(input);
+}
+
+/**
+ * Opens the existing routed channel for one host: the controller authorizes a
+ * `hostsConnect`, and the returned `wsPath` (`/rpc/remote/<hostId>`) carries the
+ * feature socket. Titles and account checks stay with the caller's frame.
+ */
+async function openHostConnection(target: EnvironmentConnectionTarget): Promise<WsTransport> {
+  const controller = ensureConnections().controller();
+  const signal = target.signal;
+  const ownsBootstrapRecovery = signal !== undefined && bootstrapLifetime?.signal === signal;
+
+  let execution: WsTransport | undefined;
+  let recoveryVersion = 0;
+  let resumeBootstrap: (() => void) | undefined;
+  if (ownsBootstrapRecovery) {
     unregisterConnectionRecovery = readWorkspaceFrame()?.registerConnectionRecovery?.({
       resume: (options) => {
-        if (lifetime.signal.aborted) return;
+        if (signal.aborted) return;
         recoveryVersion++;
         resumeBootstrap?.();
         execution?.resumeRemoteConnection(options);
       },
       dispose: () => {
-        if (bootstrapLifetime === lifetime) void disposeConnectionClients();
+        // A retired bootstrap must not tear down a newer one.
+        if (bootstrapLifetime?.signal === signal) void disposeConnectionClients();
       },
     });
+  }
 
+  try {
     let connection: HostConnection;
     for (;;) {
       const attemptedRecoveryVersion = recoveryVersion;
       try {
-        connection = await current.controller.request<HostConnection>(
+        connection = await controller.request<HostConnection>(
           WS_METHODS.hostsConnect,
-          { hostId: selected.hostId },
-          { timeoutMs: 60_000, signal: lifetime.signal },
+          { hostId: target.hostId },
+          { timeoutMs: 60_000, ...(signal ? { signal } : {}) },
         );
         break;
       } catch (error) {
-        lifetime.signal.throwIfAborted();
+        signal?.throwIfAborted();
         if (attemptedRecoveryVersion !== recoveryVersion) continue;
         // RPC errors can contain provider text. Only authoritative controller state
         // may park this frame while its existing retry controls recover the same host.
         let response: ListHostConnectionsResponse;
         try {
-          response = await current.controller.request<ListHostConnectionsResponse>(
+          response = await controller.request<ListHostConnectionsResponse>(
             WS_METHODS.hostsListConnections,
             undefined,
-            { signal: lifetime.signal },
+            { ...(signal ? { signal } : {}) },
           );
         } catch {
-          lifetime.signal.throwIfAborted();
+          signal?.throwIfAborted();
           throw error;
         }
-        lifetime.signal.throwIfAborted();
+        signal?.throwIfAborted();
         if (attemptedRecoveryVersion !== recoveryVersion) continue;
+        const scope = target.executionScope;
+        // The scope is the full remote identity; only the directory lookup below uses it.
         const desired = response.desiredHosts?.find(
-          (host) =>
-            host.hostId === selected.hostId && host.environmentId === selectedScope.environmentId,
+          (host) => host.hostId === target.hostId && host.environmentId === scope.environmentId,
         );
         const connected = response.connections.find(
           (host) =>
-            host.hostId === selected.hostId &&
-            JSON.stringify(host.executionScope) === JSON.stringify(selectedScope),
+            host.hostId === target.hostId &&
+            JSON.stringify(host.executionScope) === JSON.stringify(scope),
         );
         if (
           !Schema.is(RemoteConnectionUnavailable)({
@@ -111,48 +147,45 @@ export async function bootstrapExecutionContext(): Promise<void> {
           throw error;
         let account: AccountStatus;
         try {
-          account = await current.controller.request<AccountStatus>(
-            WS_METHODS.accountStatus,
-            undefined,
-            { signal: lifetime.signal },
-          );
+          account = await controller.request<AccountStatus>(WS_METHODS.accountStatus, undefined, {
+            ...(signal ? { signal } : {}),
+          });
         } catch {
-          lifetime.signal.throwIfAborted();
+          signal?.throwIfAborted();
           throw error;
         }
-        lifetime.signal.throwIfAborted();
+        signal?.throwIfAborted();
         if (
           account.state !== "signed-in" ||
-          account.me.id !== selectedScope.userId ||
-          account.me.organization.id !== selectedScope.organizationId ||
-          account.accountAuthority !== selectedScope.accountAuthority
+          account.me.id !== scope.userId ||
+          account.me.organization.id !== scope.organizationId ||
+          account.accountAuthority !== scope.accountAuthority
         )
           throw error;
         if (attemptedRecoveryVersion !== recoveryVersion) continue;
         await new Promise<void>((resolve, reject) => {
           const aborted = () => {
             resumeBootstrap = undefined;
-            reject(lifetime.signal.reason);
+            reject(signal?.reason);
           };
-          lifetime.signal.addEventListener("abort", aborted, { once: true });
+          signal?.addEventListener("abort", aborted, { once: true });
           resumeBootstrap = () => {
-            lifetime.signal.removeEventListener("abort", aborted);
+            signal?.removeEventListener("abort", aborted);
             resumeBootstrap = undefined;
             resolve();
           };
         });
       }
     }
-    lifetime.signal.throwIfAborted();
+    signal?.throwIfAborted();
     const scope = connection.executionScope;
-    if (!scope || JSON.stringify(scope) !== JSON.stringify(selectedScope))
+    if (!scope || JSON.stringify(scope) !== JSON.stringify(target.executionScope))
       throw new Error("The selected host or account changed. Return locally and select it again.");
     const url = new URL(rawSocketUrl(null));
-    url.pathname = `${connection.wsPath}/ws`;
+    url.pathname = `${connection.wsPath}${WS_FEATURE_PATH}`;
     execution = new WsTransport(url.toString(), {
       onGenerationChanged: () => generationChanged?.(),
     });
-    clients = { controller: current.controller, execution };
     // The descriptor comes through the authenticated real-host stream, not the directory.
     // Wait outside each RPC's normal deadline only for an explicit terminal-state recovery.
     let remote: ExecutionEnvironmentDescriptor;
@@ -161,20 +194,58 @@ export async function bootstrapExecutionContext(): Promise<void> {
         remote = await execution.request<ExecutionEnvironmentDescriptor>(
           WS_METHODS.serverGetEnvironment,
           undefined,
-          { signal: lifetime.signal },
+          { ...(signal ? { signal } : {}) },
         );
         break;
       } catch (error) {
         if (!(await execution.waitForRemoteConnectionRecovery(error))) throw error;
       }
     }
-    lifetime.signal.throwIfAborted();
+    signal?.throwIfAborted();
     if (remote.environmentId !== scope.environmentId)
       throw new Error("The host reported a different execution identity");
+    openedDescriptors.set(scope.environmentId, remote);
+    return execution;
+  } catch (error) {
+    await execution?.dispose().catch(() => undefined);
+    throw error;
+  }
+}
+
+export async function bootstrapExecutionContext(): Promise<void> {
+  const current = ensureConnections();
+  const controller = current.controller();
+  const local = await controller.request<ExecutionEnvironmentDescriptor>(
+    WS_METHODS.serverGetEnvironment,
+  );
+  rememberVerifiedController(local);
+  const selected = readActiveHost();
+  current.setLocalExecution(local.environmentId, controller);
+  if (!selected) {
+    initializeExecutionContext({ controller: local, execution: local, remote: null });
+    return;
+  }
+  const selectedScope: RemoteExecutionScope | undefined = selected.executionScope;
+  if (!selectedScope)
+    throw new Error(
+      "Choose this host again from local Connections to verify its account and identity.",
+    );
+  const lifetime = new AbortController();
+  bootstrapLifetime = lifetime;
+  try {
+    const lease = await current.acquire({
+      hostId: selected.hostId,
+      executionScope: selectedScope,
+      signal: lifetime.signal,
+    });
+    lifetime.signal.throwIfAborted();
+    const remote = openedDescriptors.get(selectedScope.environmentId);
+    if (!remote) throw new Error("The host reported a different execution identity");
+    current.setActiveExecution(lease.transport);
     initializeExecutionContext({
       controller: local,
       execution: remote,
-      remote: scope,
+      remote: selectedScope,
       remoteHostId: selected.hostId,
     });
   } catch (error) {
@@ -183,18 +254,17 @@ export async function bootstrapExecutionContext(): Promise<void> {
     throw error;
   }
 }
+
 export async function disposeConnectionClients(): Promise<void> {
-  const current = clients;
-  clients = undefined;
+  const current = connections;
+  connections = undefined;
   bootstrapLifetime?.abort(new Error("Transport disposed"));
   bootstrapLifetime = undefined;
   unregisterConnectionRecovery?.();
   unregisterConnectionRecovery = undefined;
   generationChanged = undefined;
-  if (!current) return;
-  await Promise.all(
-    [...new Set([current.controller, current.execution])].map((client) => client.dispose()),
-  );
+  openedDescriptors.clear();
+  await current?.dispose();
 }
 
 /** Controller reconnects refetch account state without touching execution stores. */

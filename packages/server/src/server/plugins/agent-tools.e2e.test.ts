@@ -772,7 +772,7 @@ export default function contribute(server) {
 `;
 
 test.each([
-  { native: false, serverNames: ["neolix", "company"] },
+  { native: false, serverNames: ["neox", "company"] },
   { native: true, serverNames: ["company"] },
 ])(
   "session-open MCP servers reach launch but never saved configuration (native=$native)",
@@ -904,16 +904,16 @@ test.each([
   {
     target: "saved Neox name",
     saved: true,
-    name: "neolix",
+    name: "neox",
     other: false,
-    error: /neolix.*plugin tools-test.*agent saved configuration/,
+    error: /neox.*plugin tools-test.*agent saved configuration/,
   },
   {
     target: "Neox internal server",
     saved: false,
-    name: "neolix",
+    name: "neox",
     other: false,
-    error: /neolix.*plugin tools-test.*Neox internal MCP server/,
+    error: /neox.*plugin tools-test.*Neox internal MCP server/,
   },
   {
     target: "another plugin with identical config",

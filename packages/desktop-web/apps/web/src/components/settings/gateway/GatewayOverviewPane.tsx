@@ -6,6 +6,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 
+import { useBuiltinFeatures } from "~/hooks/useBuiltinFeatures";
 import { getHostStatus } from "~/lib/neolixHostApi";
 import type { GatewayConfig, GatewaySearchVendor, GatewayStatus } from "~/lib/gatewayTypes";
 import { useTranslation } from "~/i18n";
@@ -65,6 +66,7 @@ export interface GatewayOverviewProps {
 
 export function GatewayOverviewPane({ config, status, apply, onSelectTab }: GatewayOverviewProps) {
   const { t } = useTranslation();
+  const { gatewayCallsPage } = useBuiltinFeatures();
   const [api, setApi] = useState<GatewayApi>("openai");
   const [selectedModel, setSelectedModel] = useState("");
   const [filter, setFilter] = useState("");
@@ -347,7 +349,7 @@ export function GatewayOverviewPane({ config, status, apply, onSelectTab }: Gate
           </div>
         ) : (
           recent
-            .slice(0, 10)
+            .slice(0, gatewayCallsPage)
             .map((call) => (
               <GatewayRow
                 key={`${call.time}-${call.model}-${call.provider}-${call.status}`}

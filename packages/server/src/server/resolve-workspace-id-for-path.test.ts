@@ -72,7 +72,7 @@ describe("resolveWorkspaceIdForPath", () => {
 
   test("resolves the deepest enclosing workspace for a subdirectory path", () => {
     expect(
-      resolveWorkspaceIdForPath("/workspace/project/packages/app", [
+      resolveWorkspaceIdForPath("/workspace/project/packages/server", [
         createWorkspaceRecord("/workspace/project", "ws-1"),
         createWorkspaceRecord("/workspace", "ws-root"),
       ]),

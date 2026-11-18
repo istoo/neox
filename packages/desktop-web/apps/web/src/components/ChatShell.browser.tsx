@@ -1,4 +1,5 @@
 import "../index.css";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { expect, it } from "vitest";
 import { page } from "vitest/browser";
 import { render } from "vitest-browser-react";
@@ -21,10 +22,15 @@ it("keeps the remote card on the same inset surface and follows the controller s
       Remote chat
     </main>
   );
+  // ChatShell now hosts the app-settings sync hook, which reads react-query; the app
+  // root always provides this client, so the standalone shell needs one too.
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const screen = await render(
-    <ChatShell open={false} controls={controls}>
-      {content}
-    </ChatShell>,
+    <QueryClientProvider client={client}>
+      <ChatShell open={false} controls={controls}>
+        {content}
+      </ChatShell>
+    </QueryClientProvider>,
   );
   const card = page.getByTestId("card").element();
   await expect.poll(() => parseFloat(getComputedStyle(card).marginRight)).toBeGreaterThan(0);
@@ -34,9 +40,11 @@ it("keeps the remote card on the same inset surface and follows the controller s
     .poll(() => parseFloat(getComputedStyle(card, "::after").borderTopLeftRadius))
     .toBe(0);
   await screen.rerender(
-    <ChatShell open={false} controls={{ ...controls, open: false, state: "collapsed" }}>
-      {content}
-    </ChatShell>,
+    <QueryClientProvider client={client}>
+      <ChatShell open={false} controls={{ ...controls, open: false, state: "collapsed" }}>
+        {content}
+      </ChatShell>
+    </QueryClientProvider>,
   );
   await expect
     .poll(() => parseFloat(getComputedStyle(card, "::after").borderTopLeftRadius))

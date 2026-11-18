@@ -92,6 +92,17 @@ export function makeGatewayHandlers(model: BridgeModel): Record<string, AnyHandl
         return client.getGatewayArchivedCall(input.date, input.id);
       }),
 
+    [NEOLIX_GATEWAY_WS_METHODS.promptText]: (payload) =>
+      fromPromise("neolix.gateway.promptText", () =>
+        client.getGatewayPromptText((payload as { id: string }).id),
+      ),
+
+    [NEOLIX_GATEWAY_WS_METHODS.promptReply]: (payload) =>
+      fromPromise("neolix.gateway.promptReply", () => {
+        const input = payload as { date: string; id: string };
+        return client.getGatewayPromptReply(input.date, input.id);
+      }),
+
     [NEOLIX_GATEWAY_WS_METHODS.getRouteEvents]: (payload) =>
       fromPromise("neolix.gateway.getRouteEvents", () =>
         client.getGatewayRouteEvents((payload as { after?: number } | undefined)?.after),

@@ -1,7 +1,8 @@
-import { chmod, mkdir, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, realpath, rm, writeFile } from "node:fs/promises";
 import { chmodSync, mkdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
+import { renameSteady } from "./steady.js";
 
 export const PRIVATE_DIRECTORY_MODE = 0o700;
 export const PRIVATE_FILE_MODE = 0o600;
@@ -73,7 +74,9 @@ export async function writePrivateFileAtomic(filePath: string, data: string): Pr
   );
   try {
     await writeFile(temporary, data, { mode: PRIVATE_FILE_MODE });
-    await rename(temporary, destination);
+    // Windows briefly refuses the replace while a reader or scanner holds the
+    // destination, which `renameSteady` waits out.
+    await renameSteady(temporary, destination);
     await ensurePrivateFileAsync(destination);
   } catch (error) {
     await rm(temporary, { force: true });

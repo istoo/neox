@@ -540,6 +540,7 @@ describe("ForgeService", () => {
     const runner = createRunner([""]);
     const service = createGitHubService({
       runner: runner.runner,
+      resolveGhPath: async () => "/usr/bin/gh",
     });
 
     await expect(
@@ -688,6 +689,7 @@ describe("ForgeService", () => {
     const runner = createRunner([""]);
     const service = createGitHubService({
       runner: runner.runner,
+      resolveGhPath: async () => "/usr/bin/gh",
     });
 
     await expect(
@@ -724,6 +726,7 @@ describe("ForgeService", () => {
     const runner = createRunner([""]);
     const service = createGitHubService({
       runner: runner.runner,
+      resolveGhPath: async () => "/usr/bin/gh",
     });
 
     await expect(
@@ -917,10 +920,15 @@ describe("ForgeService", () => {
         statusCheckRollup: [{ __typename: "StatusContext", context: "ci", state: "SUCCESS" }],
       }),
     ]);
+    // A due poll waits until the cached repository identity is known; resolve
+    // it here rather than through a real `git config` process, whose completion
+    // fake time cannot wait for.
     const service = createGitHubService({
       ttlMs: 0,
       runner: runner.runner,
       resolveGhPath: async () => "/usr/bin/gh",
+      resolveRepoHost: async () => null,
+      resolveRepoSlug: async () => null,
       now: () => now,
     });
     const reads = recordCurrentPullRequestStatusReads(service);
@@ -1996,7 +2004,7 @@ describe("ForgeService", () => {
           nodes: [
             {
               id: "PRRT_attachment",
-              path: "packages/app/src/git/pull-request-panel/data.ts",
+              path: "packages/desktop-web/apps/web/src/git/pull-request-panel/data.ts",
               line: 24,
               startLine: 20,
               isResolved: false,
@@ -2135,7 +2143,7 @@ describe("ForgeService", () => {
           nodes: [
             {
               id: "PRRT_1",
-              path: "packages/app/src/git/pull-request-panel/data.ts",
+              path: "packages/desktop-web/apps/web/src/git/pull-request-panel/data.ts",
               line: 24,
               startLine: 20,
               isResolved: true,
@@ -2195,7 +2203,7 @@ describe("ForgeService", () => {
       url: "https://github.com/parentOwner/parentRepo/pull/42#discussion_r1",
       reviewId: "PRR_empty_commented",
       location: {
-        path: "packages/app/src/git/pull-request-panel/data.ts",
+        path: "packages/desktop-web/apps/web/src/git/pull-request-panel/data.ts",
         line: 24,
         startLine: 20,
         threadId: "PRRT_1",
@@ -2240,7 +2248,7 @@ describe("ForgeService", () => {
           nodes: [
             {
               id: "PRRT_1",
-              path: "packages/app/src/git/pull-request-panel/data.ts",
+              path: "packages/desktop-web/apps/web/src/git/pull-request-panel/data.ts",
               line: 24,
               startLine: 20,
               isResolved: false,
@@ -2291,7 +2299,7 @@ describe("ForgeService", () => {
       id: "PRRC_1",
       reviewId: "PRR_empty_commented",
       location: {
-        path: "packages/app/src/git/pull-request-panel/data.ts",
+        path: "packages/desktop-web/apps/web/src/git/pull-request-panel/data.ts",
         line: 24,
         startLine: 20,
         threadId: "PRRT_1",
@@ -4679,6 +4687,7 @@ describe("ForgeService", () => {
     ]);
     const service = createGitHubService({
       runner: runner.runner,
+      resolveGhPath: async () => "/usr/bin/gh",
       resolveRepoHost: async () => null,
     });
 
@@ -4713,6 +4722,7 @@ describe("ForgeService", () => {
     ]);
     const service = createGitHubService({
       runner: runner.runner,
+      resolveGhPath: async () => "/usr/bin/gh",
       resolveRepoHost: async () => "github.acme.internal",
     });
 
@@ -4943,7 +4953,10 @@ describe("ForgeService", () => {
 
   it("throws when the workspace repository cannot be resolved for pull request creation", async () => {
     const runner = createRunner([JSON.stringify({})]);
-    const service = createGitHubService({ runner: runner.runner });
+    const service = createGitHubService({
+      runner: runner.runner,
+      resolveGhPath: async () => "/usr/bin/gh",
+    });
 
     await expect(
       service.createPullRequest({

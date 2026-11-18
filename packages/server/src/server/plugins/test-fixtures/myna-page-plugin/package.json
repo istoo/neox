@@ -1,0 +1,21 @@
+{
+  "name": "@acme/usage-glance",
+  "version": "0.1.0",
+  "description": "An example of a plugin's own page in myna's window: today's usage at a glance",
+  "magpie": {
+    "page": {
+      "title": "Usage glance",
+      "file": "page/index.html"
+    },
+    "panels": [
+      {
+        "slot": "usage",
+        "title": "Usage glance panel",
+        "file": "panel/index.html"
+      }
+    ],
+    "permissions": [
+      "usage:summary"
+    ]
+  }
+}

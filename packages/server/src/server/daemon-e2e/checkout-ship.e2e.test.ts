@@ -171,8 +171,14 @@ describe("daemon checkout ship loop", () => {
           stdio: "pipe",
         });
 
-        const updatedStatus = await ctx.client.getCheckoutStatus(worktree.worktreePath);
-        expect(updatedStatus.currentBranch).toBe("ship-loop-ready");
+        // Status reads share a 2s non-forced refresh gap, so an out-of-band branch
+        // rename becomes visible on a later poll rather than the immediate read.
+        await expect
+          .poll(
+            async () => (await ctx.client.getCheckoutStatus(worktree.worktreePath)).currentBranch,
+            { timeout: 10_000 },
+          )
+          .toBe("ship-loop-ready");
 
         const readmePath = path.join(worktree.worktreePath, "README.md");
         writeFileSync(readmePath, "init\nship loop update\n");

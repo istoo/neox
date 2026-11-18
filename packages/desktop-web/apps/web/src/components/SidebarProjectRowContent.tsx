@@ -13,6 +13,7 @@ export function SidebarProjectRowContent({
   label,
   labelAccessory,
   hostName,
+  hostBadge,
   iconClassName,
   reserveClassName,
   trailing,
@@ -21,6 +22,8 @@ export function SidebarProjectRowContent({
   label: string;
   labelAccessory?: ReactNode;
   hostName?: string;
+  /** Host identity rendered per the host's appearance setting; wins over `hostName`. */
+  hostBadge?: ReactNode;
   iconClassName?: string;
   reserveClassName?: string;
   trailing?: ReactNode;
@@ -44,11 +47,12 @@ export function SidebarProjectRowContent({
           {label}
         </span>
         {labelAccessory}
-        {hostName ? (
-          <span className="max-w-[40%] shrink-0 truncate text-ui-xs text-muted-foreground">
-            {hostName}
-          </span>
-        ) : null}
+        {hostBadge ??
+          (hostName ? (
+            <span className="max-w-[40%] shrink-0 truncate text-ui-xs text-muted-foreground">
+              {hostName}
+            </span>
+          ) : null)}
       </div>
       {trailing}
     </>

@@ -1,7 +1,6 @@
 // FILE: DesktopSettingsPanel.browser.tsx
 // Purpose: Lock the Desktop settings section: it renders only when the Electron
-//          shell is present, writes through the shell's command channel, and
-//          offers the same renderer switch as the File menu.
+//          shell is present and writes through the shell's command channel.
 // Layer: Browser UI test
 
 import "../../index.css";
@@ -45,7 +44,6 @@ const harness = vi.hoisted(() => ({
     noUpdatePill: false,
   },
   invoke: vi.fn(),
-  setMode: vi.fn(async () => undefined),
 }));
 
 vi.mock("~/lib/neolixGatewayApi", () => ({
@@ -84,7 +82,6 @@ beforeEach(() => {
     if (command === "get_cli_install_status") return { installed: false };
     return null;
   });
-  harness.setMode.mockClear().mockImplementation(async () => undefined);
   queryClient.clear();
   setShell(undefined);
   setBridge(undefined);
@@ -109,12 +106,6 @@ describe("DesktopSettingsPanel", () => {
 
   it("shows the shell preferences when the bridge exists", async () => {
     setShell({ platform: "darwin", invoke: harness.invoke });
-    setBridge({
-      uiMode: {
-        getState: async () => ({ mode: "web", selectable: true }),
-        setMode: harness.setMode,
-      },
-    });
 
     await render(
       <QueryClientProvider client={queryClient}>
@@ -122,7 +113,7 @@ describe("DesktopSettingsPanel", () => {
       </QueryClientProvider>,
     );
 
-    await expect.element(page.getByRole("heading", { name: "Desktop app" })).toBeInTheDocument();
+    await expect.element(page.getByRole("heading", { name: "Desktop" })).toBeInTheDocument();
     expect(document.body.textContent).toContain("Prevent sleep");
     expect(document.body.textContent).toContain("Open at login");
     expect(document.body.textContent).toContain("Show in Dock");
@@ -135,12 +126,6 @@ describe("DesktopSettingsPanel", () => {
 
   it("writes the sleep mode through the shell and keeps it on screen", async () => {
     setShell({ platform: "darwin", invoke: harness.invoke });
-    setBridge({
-      uiMode: {
-        getState: async () => ({ mode: "web", selectable: true }),
-        setMode: harness.setMode,
-      },
-    });
 
     await render(
       <QueryClientProvider client={queryClient}>
@@ -156,44 +141,5 @@ describe("DesktopSettingsPanel", () => {
         expect.objectContaining({ preventSleep: "display" }),
       ),
     );
-  });
-
-  it("switches the renderer through the dedicated bridge", async () => {
-    setShell({ platform: "darwin", invoke: harness.invoke });
-    setBridge({
-      uiMode: {
-        getState: async () => ({ mode: "web", selectable: true }),
-        setMode: harness.setMode,
-      },
-    });
-
-    await render(
-      <QueryClientProvider client={queryClient}>
-        <DesktopSettingsPanel active />
-      </QueryClientProvider>,
-    );
-
-    await page.getByRole("radio", { name: "Classic (legacy)" }).click();
-
-    await vi.waitFor(() => expect(harness.setMode).toHaveBeenCalledWith("native"));
-  });
-
-  it("does not offer the switch when the environment pins the renderer", async () => {
-    setShell({ platform: "darwin", invoke: harness.invoke });
-    setBridge({
-      uiMode: {
-        getState: async () => ({ mode: "web", selectable: false }),
-        setMode: harness.setMode,
-      },
-    });
-
-    await render(
-      <QueryClientProvider client={queryClient}>
-        <DesktopSettingsPanel active />
-      </QueryClientProvider>,
-    );
-
-    expect(document.body.textContent).toContain("NEOLIX_DESKTOP_UI");
-    expect(document.querySelector('[id="setting-desktop-ui-mode"] [role="radio"]')).toBeNull();
   });
 });

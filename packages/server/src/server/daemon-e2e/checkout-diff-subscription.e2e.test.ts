@@ -1,5 +1,5 @@
 import { test, expect, beforeEach, afterEach } from "vitest";
-import { execSync } from "child_process";
+import { execFileSync } from "child_process";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import path from "path";
@@ -15,17 +15,22 @@ function tmpCwd(): string {
   return mkdtempSync(path.join(tmpdir(), "daemon-e2e-checkout-diff-"));
 }
 
+// execFileSync passes argv directly instead of through a shell: cmd.exe on
+// Windows does not honor the single quotes these commands used to carry.
 function initGitRepo(cwd: string): void {
-  execSync("git init -b main", { cwd, stdio: "pipe" });
-  execSync("git config user.email 'test@test.com'", { cwd, stdio: "pipe" });
-  execSync("git config user.name 'Test'", { cwd, stdio: "pipe" });
+  execFileSync("git", ["init", "-b", "main"], { cwd, stdio: "pipe" });
+  execFileSync("git", ["config", "user.email", "test@test.com"], {
+    cwd,
+    stdio: "pipe",
+  });
+  execFileSync("git", ["config", "user.name", "Test"], { cwd, stdio: "pipe" });
 }
 
 function commitFile(cwd: string, fileName: string, content: string): void {
   const filePath = path.join(cwd, fileName);
   writeFileSync(filePath, content);
-  execSync(`git add "${fileName}"`, { cwd, stdio: "pipe" });
-  execSync("git -c commit.gpgsign=false commit -m 'Initial commit'", {
+  execFileSync("git", ["add", fileName], { cwd, stdio: "pipe" });
+  execFileSync("git", ["-c", "commit.gpgsign=false", "commit", "-m", "Initial commit"], {
     cwd,
     stdio: "pipe",
   });
@@ -142,7 +147,9 @@ test("keeps the socket usable after rejecting an oversized structured diff", asy
     commitFile(cwd, "large-b.js", "const value = 0;\n");
     // Short lines stay eligible for highlighting; a giant single line is skipped
     // before token expansion and cannot exercise the structured-payload limit.
-    const denseExpression = `const value = ${"a+".repeat(100)}a;\n`.repeat(4_000);
+    // Keep each file under the highlighter's 768 KiB source budget so tokens are
+    // built, then let two files exceed the ~24 MiB structured frame limit.
+    const denseExpression = `const value = ${"a+".repeat(100)}a;\n`.repeat(3_300);
     writeFileSync(path.join(cwd, "large-a.js"), denseExpression);
     writeFileSync(path.join(cwd, "large-b.js"), denseExpression);
 

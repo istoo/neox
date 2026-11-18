@@ -31,14 +31,12 @@ function assertNoSpawnedWorkerEntrypoint(label, source) {
 test("every executable daemon entrypoint enters the supervisor", async () => {
   const [
     serverPackageSource,
-    appIsolatedHostDaemon,
     serverConnectionOfferE2e,
     desktopRuntimePaths,
     nixPackage,
     nixModule,
   ] = await Promise.all([
     readFile(join(repoRoot, "packages/server/package.json"), "utf8"),
-    readFile(join(repoRoot, "packages/app/e2e/support/helpers/isolated-host-daemon.ts"), "utf8"),
     readFile(
       join(repoRoot, "packages/server/src/server/daemon-e2e/connection-offer.e2e.test.ts"),
       "utf8",
@@ -59,12 +57,6 @@ test("every executable daemon entrypoint enters the supervisor", async () => {
   assertNoDirectWorkerLaunch("server dev script", devScript);
   assert.match(devTsxScript, /scripts\/dev-runner\.ts/);
   assertNoDirectWorkerLaunch("server dev:tsx script", devTsxScript);
-
-  assert.match(
-    appIsolatedHostDaemon,
-    /spawnTsx\("scripts\/supervisor-entrypoint\.ts", \["--dev"\]/,
-  );
-  assertNoSpawnedWorkerEntrypoint("app e2e isolated host daemon", appIsolatedHostDaemon);
 
   assert.match(serverConnectionOfferE2e, /scripts\/supervisor-entrypoint\.ts/);
   assertNoSpawnedWorkerEntrypoint("server daemon e2e process launch", serverConnectionOfferE2e);

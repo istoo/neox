@@ -103,6 +103,24 @@ function createTestEmailSender() {
 
 When a test is labeled end-to-end, it calls the real service. No environment variable gates, no conditional skipping, no mocking the external dependency.
 
+### Desktop web UI
+
+`packages/server/src/server/daemon-e2e/desktop-web-ui.e2e.test.ts` runs the built desktop-web page in Chromium against an in-process daemon. Each case gets its own temp home and free port and asserts what the page shows: onboarding, a project and a streamed turn, reload, reconnect, settings, History, and Browser access.
+
+Build the page and its dependencies first:
+
+```bash
+npm run build:server
+(cd packages/desktop-web && bun install)
+npm run build:daemon-web-app
+npx playwright install chromium
+npm run test:e2e:desktop-web --workspace=@neolix/server
+```
+
+The turn traffic comes from the daemon's dev mock client, but the web client's provider ids have no dev entry, so the suite injects that client under the `codex` driver. No vendor account or network is used.
+
+Reconnect stops the in-process daemon and starts another on the same port and home. The second instance loads a copy of `embed.js` from a new path, so Node creates a fresh module and server instance id — the identity boundary a real process restart provides. The mock session also persists its timeline events under the temp home, so `streamHistory()` rebuilds the thread on resume as a real provider does. CI runs the suite in the `desktop-web-e2e` job.
+
 ### Packaged desktop smoke
 
 The packaged desktop smoke is an external observer of the production launch path. It must not add a smoke-only branch to Electron main or start the daemon itself.
@@ -138,16 +156,6 @@ The packaged smoke catches it after merge. PRs need the fast dependency-closure 
 
 Prefer a `@lezer/*` grammar. When a language only ships inside an editor extension, vendor the grammar into `packages/highlight/src/<lang>/` — see `svelte/`, `nix/`, and `csharp/`.
 
-### Desktop browser regression
-
-The desktop browser E2E launches an isolated real daemon, Metro, and Electron app. It forces workspace LRU eviction to reparent the original tab and replace its guest `WebContents`, then makes one MCP call each for tab listing, snapshot, and click against that original browser id. A final MCP wait proves the real target page received the click.
-
-Run it locally with the same command owned by the Ubuntu `desktop-tests` required check:
-
-```bash
-npm run test:e2e:browser-tabs --workspace=@neolix/desktop
-```
-
 ## Test organization
 
 - Collocate tests with implementation: `thing.ts` + `thing.test.ts`
@@ -159,16 +167,17 @@ npm run test:e2e:browser-tabs --workspace=@neolix/desktop
 
 Vitest picks up tests by suffix. The suffix tells the runner which category it belongs to.
 
-| Suffix                | What it is                                                                                                    | Where it runs                                                                        |
-| --------------------- | ------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
-| `*.test.ts(x)`        | Unit test — pure, fast, no daemon                                                                             | `npm run test:unit`                                                                  |
-| `*.posix.test.ts`     | Unit test that needs POSIX-only behavior                                                                      | unit, skipped on Windows                                                             |
-| `*.browser.test.ts`   | App test that needs a real browser (DOM)                                                                      | `npm run test:browser` (Vitest browser mode, Playwright provider, headless Chromium) |
-| `*.e2e.test.ts`       | End-to-end against a real daemon                                                                              | `npm run test:e2e`                                                                   |
-| `*.real.e2e.test.ts`  | E2E that hits a real provider (Claude/Codex/Copilot/OpenCode/Pi) — needs creds in `packages/server/.env.test` | `npm run test:integration:real` / `test:e2e:real`                                    |
-| `*.local.e2e.test.ts` | E2E that needs a local-only resource                                                                          | `npm run test:integration:local` / `test:e2e:local`                                  |
+| Suffix                | What it is                                                                                                    | Where it runs                                       |
+| --------------------- | ------------------------------------------------------------------------------------------------------------- | --------------------------------------------------- |
+| `*.test.ts(x)`        | Unit test — pure, fast, no daemon                                                                             | `npm run test:unit`                                 |
+| `*.posix.test.ts`     | Unit test that needs POSIX-only behavior                                                                      | unit, skipped on Windows                            |
+| `*.e2e.test.ts`       | End-to-end against a real daemon                                                                              | `npm run test:e2e`                                  |
+| `*.real.e2e.test.ts`  | E2E that hits a real provider (Claude/Codex/Copilot/OpenCode/Pi) — needs creds in `packages/server/.env.test` | `npm run test:integration:real` / `test:e2e:real`   |
+| `*.local.e2e.test.ts` | E2E that needs a local-only resource                                                                          | `npm run test:integration:local` / `test:e2e:local` |
 
-Browser Playwright specs live in `packages/app/e2e/browser/`. Desktop Playwright and real-Electron E2E live in `packages/desktop/e2e/`. Harness code shared by both suites lives in `packages/app/e2e/support/`; neither suite may place specs there. App Playwright specs that hit real providers use `*.real.spec.ts` and run through `npm run test:e2e:real --workspace=@neolix/app`; the default browser project ignores that suffix so CI does not need provider credentials.
+Real-Electron E2E lives in `packages/desktop/e2e/`. These scripts drive the packaged-style shell
+and its daemon lifecycle; the web client's own tests live in the `packages/desktop-web` Bun
+workspace.
 
 Live provider smoke tests belong in `*.real.e2e.test.ts`, not `*.test.ts`, even when guarded by environment variables. Default unit suites must use deterministic provider adapters/fakes so missing credits, auth outages, and upstream model drift do not block normal CI.
 
@@ -177,26 +186,22 @@ Codex MultiAgentV2 real tests use local Codex authentication rather than the Ope
 ### Test setup
 
 - Server: `packages/server/src/test-utils/vitest-setup.ts` loads `.env.test`, sets `NEOLIX_SUPERVISED=0`, and disables Git/SSH prompts. Add new global env shims here, not in individual tests.
-- App: `packages/app/vitest.setup.ts` provides `expo`/`__DEV__` shims and stubs a few native-only modules (`react-native-unistyles`, `react-native-svg`, `expo-linking`, `@xterm/addon-ligatures`). Stubbing here is for modules that have no meaningful Node behavior — not a license to mock app code.
 
 ## Running tests locally
 
 Test suites in this repo are heavy. Running them in bulk freezes the machine, especially with multiple agents in parallel.
 
 - Run only the file you changed: `npx vitest run <path> --bail=1`
+- Local Vitest runs cap workers at half the machine's cores, at most 4, through `scripts/vitest-max-workers.mjs`; set `NEOX_TEST_MAX_WORKERS` to override it. CI keeps Vitest's default worker count, and an explicit `--maxWorkers` still wins.
 - Never run `npm run test` for a whole workspace unless asked.
 - For a broad sweep, redirect to a file and read it after: `npx vitest run <path> --bail=1 > /tmp/test-output.txt 2>&1`
 - Never re-run a suite another agent already reported green.
 - For full-suite confidence, push to CI and check GitHub Actions.
 - Never run the full Playwright E2E suite locally — defer whole-suite verification to CI. Targeted Playwright specs are allowed when you changed or need to prove that specific flow.
-- App Playwright shares one warmed Metro server per run and gives every Playwright worker its own isolated daemon and `NEOLIX_HOME`. Spec files run concurrently without exposing one file's projects, agents, terminals, history, or provider configuration to another worker; tests within a file remain together so file-level setup is not repeated.
-- Playwright specs that exercise only the daemon import `daemonTest` from the shared fixtures so they do not create a browser context or page.
 - Helpers that create projects or workspaces own those records until cleanup. Their clients remove the daemon project on close, and an automatic fixture fails any test that still leaks a project record. Deleting only the temporary directory is not cleanup. Agent helpers pass the intended `workspaceId` through to agent creation; they never infer ownership from `cwd`.
 - Tests whose subject is daemon-global state, such as an empty history or daemon restart, start a dedicated host explicitly. Filenames and directories describe product behavior, never execution order or isolation mechanics.
-- Global setup accepts Metro as ready only when `/status` returns `packager-status:running`, then fetches the document's scripts so the cold bundle compilation finishes before Playwright's per-test timeout starts. A generic TCP listener is not sufficient readiness evidence. The browser suite uses direct local daemon connections and does not start a relay. Automated Metro launches set `EXPO_UNSTABLE_HEADLESS=1` so Expo does not download the native DevTools shell into temporary test homes; its read-only cache breaks teardown. Browser fixtures and the standalone Electron browser runner share the developer-toast dismissal helper while retaining console logs. A pointer click moves hover away from the tested control and stalls behind app modal backdrops.
-- The app Playwright harness boots on Windows as well as POSIX. Spawn Node entrypoints through `process.execPath`, not `npx` or `node_modules/.bin` shims: Node refuses to spawn `.cmd` or `.bat` without `shell: true`, and shell mode concatenates argv without escaping and sends kill signals to `cmd.exe` instead of the real child.
+- Spawn Node entrypoints through `process.execPath`, not `npx` or `node_modules/.bin` shims: Node refuses to spawn `.cmd` or `.bat` without `shell: true`, and shell mode concatenates argv without escaping and sends kill signals to `cmd.exe` instead of the real child.
 - Teardown kills the process tree, because a Windows signal reaches only the direct child and leaves forked workers holding the listening port.
-- The `asdf`-backed local Elixir relay stays POSIX-only, so the `relay-deployment` Playwright project is unavailable on Windows.
 
 ## Pull-request test routing
 

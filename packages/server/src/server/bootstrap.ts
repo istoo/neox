@@ -303,7 +303,7 @@ import {
   type DaemonAuthConfig,
 } from "./auth.js";
 import { deleteLocalCredential, writeLocalCredential } from "./local-credential.js";
-import { createWebUiMiddleware } from "./web-ui.js";
+import { daemonAddressForWebApp, WebAppHost, type WebAppPaths } from "./web-app.js";
 import { WorkspaceAutoName } from "./workspace-auto-name.js";
 import { createGitMutationService } from "./session/git-mutation/git-mutation-service.js";
 import { workspaceIdsOnCheckout } from "./workspace-directory.js";
@@ -553,6 +553,8 @@ export interface NeolixDaemonConfig {
     enabled: boolean;
     distDir: string | null;
   };
+  /** Where the desktop web app served on this port may be built; absent or null leaves it off. */
+  webApp?: WebAppPaths[] | null;
   appBaseUrl?: string;
   auth?: DaemonAuthConfig;
   openai?: NeolixOpenAIConfig;
@@ -659,17 +661,6 @@ async function reconcileManagedProcessLedger(
   if (reapResult.checked > 0 || reapResult.errors.length > 0) {
     logger.info(reapResult, "Managed helper process ledger reconciled");
   }
-}
-
-function mountWebUi(app: express.Application, config: NeolixDaemonConfig, logger: Logger): void {
-  app.use(
-    createWebUiMiddleware({
-      enabled: config.webUi?.enabled ?? false,
-      distDir: config.webUi?.distDir ?? null,
-      label: getHostName(),
-      logger,
-    }),
-  );
 }
 
 function resolveExpressTrustProxySetting(config: NeolixDaemonConfig): true | string[] {
@@ -878,6 +869,7 @@ export async function createNeolixDaemon(
     provider: (input) => pluginRuntime.runGatewayMiddlewareProvider(input) ?? Promise.resolve(null),
     account: (input) => pluginRuntime.runGatewayMiddlewareAccount(input) ?? Promise.resolve(false),
     event: (input) => pluginRuntime.runGatewayMiddlewareEvent(input) ?? Promise.resolve(null),
+    headers: (input) => pluginRuntime.runGatewayMiddlewareHeaders(input) ?? Promise.resolve(null),
   });
   const releaseGatewayUsageObserver = setGatewayUsageObserver({
     observe: (row) => pluginRuntime.observeGatewayUsage(row),
@@ -896,6 +888,7 @@ export async function createNeolixDaemon(
     logger.warn({ err: error }, "Failed to reconcile managed helper process ledger");
   });
   let relayRuntime: RelayRuntime | null = null;
+  let syncService: SyncService | null = null;
 
   const staticDir = config.staticDir;
   const downloadTokenTtlMs = config.downloadTokenTtlMs ?? 60000;
@@ -993,18 +986,15 @@ export async function createNeolixDaemon(
   }
 
   // CORS - allow same-origin + configured origins
-  const fixedAllowedOrigins = [
-    // Packaged desktop renderers use the app's own neolix:// protocol scheme.
-    "neolix://app",
-    // For TCP, add localhost variants
-    ...(listenTarget.type === "tcp"
+  const fixedAllowedOrigins =
+    // For TCP, add localhost variants.
+    listenTarget.type === "tcp"
       ? [
           `http://${listenTarget.host}:${listenTarget.port}`,
           `http://localhost:${listenTarget.port}`,
           `http://127.0.0.1:${listenTarget.port}`,
         ]
-      : []),
-  ];
+      : [];
   const allowedOrigins = new Set([...config.corsAllowedOrigins, ...fixedAllowedOrigins]);
   daemonConfigStore.onFieldChange("cors.allowedOrigins", (value) => {
     allowedOrigins.clear();
@@ -1086,6 +1076,19 @@ export async function createNeolixDaemon(
   const gatewayCheckin = new CheckinService({
     neolixHome: config.neolixHome,
     config: gatewayConfigStore,
+    plugins: {
+      providers: () =>
+        pluginRuntime
+          .listSubscriptionProviders()
+          .filter((provider) => provider.checkin === true)
+          .map((provider) => ({
+            pluginId: provider.pluginId,
+            id: provider.id,
+            label: provider.label,
+          })),
+      checkin: (input) =>
+        pluginRuntime.subscriptionCheckin(input.pluginId, input.providerId, input.accountId),
+    },
     onError: (error) => logger.warn({ err: error }, "Daily check-in failed"),
   });
   gatewayCheckin.startScheduler();
@@ -1603,11 +1606,15 @@ export async function createNeolixDaemon(
     }),
   );
 
-  // Serve the bundled browser web UI when enabled. Mounted after service-proxy
-  // classification and host/CORS handling, but before daemon bearer auth, so
-  // static app files load without the daemon password while API/WebSocket calls
-  // remain protected.
-  mountWebUi(app, config, logger);
+  // The desktop web app (page, `/rpc` socket and its upload routes) on this port, as
+  // T3 Code's server hosts its client. Mounted before daemon bearer auth and the JSON
+  // body parser: it answers only this computer and reads its own request bodies.
+  const webApp = new WebAppHost({
+    candidates: config.webApp,
+    neolixHome: config.neolixHome,
+    logger: logger.child({ module: "web-app" }),
+  });
+  app.use(webApp.middleware());
 
   let localCredential: string | null = null;
   const daemonAuth = { ...config.auth, localCredential: () => localCredential };
@@ -1749,6 +1756,9 @@ export async function createNeolixDaemon(
   // script-bound upgrades are forwarded first. The handler is a no-op for
   // requests that don't match a registered script route.
   httpServer.on("upgrade", serviceProxy.upgradeHandler({ passthroughUnknown: true }));
+  // The web app's `/rpc` sockets; every other path is left to the listeners above and
+  // the daemon's own `/ws`.
+  httpServer.on("upgrade", webApp.upgradeListener());
 
   if (config.serviceProxy?.standaloneListen) {
     serviceProxyListenTarget = parseListenString(config.serviceProxy.standaloneListen);
@@ -2627,6 +2637,7 @@ export async function createNeolixDaemon(
               distDir: config.webUi?.distDir ?? null,
               logger,
               daemonAddress: () => daemonTcpAddress(boundListenTarget),
+              webApp,
             });
             configureWebPage(webPage);
             await webPage.start();
@@ -2679,7 +2690,7 @@ export async function createNeolixDaemon(
               logger.info("Daemon password authentication enabled");
             }
 
-            const syncService = new SyncService({
+            const startedSyncService = new SyncService({
               neolixHome: config.neolixHome,
               logger,
               onEvent: (event) => {
@@ -2705,7 +2716,8 @@ export async function createNeolixDaemon(
                 }
               },
             });
-            syncService.start();
+            syncService = startedSyncService;
+            startedSyncService.start();
             wsServer = new VoiceAssistantWebSocketServer(
               httpServer,
               logger,
@@ -2794,7 +2806,7 @@ export async function createNeolixDaemon(
               pluginRuntime,
               orchestrationSkills,
               workspaceLabelService,
-              syncService,
+              startedSyncService,
             );
             agentManager.setLibraryMcpServersProvider(
               (agentId) => wsServer?.getLibraryService().mcpServersForAgent(agentId) ?? {},
@@ -2927,6 +2939,15 @@ export async function createNeolixDaemon(
       // model loading doesn't block the server from accepting connections.
       speechService.start();
       scriptHealthMonitor.start();
+      // The web app is a client of this daemon, so it connects once the daemon accepts
+      // connections. Its startup never holds the daemon's up; until it is ready its
+      // routes answer 503.
+      if (boundListenTarget) {
+        void webApp.start(daemonAddressForWebApp(boundListenTarget), (socket) => {
+          if (!wsServer) throw new Error("WebSocket server is not ready");
+          return wsServer.attachWebAppSocket(socket);
+        });
+      }
     } catch (error) {
       localCredential = null;
       await deleteLocalCredential(config.neolixHome);
@@ -2946,6 +2967,8 @@ export async function createNeolixDaemon(
   const stop = async (options?: { keepTerminals?: boolean }) => {
     const keepTerminals = options?.keepTerminals === true;
     let terminalShutdownError: unknown = null;
+    // First, while the daemon still answers: the web app's own client says goodbye.
+    await webApp.dispose();
     localCredential = null;
     await deleteLocalCredential(config.neolixHome);
     // Stop tracking plugin provider registrations before anything tears plugins
@@ -2955,20 +2978,25 @@ export async function createNeolixDaemon(
     unsubscribePluginProviders();
     unsubscribePluginSessionChanges();
     await hubRelationships.stop();
-    workspaceReconciliation.dispose();
+    await workspaceReconciliation.dispose();
     // The gateway's timers outlive their service unless they are told to stop:
     // a stopped daemon must not keep polling a vendor's usage endpoint.
-    usagePoller.dispose();
-    telemetry.stop();
+    await usagePoller.dispose();
+    await telemetry.stopAndDrain();
     clearInterval(gatewayWindowBridge);
     disposeRestProbe();
     webPage?.dispose();
     webPage = null;
     gatewayWarmup.dispose();
-    gatewaySignInSwitch.dispose();
+    await gatewaySignInSwitch.dispose();
     gatewayListRefresh.dispose();
     gatewayCodexResets.dispose();
-    claudeBridge.abortAll();
+    // Their saves are debounced; awaiting them finishes the write now rather
+    // than after the daemon has stopped.
+    await gatewayAffinity.dispose();
+    await gatewayRests.dispose();
+    await claudeBridge.abortAll();
+    await gatewayPricing.dispose();
     await gatewayVision.dispose();
     await gatewayHistory.dispose();
     await gatewayArchive.dispose();
@@ -3012,6 +3040,9 @@ export async function createNeolixDaemon(
     await speechService.stop();
     await scheduleService.stop().catch(() => undefined);
     await relayRuntime?.stop().catch(() => undefined);
+    if (syncService) {
+      await syncService.stop();
+    }
     if (wsServer) {
       await wsServer.close();
     }

@@ -9,54 +9,67 @@
 
 ```bash
 npm run dev:server
-npm run dev:app
 npm run dev:desktop
 ```
 
 Root checkout dev is intentionally split across terminals:
 
 - `npm run dev:server` runs the daemon on `127.0.0.1:6768`.
-- `npm run dev:app` runs Expo on `http://localhost:8081` and connects to the dev daemon.
-- `npm run dev:desktop` runs its own Electron-flavored Expo server on the first free port from `8082` through `8089`. It never claims port `8081`.
+- `npm run dev:desktop` runs Electron against its own desktop-managed daemon. It loads the daemon-hosted web UI; set `NEOLIX_DESKTOP_WEB_URL` to point the window at a Vite dev server instead.
 
 Desktop dev launches its desktop-managed daemon with `NEOLIX_NODE_ENV=development`,
 so development-only providers such as Mock Load Test are available. Packaged
 desktop launches always force the daemon to production mode.
 
-### Forked web desktop UI (opt-in)
+### Desktop web UI
 
-The desktop shell loads the RN/Expo renderer by default. Two switches select the
-forked React web UI (`packages/desktop-web/apps/web`):
+The desktop shell has one renderer: the web app at
+`packages/desktop-web/apps/web`, served by the daemon on its own HTTP port
+(`packages/server/src/server/web-app.ts`). The shell starts the desktop-managed
+daemon (or uses `NEOLIX_DESKTOP_DAEMON`), polls `GET /` until it returns 200,
+and loads `http://host:port/#<route>`. The daemon answers 503 while its web
+module loads, so the shell keeps polling for up to 30 seconds. Unix socket and
+pipe listen addresses cannot be loaded this way; a missing daemon, a socket
+address, or a failed probe opens a Retry page that names the log file instead of
+falling back to another renderer.
+
+A vite dev server replaces the daemon for the window when
+`NEOLIX_DESKTOP_WEB_URL` is set; the shell skips the daemon probe and loads that
+address directly:
 
 ```bash
-NEOLIX_DESKTOP_UI=web npm run dev:desktop
+bun run --cwd packages/desktop-web/apps/web dev
+NEOLIX_DESKTOP_WEB_URL=http://localhost:5173 npm run dev:desktop
 ```
 
-or File → Desktop UI → Web (experimental). The menu writes `uiMode` to the
-desktop settings and relaunches; the environment variable wins and disables the
-menu choice. Build the web app before the first run:
+Packaged builds ship `resources/desktop-web/bridge/embed.js` (the embeddable
+web module, produced by `npm run build:desktop-web`) and
+`resources/desktop-web/web` (a copy of `apps/web/dist`). The daemon loads that
+bundle in-process, so no separate bridge process or Bun runtime ships.
 
-```bash
-bun run --cwd packages/desktop-web/apps/web build
-```
+The Nix packages build the same artifacts from the same sources. The daemon
+package and the Linux desktop keep one copy in
+`packages/server/dist/server/web-app`, which `webAppCandidates` resolves for an
+unpackaged app. The macOS bundle gets them through electron-builder's
+`extraResources` and excludes the server copy from the asar, as a published
+desktop build does.
 
-Electron starts `packages/desktop-web/apps/bridge/src/main.ts` with Bun as a
-child process on a random loopback port, passes `NEOLIX_HOME` and the local daemon
-address (`NEOLIX_DESKTOP_DAEMON` overrides it), and loads the window from the
-bridge. The bridge serves `apps/web/dist` (SPA fallback to `index.html`) and the
-WebSocket RPC on the same origin, so the renderer derives its socket URL from
-`window.location`.
+`packages/desktop-web` is a Bun workspace with its own lockfile, outside the npm
+workspace `npmDeps` covers. `nix/bun-bin.nix` pins Bun 1.4.3 (nixpkgs' Bun
+cannot read the lockfile format), and `nix/desktop-web-deps.nix` is a
+fixed-output derivation that runs `bun install --frozen-lockfile`. It installs
+every platform's optional packages and uses the hoisted linker, so one hash in
+`nix/desktop-web-deps.hash` covers all supported systems and repeated runs
+produce the same store path. After changing `bun.lock` or a desktop-web
+`package.json`, run `./scripts/update-nix.sh` to refresh that hash.
 
-Packaged builds ship `resources/desktop-web/bridge/main.js` (a single-file
-Node ESM bundle produced by `npm run build:desktop-web`) and
-`resources/desktop-web/web`. Mobile desktop releases run that bundle through
-Electron's own binary with `ELECTRON_RUN_AS_NODE=1`, so no Bun runtime is
-installed. A packaged build that lacks either resource logs a warning and falls
-back to the RN renderer. The sidecar is stopped on `will-quit`.
-
-The web and desktop dev launchers pass the current Git branch to Metro as
-`EXPO_PUBLIC_NEOLIX_DEV_BUILD_LABEL`. The expanded desktop sidebar shows it in
-the titlebar row. Production builds leave the variable unset and show no label.
+The Vite build needs a builder with at least 6 GiB of RAM. Peak RSS is about
+4.7 GB with React Compiler enabled. `scripts/build-daemon-web-app.mjs` caps
+V8's old space at 3072 MiB and sets `RAYON_NUM_THREADS=2` for Rolldown's render
+pool, and `packages/desktop-web/apps/web/vite.config.ts` bounds precompress
+concurrency. The compiler's analysis of the two oversized single-file
+components (`ChatView.tsx`, `Sidebar.tsx`) is what drives the peak; the rest of
+the graph stays far below. Re-measure peak RSS before raising any of these.
 
 `npm run dev` is only a shorthand for `npm run dev:server`. Keep `127.0.0.1:6868` for the packaged app and production-style `~/.neox` state.
 
@@ -81,7 +94,6 @@ than downloading a published desktop release.
 - **Repo dev scripts** default to `$ROOT/.dev/neox-home`, where `$ROOT` is the current checkout or worktree root. This keeps all dev state scoped to the checkout instead of the packaged desktop app.
 - **`npm run cli -- ...`** runs through the same dev-home wrapper as the dev scripts, so the in-repo CLI automatically targets the current checkout's `.dev/neox-home` and configured dev daemon endpoint.
 - **Neox-created worktrees** seed `$NEOLIX_WORKTREE_PATH/.dev/neox-home` from `$NEOLIX_SOURCE_CHECKOUT_PATH/.dev/neox-home` by copying durable JSON metadata. Runtime files like pid files, sockets, and logs are not copied.
-- **This repo's worktree setup** also best-effort seeds `packages/app/ios` and the newest `.dev/ios-build` entry from the source checkout so iOS simulator services can reuse native project and Xcode cache state when it is safe enough to do so.
 
 Override knobs:
 
@@ -95,58 +107,11 @@ NEOLIX_DEV_RESET_HOME=1 npm run dev            # clear and reseed the derived wo
 
 - Stable daemon launched by the desktop app: `localhost:6767`.
 - Root checkout dev daemon: `localhost:6768`.
-- Root checkout Expo: `http://localhost:8081`.
-- Root checkout desktop dev Expo: first free port from `8082` through `8089`.
+- Desktop web UI: the daemon origin, for example `http://localhost:6768/`.
+- Vite dev server for the web UI: `bun run --cwd packages/desktop-web/apps/web dev` (default `http://localhost:5173`), paired with `NEOLIX_DESKTOP_WEB_URL`.
 - `npm run dev` (Windows): `localhost:6767` for the daemon.
 
 In Neox-managed worktree services, use the injected service environment rather than hardcoded root checkout ports.
-
-### Expo Router
-
-Route ownership, startup restore, and native blank-screen gotchas live in
-[expo-router.md](expo-router.md). Read it before changing `packages/app/src/app`,
-startup routing, remembered workspace restore, or active workspace selection.
-
-### iOS simulator preview service
-
-Neox worktrees expose the native iOS dev app through the `ios-simulator` service in `neox.json`. The service URL serves the simulator preview at `/.sim`, so the preview link is `${NEOLIX_URL}/.sim`.
-
-**Prerequisites (macOS only).** The service shells out to the Apple toolchain, so beyond the `npm ci` that worktree setup runs you must install:
-
-- **Xcode** (the full app, not just the Command Line Tools) — install it from the Mac App Store, or from `developer.apple.com/download` for a specific version. It provides `xcodebuild` and `xcrun simctl`; accept its license and let first-run component installation finish before starting the service.
-- **An iOS Simulator runtime with at least one iPhone device type**. Recent Xcode versions may not bundle a runtime — add one via Xcode → Settings → Components (older Xcode: "Platforms"). The service targets `iPhone 16 Pro` by default (override with `NEOLIX_IOS_DEVICE_TYPE`) and falls back to any iPhone; it fails with `No iPhone simulator device type is installed` when none exist.
-- **Homebrew** — CocoaPods itself installs automatically: `expo prebuild` runs `pod install` on a cold worktree, and when the CocoaPods CLI is missing the runner installs it for you. It tries `gem install cocoapods` first and falls back to Homebrew (`brew install cocoapods`), so having Homebrew available lets that fallback succeed without a manual step.
-
-`serve-sim`, Expo, and Metro come from `npm ci`, and CocoaPods installs itself on the first prebuild as described above.
-
-The service is designed for concurrent worktrees: it derives a deterministic simulator identity from the worktree path, uses the worktree's assigned `NEOLIX_PORT`, pins `serve-sim` to that simulator UDID, and only tears down that worktree's helper/simulator state. It must not rely on the globally booted simulator or any fixed Metro port.
-
-Worktree setup best-effort seeds the generated iOS project and newest native build cache from the source checkout before the service runs. The service still validates the native project by running Expo prebuild and Xcode; the seed only avoids paying all setup/build cost from a cold worktree every time.
-
-Starting the service must not create, focus, reveal, or leave behind macOS Simulator.app windows — a guard hides Simulator.app every 250ms, so the native window vanishes if you focus it. The user-visible surface is the interactive `/.sim` preview: a `serve-sim` stream (60 FPS MJPEG + a WebSocket control channel) that Metro mounts at `basePath: "/.sim"` (`packages/app/metro.config.cjs`) and that forwards taps and gestures, so first-launch prompts like "Open in NeolixDebug?" are answered there, not in the native window. Open the `${NEOLIX_URL}/.sim` link the service prints — not `serve-sim`'s raw stream port (`:3100`), which is view-only. Because the stream sits behind the daemon proxy it is convenient for remote viewing but laggy up close; for fast local dev at the Mac, use the native simulator path below.
-
-**Troubleshooting.** If `xcrun simctl` fails with `unable to find utility "simctl"`, the active developer directory is still the Command Line Tools even though Xcode is installed. Point it at Xcode: `sudo xcode-select -s /Applications/Xcode.app/Contents/Developer`, then confirm with `xcrun --find simctl`.
-
-### Running the iOS app on a local simulator
-
-For fast, native, interactive iOS dev at the Mac — as opposed to the remote `/.sim` preview above — skip the service and build the dev client directly:
-
-```bash
-npm run ios        # → expo run:ios (packages/app): builds and launches the app in the real Simulator.app
-```
-
-`expo run:ios` starts its own Metro and gives you the normal Simulator.app window (full speed, native touch, no stream).
-
-**Pointing the app at a daemon.** The client resolves its local daemon from `EXPO_PUBLIC_LOCAL_DAEMON` (`packages/app/src/runtime/host-runtime.ts`); when unset it falls back to `localhost:6868`, the production `~/.neox` daemon. To target a worktree's dev daemon instead, set it on the build command:
-
-```bash
-EXPO_PUBLIC_LOCAL_DAEMON=localhost:${NEOLIX_SERVICE_DAEMON_PORT} npm run ios   # worktree daemon running as a Neox service
-EXPO_PUBLIC_LOCAL_DAEMON=localhost:6768 npm run ios                          # standalone `npm run dev:server`
-```
-
-The iOS simulator shares the Mac's loopback, so `localhost:<port>` reaches the host daemon directly.
-
-**Gotcha — `EXPO_PUBLIC_*` is inlined into the JS bundle at Metro bundle time, not read at runtime.** Set it in the same shell that starts Metro. If the app still connects to the old daemon, Metro served a cached bundle; re-bundle clean with `cd packages/app && EXPO_PUBLIC_LOCAL_DAEMON=… npx expo start -c` and reload the app.
 
 ### Desktop renderer profiling
 
@@ -163,8 +128,8 @@ a new worktree instance to the parent desktop instance's profile or single-insta
 lock.
 
 The desktop workspace script `exec`s the dev runner so the terminal owns the runner
-PID. Terminal shutdown reaches the runner as `SIGHUP`; the runner stops Metro and
-asks Electron to quit through its normal app lifecycle. Do not add an npm wrapper or
+PID. Terminal shutdown reaches the runner as `SIGHUP`; the runner asks Electron to
+quit through its normal app lifecycle. Do not add an npm wrapper or
 detach Electron: either change leaves an orphan holding the worktree's single-instance
 lock and broken output pipes.
 
@@ -175,159 +140,10 @@ transition, and 751-pixel settings split with:
 npm run verify:electron-cdp --workspace=@neolix/desktop
 ```
 
-The verifier reads the same `EXPO_PORT` and
-`NEOLIX_ELECTRON_REMOTE_DEBUGGING_PORT` environment names as desktop dev. Set an
-explicit remote-debugging port for verifier runs, and set both when testing an
-isolated instance on non-default ports.
-
-When running a dedicated Electron QA instance against a non-default Expo port, set
-`EXPO_DEV_URL` explicitly. Desktop main defaults to `http://localhost:8081`, so
-`NEOLIX_PORT=57928` alone starts Metro on 57928 but Electron still loads 8081.
-
-### React render profiling
-
-The app has a gated React render profiler in
-`packages/app/src/utils/render-profiler.tsx`. Wrap the component boundary you want
-to measure with `RenderProfile`, then open the app with `?renderProfile=1`. When
-the query param is absent, `RenderProfile` returns children directly and records
-nothing.
-
-Captured samples are exposed on `globalThis.__NEOLIX_RENDER_PROFILE__`. Call
-`globalThis.__NEOLIX_RESET_RENDER_PROFILE__?.()` after warm-up and before the
-interaction you want to measure. If a memo comparator or subscription boundary
-needs explanation, call `recordRenderProfileReasons(id, reasons)` while profiling;
-reason counts are exposed on `globalThis.__NEOLIX_RENDER_PROFILE_REASONS__`.
-
-Use this workflow for any render investigation:
-
-1. Add stable `RenderProfile` boundaries around the suspected root and expensive
-   children. Keep IDs specific enough to compare before and after.
-2. Reproduce against real app state, not toy fixtures, whenever practical.
-3. Record an idle baseline first. If idle is noisy, fix or account for that
-   before optimizing the interaction.
-4. Warm up the route, reset profiler samples, run the exact interaction, then
-   compare `actualDuration`, render counts, and per-commit samples.
-5. When a memo boundary still renders, record reasons before changing code. Do
-   not guess from object identity alone.
-6. Keep changes that move the measured profile. Remove probes or memo wrappers
-   that do not move the number.
-
-What this caught during the workspace tab investigation:
-
-- A large apparent workspace cost was real interaction work, not daemon noise;
-  the idle baseline stayed near zero.
-- The expensive stream rerender was mostly prop identity churn from pane context
-  callbacks and capability objects, not new stream data.
-- Stabilizing provider actions at the pane boundary helped because every mounted
-  panel consumes that context.
-- Comparing value-shaped capability flags beat preserving object identity through
-  unrelated stores.
-- Some plausible fixes did not pay off: memoizing the tab row and composer draft
-  object barely moved the profile, so they were removed.
-
-Existing scenario script: workspace agent/terminal tab switching. Start Expo on
-web, keep a daemon available, then run:
-
-```bash
-NEOLIX_PROFILE_SERVER_ID=<server-id> \
-NEOLIX_PROFILE_WORKSPACE_ID=<workspace-path> \
-NEOLIX_PROFILE_AGENT_ID=<agent-id> \
-  npm run profile:workspace-tabs --workspace=@neolix/app
-```
-
-This script opens the app with `?renderProfile=1`, creates a temporary terminal
-tab, switches between a real agent and that terminal, prints aggregated React
-Profiler timings, then removes the temporary terminal. It is an example of the
-workflow above, not the only way to use the profiler. Useful knobs:
-
-```bash
-NEOLIX_PROFILE_APP_URL=http://localhost:19010 # Expo web URL
-NEOLIX_PROFILE_SWITCH_COUNT=1                # number of agent/terminal switch pairs
-NEOLIX_PROFILE_SWITCH_WAIT_MS=250            # delay after each click
-NEOLIX_PROFILE_IDLE_WAIT_MS=3000             # idle baseline before switching
-NEOLIX_PROFILE_DUMP_COMMITS=1                # include per-commit profiler samples
-```
-
-For warm workspace switching, point the benchmark at an app backed by seeded
-daemon state:
-
-```bash
-NEOLIX_PROFILE_APP_URL=http://localhost:19010 \
-  npm run profile:workspace-switching --workspace=@neolix/app
-```
-
-The benchmark first warms `Cmd+1` through `Cmd+7`, then records a rapid seven-workspace
-burst. It separately warms the three-entry workspace deck LRU and records `Cmd+1` through
-`Cmd+3` without waits between keys. Both scenarios report keydown-to-activation latency and
-React commits on the same browser clock. Set `NEOLIX_PROFILE_WORKSPACE_DIGITS`,
-`NEOLIX_PROFILE_WORKSPACE_LRU_SIZE`, or `NEOLIX_PROFILE_WARM_QUIET_MS` to change the shape. Set
-`NEOLIX_PROFILE_DUMP_COMMITS=1` to include the nested component breakdown for every commit.
-Set `NEOLIX_PROFILE_RETAINED_REPEATS=5` to repeat the retained-LRU burst for a less noisy sample.
-Set `NEOLIX_PROFILE_CPU_PATH=/tmp/workspace-switch.cpuprofile` to run a separate retained-LRU
-capture after the latency scenarios and write a raw CDP CPU profile without contaminating their
-timings.
-Set `NEOLIX_PROFILE_TRACE_PATH=/tmp/workspace-switch.trace.json` to run another separate retained-LRU
-capture and write a Chromium Performance trace with User Timing marks and screenshots. Open the
-trace in the Chrome DevTools Performance panel. Set `NEOLIX_PROFILE_TRACE_INVALIDATIONS=1` only for a
-focused invalidation capture; React Native's generated stacks make that mode highly intrusive.
-Set `NEOLIX_PROFILE_TRACE_FOCUS=1` to include focus targets, durations, and JavaScript call stacks in
-the scenario report. This mode wraps `HTMLElement.focus`, so use it only for diagnosis.
-
-For the desktop Explorer sidebar toggle, run the app against the root checkout's daemon and use:
-
-```bash
-npm run profile:explorer-toggle --workspace=@neolix/app
-```
-
-The harness verifies port `6768`, opens the Neox workspace, creates and warms the Explorer pane,
-records an idle control, then measures settled and 50 ms burst Cmd+E toggles. It reports
-input-to-DOM and input-to-paint latency, React commits, mounts, unmounts, and DOM mutations. Set
-`NEOLIX_PROFILE_TRACE_PATH=/tmp/explorer-toggle.trace.json` or
-`NEOLIX_PROFILE_CPU_PATH=/tmp/explorer-toggle.cpuprofile` for separate Chromium captures. Override
-the app URL, daemon port, workspace, or server with the corresponding `NEOLIX_PROFILE_*` variables.
-
-For sustained composer typing, run the paired composer-versus-textarea benchmark against a seeded
-daemon:
-
-```bash
-NEOLIX_PROFILE_APP_URL=http://localhost:19010 \
-  npm run profile:composer-typing --workspace=@neolix/app
-```
-
-The benchmark opens the first workspace, preserves its existing draft, and dispatches 300 printable
-keys at a fixed 16 ms cadence without waiting for each key to paint. It measures renderer
-`keydown` to the next paint opportunity, verifies that every character survived, alternates the
-composer and plain-textarea control across three runs, then restores the original draft. The report
-includes percentiles, frame coalescing, input processing, React work, long tasks, slow samples, and
-Playwright dispatch lateness. Set `NEOLIX_PROFILE_TYPING_KEYS`, `NEOLIX_PROFILE_TYPING_CADENCE_MS`,
-`NEOLIX_PROFILE_TYPING_REPEATS`, or `NEOLIX_PROFILE_WORKSPACE_DIGIT` to change the scenario. Optional
-`NEOLIX_PROFILE_CPU_PATH` and `NEOLIX_PROFILE_TRACE_PATH` captures run separately after the latency
-measurements so profiling overhead does not contaminate them.
-
-For diff layout, two benchmarks share one corpus
-(`packages/app/src/git/diff-document/benchmark-corpus.ts`: a real source file, a changelog with
-600-character lines, generated code with ligature punctuation, and JSON). The node bench runs the
-shared document model with the web and native measurers replaced by counters, so it reports how
-many strings each backend would have to shape, which is the cost that survives the move to canvas
-or Skia:
-
-```bash
-cd packages/app && npx vitest bench --project unit src/git/diff-document/model.bench.ts
-```
-
-The browser benchmark opens the same corpus as a working diff, toggles line wrap from the toolbar,
-and reports pointer-down to painted latency, the longest main-thread task, and the `DiffDocument`
-React commit time for cold and warm toggles, then scroll frame times in both modes:
-
-```bash
-cd packages/app && NEOLIX_DIFF_PERF_E2E=1 npx playwright test --project=browser \
-  e2e/browser/diff-performance.spec.ts -g "toggling line wrap"
-```
-
-Set `NEOLIX_PROFILE_TYPING_SCENARIO=height-growth` to alternate `Shift+Enter` and printable input.
-That report includes input and composer height changes plus React work grouped into composer,
-stream, and ancestor/root scopes. Ancestor/root timings include descendant work because the Profiler
-boundaries are nested. A printable key after an empty newline should not change either height.
+The verifier reads the same `NEOLIX_LISTEN`,
+`NEOLIX_DESKTOP_WEB_URL`, and `NEOLIX_ELECTRON_REMOTE_DEBUGGING_PORT` environment
+names as desktop dev. Set an explicit remote-debugging port for verifier runs, and
+set both when testing an isolated instance on non-default ports.
 
 ### Preview Windows and Linux window controls on macOS
 
@@ -458,7 +274,7 @@ expansion, `cp`/`rm`, or a `./scripts/*.sh` entrypoint all fail under PowerShell
 and `bash` is not guaranteed to exist on Windows. Put that logic in a Node script
 that reads what it needs from `process.env` and invoke it as
 `node ./scripts/<name>.mjs`. This repo's own setup does exactly that in
-`scripts/seed-worktree-dev-state.mjs` and `scripts/seed-ios-native-cache.mjs`.
+`scripts/seed-worktree-dev-state.mjs`.
 
 ```json
 {
@@ -505,60 +321,37 @@ values are available as `NEOLIX_SCRIPTNAME`, `NEOLIX_WORKSPACE_ID`, `NEOLIX_BRAN
 `NEOLIX_WORKTREE_PATH`. The script must print one valid TCP port. Neox trusts the external allocator,
 so the port may already be bound. `portScript` takes precedence when both values are present.
 
-## Bundled daemon web UI
+## Daemon-hosted web UI
 
-> The user-facing guide for this feature (enabling it, reverse proxy, TLS, tunnels, security) lives at [public-docs/web-ui.md](../public-docs/web-ui.md). This section is the contributor/build reference: how the artifact is produced, bundled, and excluded from desktop packaging.
+> The user-facing guide for Browser access (enabling it, reverse proxy, TLS, tunnels, security) lives at [public-docs/web-ui.md](../public-docs/web-ui.md). This section is the contributor/build reference.
 
-The daemon can optionally serve the browser web client from the same HTTP server. This is disabled by default.
-
-Enable it in persistent configuration:
-
-```bash
-neox daemon config set features.webUi.enabled true
-neox daemon start
-```
-
-Or set the environment variable:
-
-```bash
-NEOLIX_WEB_UI_ENABLED=true neox daemon run
-```
-
-Or persist it in `config.json`:
-
-```json
-{
-  "features": {
-    "webUi": {
-      "enabled": true
-    }
-  }
-}
-```
-
-When enabled, opening the daemon HTTP origin (for example `http://localhost:6767/`) serves the web app. The same HTTP server continues to serve `/api/*`, `/mcp/*`, `/public/*`, the WebSocket upgrade, and service-proxy routes. Static files load without daemon bearer auth; API and WebSocket calls still enforce auth.
-
-The served app auto-bootstraps a connection to the same origin, so opening `http://localhost:6767/` directly usually skips the Add Host step.
+The daemon serves the desktop web app on its own HTTP origin. `WebAppHost` in
+`packages/server/src/server/web-app.ts` loads `embed.js` in-process and serves the page,
+`/rpc`, and the web app's upload/download routes. The same HTTP server continues to serve
+`/api/*`, `/mcp/*`, `/public/*`, the WebSocket upgrade, and service-proxy routes. Static
+files load without daemon bearer auth; API and WebSocket calls still enforce auth.
 
 Build the artifact for packaging or measurement with:
 
 ```bash
-npm run build:daemon-web-ui
+npm run build:daemon-web-app
 ```
 
-This exports the normal browser web app (not the Electron-flavored desktop renderer) and copies it into `packages/server/dist/server/web-ui`, precompressing `.html`, `.js`, `.css`, and JSON assets as `.br` and `.gz`.
+This runs the Bun builds in `packages/desktop-web/apps/bridge` and
+`packages/desktop-web/apps/web`, then copies `embed.js` and the page into
+`packages/server/dist/server/web-app/`. `webAppCandidates` resolves, best first: the
+`NEOLIX_WEB_APP_BUNDLE`/`NEOLIX_WEB_APP_DIST` overrides, packaged desktop resources
+(`resources/desktop-web`), the server build, and this checkout's
+`packages/desktop-web/apps` builds.
 
-Measured bundle size for a standard Expo web export:
-
-- raw: 10.77 MiB
-- gzip: 2.55 MiB
-- brotli: 1.93 MiB
-
-The desktop-managed daemon disables the bundled web UI by default (`NEOLIX_WEB_UI_ENABLED=false`) because the desktop app already ships the renderer as `app-dist`. Shipping the same assets again inside `@neolix/server` would duplicate the ~10.8 MiB install. Desktop packaging also excludes `node_modules/@neolix/server/dist/server/web-ui/**` from the packaged app.
+`features.webUi.enabled` and `NEOLIX_WEB_UI_ENABLED` remain in the config surface for
+protocol compatibility, but they no longer gate the daemon-origin page. Settings ›
+Network › Browser access still reads `features.webUi.distDir` (or
+`NEOLIX_WEB_UI_DIST_DIR`) and serves that same build on its separate port.
 
 ## Built workspace packages
 
-Package imports resolve through package exports to compiled `dist/` output, not sibling `src/` files. This is true in local dev and in published packages: the app, daemon, CLI, and SDK consumers should all exercise the same runtime paths.
+Package imports resolve through package exports to compiled `dist/` output, not sibling `src/` files. This is true in local dev and in published packages: the daemon, desktop shell, CLI, and SDK consumers should all exercise the same runtime paths.
 
 `npm run dev:server` builds the server-side workspace packages once, then keeps `@neolix/protocol` and `@neolix/client` fresh with TypeScript watch builds while the daemon runs. If you change protocol schemas or client code outside that watch workflow, rebuild the producer before trusting runtime behavior.
 
@@ -568,18 +361,15 @@ Use the named root build targets instead of remembering workspace dependency cha
 npm run build:client       # protocol -> client
 npm run build:server-deps  # highlight -> relay -> protocol -> client
 npm run build:server       # server-deps -> server -> cli
-npm run build:app-deps     # highlight -> protocol -> client -> expo-two-way-audio
 ```
 
 Use `npm run build:server` whenever you have changed any daemon/server-facing package and need clean cross-package types or runtime behavior.
-
-The app Metro config disables Watchman and uses Metro's node crawler for exports. Keep that invariant unless you have verified production app exports on machines with and without Watchman installed; distro Watchman builds can differ in capabilities and change Metro's crawl behavior.
 
 For tighter loops, you can rebuild a single workspace:
 
 - Changed `packages/protocol/src/*` or `packages/client/src/*`: `npm run build:client`.
 - Changed `packages/server/src/*`, `packages/cli/src/*`, `packages/relay/src/*`, or `packages/highlight/src/*`: `npm run build:server`.
-- Changed app build dependencies: `npm run build:app-deps`.
+- Changed the web client: `npm run build:daemon-web-app`.
 
 ## Dependency patches
 
@@ -588,21 +378,14 @@ runs when its package is actually present, so add the package to that script's `
 list when you introduce a new patch — otherwise the file sits in `patches/` and never applies.
 patch-package cannot apply a patch that changed after an earlier version was applied, so the
 script removes that package and fails the install; the next `npm install` reinstalls it clean
-with the current patch. Regenerate a patch with `npx patch-package <package>` after editing `node_modules/<package>`, and
-patch every build the consumers use: Metro resolves the `react-native` field of a package
-(`src/*.ts` for `react-native-svg`), while Node and Vitest resolve `main`/`module`
-(`lib/commonjs`, `lib/module`). Patching only `lib/` leaves the app bundle unfixed.
+with the current patch. Regenerate a patch with `npx patch-package <package>` after editing `node_modules/<package>`.
 
 ## Dependency overrides and workspace tooling
 
-Root `package.json` `overrides` pin one Expo SDK across the tree (`expo`, `expo-router`,
-`react-native`, …). npm does not apply those overrides to packages it places under a
-workspace's own `node_modules`. When `expo-module-scripts` was declared in
-`packages/expo-two-way-audio`, npm nested it there and its `jest-expo` peer `expo@*` resolved to
-a second, newer Expo SDK and React Native: 200+ duplicate packages nothing imported (#7730).
-Declare tooling that peer-depends on `expo` or `react-native` in the root `devDependencies`,
-where the overrides apply; workspace scripts still find the binary through the root
-`node_modules/.bin`.
+Root `package.json` `overrides` keep one React and React Native version across the npm
+workspaces. `packages/plugin` is the remaining consumer: it declares `react` and an optional
+`react-native` peer for plugin UI surfaces. `packages/desktop-web` is a separate Bun workspace
+and resolves its own frontend dependencies, so its tree is not governed by these overrides.
 
 ## Dependency signature audit
 
@@ -635,23 +418,6 @@ and check that the changed `resolved` lines in `package-lock.json` are only the 
 A per-parent override such as `"tiny-async-pool": { "semver": "5.7.2" }` applies to that
 parent's whole subtree, so it can also downgrade a grandchild that needs a different major. Key
 the child by range (`{ "semver@^5": "5.7.2" }`) so only matching edges are replaced.
-
-## ACP provider catalog versions
-
-The in-app ACP provider catalog pins package-runner entries (`npx`, `npm exec`,
-and `uvx`) to exact package versions. Run the drift checker regularly — and
-before releases — so catalog installs do not sit on stale agent versions:
-
-```bash
-npm run acp:version-drift        # report stale/non-exact package pins
-npm run acp:version-drift:check  # same, exits non-zero on drift
-npm run acp:version-drift:update # rewrite catalog pins to latest exact versions
-```
-
-The checker updates only package-runner catalog entries. Providers that use a
-preinstalled binary such as `opencode acp`, `cursor-agent acp`, or `goose acp`
-are reported as skipped because their versions are owned by the user's local
-install.
 
 ## CLI reference
 
@@ -725,31 +491,12 @@ Get the session ID from the agent JSON (`persistence.sessionId`), then:
 
 ## Testing with Playwright MCP
 
-Point Playwright MCP at the running Expo web target. For root checkout dev, `npm run dev:app` reserves `http://localhost:8081`. For Neox-managed worktree app services, use the service URL or port shown by Neox for that worktree.
+Point Playwright MCP at the running web target. For root checkout dev, the daemon serves the
+web UI at `http://localhost:6768/`. When the window is pointed at a Vite dev server through
+`NEOLIX_DESKTOP_WEB_URL`, use that origin instead. For Neox-managed worktree services, use the
+service URL or port shown by Neox for that worktree.
 
 Do NOT use browser history (back/forward). Always navigate by clicking UI elements or using `browser_navigate` with the full URL — the app uses client-side routing and browser history breaks state.
-
-## App web deploys
-
-`packages/app` exports a single-page Expo web app and deploys the `dist/`
-directory to Cloudflare Pages with `npm run deploy:web --workspace=@neolix/app`.
-
-PWA install metadata lives in `packages/app/public/manifest.json` and is linked
-from `packages/app/public/index.html`. Keep the install icons in `public/` so
-Cloudflare serves them from stable root URLs after `expo export`.
-
-Do not add service-worker caching casually. Neox is a live control surface for
-agents, and an aggressive service worker can strand installed users on stale web
-code. If offline behavior becomes a product requirement, add it deliberately
-with an update strategy and test the installed-app upgrade path.
-
-## Expo troubleshooting
-
-```bash
-npx expo-doctor
-```
-
-Diagnoses version mismatches and native module issues.
 
 ## Typecheck
 

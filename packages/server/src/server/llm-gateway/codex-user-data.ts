@@ -1,9 +1,10 @@
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readFile, realpath, rename, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readFile, realpath, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { readFileSteady, renameSteady } from "../steady.js";
 
 const run = promisify(execFile);
 
@@ -380,13 +381,17 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** Replaces auth.json in one step, so Codex never reads a half-written file. */
+/**
+ * Replaces auth.json in one step, so Codex never reads a half-written file.
+ * Windows briefly refuses the replace while a reader or scanner holds the
+ * file, which `renameSteady` waits out.
+ */
 async function writeAuthAtomically(home: string, text: string): Promise<void> {
   const file = join(home, "auth.json");
   const temp = `${file}.${process.pid}.${randomUUID()}.tmp`;
   await writeFile(temp, text, { mode: 0o600 });
   try {
-    await rename(temp, file);
+    await renameSteady(temp, file);
   } catch (error) {
     await unlink(temp).catch(() => undefined);
     throw error;
@@ -587,7 +592,9 @@ async function readAccount(
 
 async function readFileText(path: string): Promise<string | null> {
   try {
-    return await readFile(path, "utf8");
+    // Windows briefly refuses to open a file being replaced; a read that loses
+    // that moment would otherwise look like a signed-out Codex.
+    return (await readFileSteady(path)).toString("utf8");
   } catch {
     return null;
   }

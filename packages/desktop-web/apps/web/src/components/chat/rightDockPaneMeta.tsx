@@ -35,6 +35,8 @@ export interface RightDockPaneMeta {
 
 export interface RightDockLauncherItem extends RightDockPaneMeta {
   kind: RightDockPaneKind;
+  /** Shown on the disabled row; absent when the launcher is available. */
+  disabledReason?: string;
 }
 
 export const RIGHT_DOCK_PANE_META: Record<RightDockPaneKind, RightDockPaneMeta> = {
@@ -52,6 +54,7 @@ export const RIGHT_DOCK_PANE_META: Record<RightDockPaneKind, RightDockPaneMeta> 
   pullRequest: { label: "Pull request", Icon: GitPullRequestIcon },
   subagents: { label: "Subagents", Icon: BotIcon },
   pluginPanel: { label: "Plugin", Icon: PluginIcon },
+  setup: { label: "Workspace setup", Icon: TerminalIcon },
 };
 
 // A pane's tab carries the name its launcher showed, so "Files" opens a tab named "Files".
@@ -67,6 +70,7 @@ const RIGHT_DOCK_PANE_LABEL_KEYS: Record<RightDockPaneKind, string> = {
   pullRequest: "git:general_environmentPullRequest",
   subagents: "chat:subagents",
   pluginPanel: "chat:pluginPanel",
+  setup: "workspace:setupPanelTitle",
 };
 
 // Neutral fallback for any pane kind we no longer recognize (e.g. stale
@@ -99,6 +103,7 @@ const RIGHT_DOCK_LAUNCHER_ORDER: readonly RightDockPaneKind[] = [
   "sidechat",
   "device",
   "git",
+  "setup",
 ];
 
 export function resolveRightDockLauncherItems(
@@ -112,6 +117,13 @@ export function resolveRightDockLauncherItems(
      * from this machine to make it work.
      */
     hasDeviceSupport?: boolean;
+    /** The active thread has a Neox workspace whose setup can be observed. */
+    hasWorkspaceSetup?: boolean;
+    /**
+     * The thread has a daemon workspace. A draft chat has none until its first
+     * message, and terminals cannot bind to a cwd the daemon has not opened.
+     */
+    hasTerminalWorkspace?: boolean;
   },
   translate: typeof t = t,
 ): readonly RightDockLauncherItem[] {
@@ -128,12 +140,26 @@ export function resolveRightDockLauncherItems(
     if (kind === "device" && input.hasDeviceSupport !== true) {
       return [];
     }
+    if (kind === "setup" && input.hasWorkspaceSetup !== true) {
+      return [];
+    }
     // Neox 无 side chat 后端：dock 的 add 菜单与空态 launcher 都不列 Side chats。
     if (kind === "sidechat" && !NEOLIX_SIDECHAT_UI_ENABLED) {
       return [];
     }
     const meta = getRightDockPaneMeta(kind, translate);
-    return [{ kind, Icon: meta.Icon, label: meta.label }];
+    const disabledReason =
+      kind === "terminal" && input.hasTerminalWorkspace === false
+        ? translate("chat:workspaceNeedsFirstMessage")
+        : undefined;
+    return [
+      {
+        kind,
+        Icon: meta.Icon,
+        label: meta.label,
+        ...(disabledReason ? { disabledReason } : {}),
+      },
+    ];
   });
 }
 

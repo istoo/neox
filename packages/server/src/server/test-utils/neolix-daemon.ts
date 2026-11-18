@@ -51,6 +51,8 @@ interface TestNeolixDaemonOptions {
   pushNotificationSender?: PushNotificationSender;
   serviceProxy?: NeolixDaemonConfig["serviceProxy"];
   webUi?: NeolixDaemonConfig["webUi"];
+  /** Off by default: only the web app's own tests serve it. */
+  webApp?: NeolixDaemonConfig["webApp"];
   trustedProxies?: NeolixDaemonConfig["trustedProxies"];
   agentProfiles?: AgentProfile[];
   autoArchiveAfterMerge?: boolean;
@@ -214,6 +216,7 @@ async function prepareTestDaemonConfig(
     pushNotificationSender: options.pushNotificationSender,
     serviceProxy: options.serviceProxy,
     webUi: options.webUi,
+    webApp: options.webApp,
     trustedProxies: options.trustedProxies,
     openai: options.openai,
     speech: options.speech

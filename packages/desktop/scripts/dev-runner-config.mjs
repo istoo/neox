@@ -1,4 +1,4 @@
-export function createElectronSpawnOptions({ env, colorEnv, expoDevUrl, devBuildLabel }) {
+export function createElectronSpawnOptions({ env, colorEnv }) {
   return {
     // Electron must stay in the runner's process group. Neolix workspace scripts
     // own the terminal process group, so detaching Electron lets it survive a
@@ -7,8 +7,6 @@ export function createElectronSpawnOptions({ env, colorEnv, expoDevUrl, devBuild
     env: {
       ...env,
       ...colorEnv,
-      EXPO_DEV_URL: expoDevUrl,
-      ...(devBuildLabel ? { EXPO_PUBLIC_NEOLIX_DEV_BUILD_LABEL: devBuildLabel } : {}),
     },
   };
 }

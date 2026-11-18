@@ -29,6 +29,7 @@
     "@legendapp/list": "3.3.3",
     "@lexical/react": "^0.41.0",
     "@pierre/diffs": "1.3.5",
+    "@synara/client-runtime": "workspace:*",
     "@synara/contracts": "workspace:*",
     "@synara/profile-ui": "workspace:*",
     "@synara/shared": "workspace:*",

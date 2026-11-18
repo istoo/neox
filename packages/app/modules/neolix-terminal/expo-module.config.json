@@ -1,9 +1,0 @@
-{
-  "platforms": ["android", "ios"],
-  "android": {
-    "modules": ["com.istoo.neox.terminal.NeolixTerminalModule"]
-  },
-  "ios": {
-    "modules": ["NeolixTerminalModule"]
-  }
-}

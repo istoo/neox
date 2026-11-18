@@ -93,6 +93,21 @@ describe("Codex app-server transport", () => {
     }
   });
 
+  test("a broken stdin pipe fails the session instead of escaping as an uncaught error", async () => {
+    const child = createCodexAppServerChildProcess();
+    const client = new CodexAppServerClient(child, createTestLogger());
+    const terminations: Error[] = [];
+    client.setUnexpectedTerminationHandler((error) => terminations.push(error));
+
+    const request = client.request("initialize", {}).catch((error: Error) => error);
+    child.stdin.emit("error", Object.assign(new Error("write EPIPE"), { code: "EPIPE" }));
+
+    const error = await request;
+    expect(error).toMatchObject({ message: "Codex app-server stdin failed: write EPIPE" });
+    expect(terminations).toEqual([error]);
+    expect(client.hasPendingRequests()).toBe(false);
+  });
+
   test.each([
     "item/commandExecution/requestApproval",
     "item/fileChange/requestApproval",

@@ -7,6 +7,7 @@ import type { DaemonClient } from "./neolix.ts";
 import {
   makeProjectHandlers,
   projectProvisionFromGitHubHandler,
+  projectSearchGitHubRepositoriesHandler,
   toNeolixScripts,
 } from "./projectsRpc.ts";
 
@@ -64,6 +65,25 @@ function makeHandlers(fakes: Fakes = {}) {
     writeProjectConfig: async (input: unknown) => {
       calls.push(["writeProjectConfig", input]);
       return { ok: true, config: null, revision: null };
+    },
+    searchGithubRepositories: async (input: unknown) => {
+      calls.push(["searchGithubRepositories", input]);
+      return {
+        status: "success",
+        repositories: [
+          {
+            id: "r1",
+            name: "widget",
+            nameWithOwner: "acme/widget",
+            description: "A widget",
+            visibility: "private",
+            updatedAt: "2026-01-01T00:00:00.000Z",
+            cloneUrl: "https://github.com/acme/widget.git",
+          },
+        ],
+        available: true,
+        error: null,
+      };
     },
   } as unknown as DaemonClient;
   const aliases = new Map<string, string>();
@@ -261,6 +281,25 @@ describe("toNeolixScripts", () => {
     ).toEqual({ dev: { command: "vite" }, ping: { command: "echo pong" } });
   });
 
+  it("writes the action's service type and port", () => {
+    expect(
+      toNeolixScripts(
+        [{ name: "server", command: "node server.js", type: "service", port: 3000 }],
+        undefined,
+      ),
+    ).toEqual({ server: { command: "node server.js", type: "service", port: 3000 } });
+  });
+
+  it("clears service fields when the action sends empty values", () => {
+    const existing = { server: { type: "service", port: 3000, command: "old" } };
+    expect(
+      toNeolixScripts(
+        [{ name: "server", command: "node server.js", type: "", port: "" }],
+        existing,
+      ),
+    ).toEqual({ server: { command: "node server.js" } });
+  });
+
   it("keeps the keys the client does not model on entries it already knows", () => {
     const existing = { server: { type: "service", port: 3000, command: "old" } };
     expect(toNeolixScripts([action("server", "node server.js")], existing)).toEqual({
@@ -336,6 +375,44 @@ describe("project.meta.update scripts", () => {
       scripts: { dev: { command: "vite" } },
       worktree: { setup: "make deps" },
     });
+  });
+
+  it("writes and clears worktree teardown without touching the setup the actions own", async () => {
+    const { handlers, calls } = makeHandlers({
+      config: {
+        ok: true,
+        revision: { mtimeMs: 1, size: 1 },
+        config: {
+          scripts: { setup: { command: "bun install" } },
+          worktree: { setup: "bun install", teardown: "old teardown" },
+        },
+      },
+    });
+    await call(handlers, "project.meta.update", {
+      type: "project.meta.update",
+      commandId: "c",
+      projectId: "prj_1",
+      worktreeTeardown: "docker compose down",
+    });
+    expect(writtenConfig(calls)).toEqual({
+      scripts: { setup: { command: "bun install" } },
+      worktree: { setup: "bun install", teardown: "docker compose down" },
+    });
+
+    const cleared = makeHandlers({
+      config: {
+        ok: true,
+        revision: { mtimeMs: 1, size: 1 },
+        config: { scripts: {}, worktree: { teardown: "docker compose down" } },
+      },
+    });
+    await call(cleared.handlers, "project.meta.update", {
+      type: "project.meta.update",
+      commandId: "c",
+      projectId: "prj_1",
+      worktreeTeardown: null,
+    });
+    expect(writtenConfig(cleared.calls)).toEqual({ scripts: {} });
   });
 });
 
@@ -413,5 +490,23 @@ describe("projects.provisionFromGitHub", () => {
       runProvision(fake, { ...INPUT, directoryName: "../escape" }),
     ).rejects.toMatchObject({ message: expect.stringContaining("cannot contain slashes") });
     expect(fake.calls).toEqual([]);
+  });
+});
+
+describe("projectSearchGitHubRepositoriesHandler", () => {
+  it("forwards the query and limit to the daemon search", async () => {
+    const fake = makeHandlers();
+    const result = await Effect.runPromise(
+      projectSearchGitHubRepositoriesHandler(fake.model)(
+        { query: "wid", limit: 10 },
+        undefined,
+      ) as Effect.Effect<unknown>,
+    );
+    expect(result).toMatchObject({
+      status: "success",
+      available: true,
+      repositories: [{ nameWithOwner: "acme/widget" }],
+    });
+    expect(fake.calls).toEqual([["searchGithubRepositories", { query: "wid", limit: 10 }]]);
   });
 });

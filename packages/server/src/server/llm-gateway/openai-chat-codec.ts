@@ -24,6 +24,7 @@ import {
   type IrToolChoice,
   type IrUsage,
 } from "./ir.js";
+import { urlCitationAnnotations } from "./search-events.js";
 import { SseParser, type SseEvent } from "./sse.js";
 
 const DATA_URL_PATTERN = /^data:([^;]+);base64,(.*)$/s;
@@ -473,10 +474,18 @@ function buildOpenAiResponseBody(
   response: IrResponse,
   requestedModel: string,
 ): Record<string, unknown> {
-  const text = response.parts
-    .filter((part): part is { type: "text"; text: string } => part.type === "text")
-    .map((part) => part.text)
-    .join("");
+  const textParts = response.parts.filter(
+    (part): part is Extract<IrPart, { type: "text" }> => part.type === "text",
+  );
+  const text = textParts.map((part) => part.text).join("");
+  // A cited line's pages ride on the message as OpenAI's own url_citation
+  // annotations, their spans read against the reply's whole text.
+  const annotations: Record<string, unknown>[] = [];
+  let offset = 0;
+  for (const part of textParts) {
+    annotations.push(...urlCitationAnnotations(part.text, part.citations ?? [], offset));
+    offset += part.text.length;
+  }
   const toolCalls = response.parts.filter(
     (part): part is Extract<IrPart, { type: "tool_call" }> => part.type === "tool_call",
   );
@@ -484,6 +493,9 @@ function buildOpenAiResponseBody(
     role: "assistant",
     content: text.length > 0 ? text : null,
   };
+  if (annotations.length > 0) {
+    message.annotations = annotations;
+  }
   if (toolCalls.length > 0) {
     message.tool_calls = toolCalls.map((part) => ({
       id: signCallId(part.id, part.signature),
@@ -609,6 +621,8 @@ class OpenAiStreamEncoder implements StreamEncoder {
   private readonly toolIndexByCallId = new Map<string, number>();
   private finished = false;
   private stopReason: IrStopReason | null = null;
+  /** The text streamed so far, so a citation's span is read against all of it. */
+  private textLength = 0;
 
   constructor(requestedModel: string) {
     this.requestedModel = requestedModel;
@@ -624,8 +638,19 @@ class OpenAiStreamEncoder implements StreamEncoder {
 
   public push(event: IrEvent): string {
     switch (event.type) {
-      case "text_delta":
-        return this.chunk({ content: event.text });
+      case "text_delta": {
+        // The pages the line cites ride on the chunk that says it, as
+        // OpenAI's own web search answers (url_citation annotations).
+        const annotations = urlCitationAnnotations(
+          event.text,
+          event.citations ?? [],
+          this.textLength,
+        );
+        this.textLength += event.text.length;
+        return this.chunk(
+          annotations.length === 0 ? { content: event.text } : { content: event.text, annotations },
+        );
+      }
       case "tool_call_start":
         return this.startToolCall(signCallId(event.id, event.signature), event.name);
       case "tool_args_delta": {

@@ -76,6 +76,7 @@ test.each(["React Native", "native"])(
       await daemon.close();
     }
   },
+  60_000,
 );
 
 test("plugin handlers create workspaces and agents through their Neox API", async () => {
@@ -539,4 +540,4 @@ test("keeps reload and enable responsive while compiling a real plugin", async (
     .length(2)
     .parse(JSON.parse(stdout));
   for (const result of results) expect(result.blockingMs).toBeLessThan(20);
-});
+}, 60_000);

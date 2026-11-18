@@ -1,19 +1,8 @@
-import fs from "node:fs";
 import path from "node:path";
 import { configDefaults, defineConfig } from "vitest/config";
 
 // React's test APIs require its development build, even in a production shell.
 process.env.NODE_ENV = "test";
-
-const appDir = path.resolve(__dirname, "packages/app");
-const appNodeModules = path.resolve(appDir, "node_modules");
-const rootNodeModules = path.resolve(__dirname, "node_modules");
-const resolvePackageEntry = (packageName: string) => {
-  const appPackagePath = path.resolve(appNodeModules, packageName);
-  return fs.existsSync(appPackagePath)
-    ? appPackagePath
-    : path.resolve(rootNodeModules, packageName);
-};
 
 export default defineConfig({
   resolve: {
@@ -41,22 +30,7 @@ export default defineConfig({
         find: /^@neolix\/relay$/,
         replacement: path.resolve(__dirname, "packages/relay/src/index.ts"),
       },
-      { find: "@", replacement: path.resolve(appDir, "src") },
       { find: "@server", replacement: path.resolve(__dirname, "packages/server/src") },
-      {
-        find: "react-native",
-        replacement: path.resolve(rootNodeModules, "react-native-web/dist/index.js"),
-      },
-      { find: "react", replacement: resolvePackageEntry("react") },
-      { find: "react-dom", replacement: resolvePackageEntry("react-dom") },
-      {
-        find: /^@xterm\/addon-ligatures\/lib\/addon-ligatures\.mjs$/,
-        replacement: path.resolve(appDir, "test-stubs/xterm-addon-ligatures.ts"),
-      },
-      {
-        find: /^@xterm\/addon-ligatures$/,
-        replacement: path.resolve(appDir, "test-stubs/xterm-addon-ligatures.ts"),
-      },
     ],
   },
   test: {

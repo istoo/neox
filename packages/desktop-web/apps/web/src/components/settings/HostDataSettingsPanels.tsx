@@ -19,6 +19,9 @@ import { Menu, MenuItem, MenuSeparator, MenuTrigger } from "~/components/ui/menu
 import { Switch } from "~/components/ui/switch";
 import { toastManager } from "~/components/ui/toast";
 import { ComposerPickerMenuPopup } from "~/components/chat/ComposerPickerMenuPopup";
+import { HostUpdateNotice } from "~/components/hosts/HostUpdateNotice";
+import { useHostFeatures } from "~/hooks/useHostFeatures";
+import { HOST_FEATURES } from "~/lib/hostFeatures.logic";
 import { EllipsisIcon } from "~/lib/icons";
 import { t as i18nT, useTranslation } from "~/i18n";
 import {
@@ -133,6 +136,12 @@ function readFileBase64(file: File): Promise<string> {
 // ── Sessions ───────────────────────────────────────────────────────────────
 
 const PAGE_SIZE = 100;
+/**
+ * While the daemon fills header rows in, re-ask faster at first and back off
+ * to one slow poll. It keeps asking until the answer stops being partial, so a
+ * slow machine never settles on the header's message count and usage.
+ */
+const PARTIAL_REFRESH_DELAYS_MS = [1_500, 3_000, 6_000, 12_000, 15_000] as const;
 
 export function HostSessionsSettingsPanel({ active }: { readonly active: boolean }) {
   const { t } = useTranslation();
@@ -171,6 +180,17 @@ export function HostSessionsSettingsPanel({ active }: { readonly active: boolean
     queryFn: () => listExternalSessions(agent),
     enabled: active,
     staleTime: 15_000,
+    // A header-first answer fills in as the daemon reads the files.
+    refetchInterval: (query) => {
+      if (query.state.data?.partial !== true) return false;
+      const step = Math.min(
+        Math.max(query.state.dataUpdateCount - 1, 0),
+        PARTIAL_REFRESH_DELAYS_MS.length - 1,
+      );
+      return PARTIAL_REFRESH_DELAYS_MS[step] ?? 15_000;
+    },
+    // A hidden window or an unmounted panel asks nothing.
+    refetchIntervalInBackground: false,
   });
   const data = sessionsQuery.data;
   const activeAgent = data?.agent ?? agent ?? "";
@@ -965,6 +985,12 @@ export function HostSessionsSettingsPanel({ active }: { readonly active: boolean
             </SettingsSection>
           ) : null}
 
+          {data?.partial === true ? (
+            <p role="status" aria-live="polite" className="text-ui-xs text-muted-foreground">
+              {t("settings:hostData_statsPending")}
+            </p>
+          ) : null}
+
           {sessionsQuery.isLoading ? (
             <SettingsSection title={t("settings:hostData_sessions")}>
               <SettingsEmptyState layout="status">{t("settings:host_loading")}</SettingsEmptyState>
@@ -1048,12 +1074,13 @@ export function HostSessionsSettingsPanel({ active }: { readonly active: boolean
                         ) : undefined
                       }
                       title={session.title || session.id}
-                      description={`${data?.agents.find((entry) => entry.agent === session.agent)?.name ?? session.agent} · ${t(
-                        "settings:hostData_messageCount",
-                        {
-                          count: session.messages,
-                        },
-                      )} · ${formatWhen(session.last)}`}
+                      description={`${data?.agents.find((entry) => entry.agent === session.agent)?.name ?? session.agent} · ${
+                        data?.partial === true
+                          ? t("settings:hostData_messageCountPending")
+                          : t("settings:hostData_messageCount", {
+                              count: session.messages,
+                            })
+                      } · ${formatWhen(session.last)}`}
                       actions={
                         // Read and Resume stay visible; the rest live in the row's menu.
                         <div className="flex items-center gap-1.5">
@@ -1227,6 +1254,9 @@ const INTERVALS = [-1, 3, 15, 30, 60] as const;
 
 export function HostSyncSettingsPanel({ active }: { readonly active: boolean }) {
   const { t } = useTranslation();
+  const hostFeatures = useHostFeatures();
+  // One gate for the whole page: without `features.sync` an older daemon answers none of these.
+  const syncAvailable = hostFeatures.isAvailable(HOST_FEATURES.sync);
   const queryClient = useQueryClient();
   const [busy, setBusy] = useState<string | null>(null);
   const [backend, setBackend] = useState<SyncBackend>("webdav");
@@ -1254,25 +1284,25 @@ export function HostSyncSettingsPanel({ active }: { readonly active: boolean }) 
   const configQuery = useQuery({
     queryKey: ["neolix-sync-config"],
     queryFn: getSyncConfig,
-    enabled: active,
+    enabled: active && syncAvailable,
     staleTime: 10_000,
   });
   const statusQuery = useQuery({
     queryKey: ["neolix-sync-status"],
     queryFn: getSyncStatus,
-    enabled: active,
+    enabled: active && syncAvailable,
     staleTime: 5_000,
   });
   const backupsQuery = useQuery({
     queryKey: ["neolix-backups"],
     queryFn: listBackups,
-    enabled: active,
+    enabled: active && syncAvailable,
     staleTime: 30_000,
   });
   const autoQuery = useQuery({
     queryKey: ["neolix-backup-auto"],
     queryFn: getBackupAuto,
-    enabled: active,
+    enabled: active && syncAvailable,
     staleTime: 30_000,
   });
 
@@ -1454,6 +1484,14 @@ export function HostSyncSettingsPanel({ active }: { readonly active: boolean }) 
   );
 
   if (!active) return null;
+
+  if (hostFeatures.featureStatus(HOST_FEATURES.sync) === "unavailable") {
+    return (
+      <SettingsSectionShell title="settings:hostData_sync">
+        <HostUpdateNotice />
+      </SettingsSectionShell>
+    );
+  }
 
   const backendHint =
     backend === "webdav"

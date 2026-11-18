@@ -59,6 +59,18 @@ describe("resolveRightDockLauncherItems", () => {
     ).toEqual(["terminal", "browser", "explorer", ...SIDECHAT, "git"]);
   });
 
+  it("disables the terminal launcher before a draft has a workspace", () => {
+    const items = resolveRightDockLauncherItems({
+      hasWorkspace: true,
+      hasGitRepository: false,
+      hasReview: false,
+      hasTerminalWorkspace: false,
+    });
+    const terminal = items.find((item) => item.kind === "terminal");
+    expect(terminal?.disabledReason).toBe("Send a message first to create this chat's workspace.");
+    expect(items.find((item) => item.kind === "browser")?.disabledReason).toBeUndefined();
+  });
+
   it("offers the simulator only when the server can host one", () => {
     // Off macOS there is nothing the user could do from this machine to make
     // simulators work, so the entry is hidden rather than shown disabled.

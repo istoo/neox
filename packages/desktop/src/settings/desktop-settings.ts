@@ -7,12 +7,7 @@ import { z } from "zod";
 import type { AppReleaseChannel } from "../features/auto-updater.js";
 import type { TrayClickAction } from "../system/tray.js";
 
-/** Which renderer the desktop shell loads. `native` is the existing RN/Expo app. */
-export type DesktopUiMode = "native" | "web";
-
 export interface DesktopSettings {
-  /** Graphics switch: the RN desktop app by default, the forked web UI when selected. */
-  uiMode: DesktopUiMode;
   releaseChannel: AppReleaseChannel;
   notifications: {
     playSound: boolean;
@@ -89,7 +84,6 @@ export type DesktopAppIconName = (typeof DESKTOP_APP_ICON_NAMES)[number];
 export type PreventSleepMode = "off" | "on" | "display";
 
 interface DesktopSettingsPatch {
-  uiMode?: DesktopUiMode;
   releaseChannel?: AppReleaseChannel;
   notifications?: Partial<DesktopSettings["notifications"]>;
   daemon?: Partial<DesktopSettings["daemon"]>;
@@ -130,7 +124,6 @@ export interface DesktopSettingsStore {
 }
 
 export const DEFAULT_DESKTOP_SETTINGS: DesktopSettings = {
-  uiMode: "web",
   releaseChannel: "stable",
   notifications: {
     playSound: true,
@@ -178,7 +171,6 @@ export const UPDATE_CHECK_MINUTES = [30, 60, 360, 1440] as const;
 const DESKTOP_SETTINGS_FILENAME = "desktop-settings.json";
 
 const ReleaseChannelSchema = z.enum(["stable", "beta"]);
-const UiModeSchema = z.enum(["native", "web"]);
 
 const NotificationsSchema = z
   .looseObject({
@@ -199,7 +191,6 @@ const PreventSleepSchema = z
 
 const DesktopSettingsSchema = z
   .looseObject({
-    uiMode: UiModeSchema.catch(DEFAULT_DESKTOP_SETTINGS.uiMode),
     releaseChannel: ReleaseChannelSchema.catch(DEFAULT_DESKTOP_SETTINGS.releaseChannel),
     notifications: NotificationsSchema,
     daemon: DaemonSchema,
@@ -244,12 +235,10 @@ const MigrationsSchema = z
   .looseObject({
     legacyRendererSettingsImported: z.boolean().catch(false),
     daemonStopOnQuitDefaultApplied: z.boolean().catch(false),
-    webRendererDefaultApplied: z.boolean().catch(false),
   })
   .catch(() => ({
     legacyRendererSettingsImported: false,
     daemonStopOnQuitDefaultApplied: false,
-    webRendererDefaultApplied: false,
   }));
 
 const PersistedDocumentSchema = z
@@ -272,11 +261,6 @@ function coerceReleaseChannel(value: unknown): AppReleaseChannel | null {
   return result.success ? result.data : null;
 }
 
-function coerceUiMode(value: unknown): DesktopUiMode | null {
-  const result = UiModeSchema.safeParse(value);
-  return result.success ? result.data : null;
-}
-
 function coerceBoolean(value: unknown): boolean | null {
   return typeof value === "boolean" ? value : null;
 }
@@ -287,7 +271,6 @@ function isNodeError(error: unknown): error is NodeJS.ErrnoException {
 
 function buildDefaultSettings(): StoredDesktopSettings {
   return {
-    uiMode: DEFAULT_DESKTOP_SETTINGS.uiMode,
     releaseChannel: DEFAULT_DESKTOP_SETTINGS.releaseChannel,
     notifications: { ...DEFAULT_DESKTOP_SETTINGS.notifications },
     daemon: { ...DEFAULT_DESKTOP_SETTINGS.daemon },
@@ -329,14 +312,12 @@ function buildDefaultDocument(): PersistedDesktopSettingsDocument {
     migrations: {
       legacyRendererSettingsImported: false,
       daemonStopOnQuitDefaultApplied: true,
-      webRendererDefaultApplied: true,
     },
   };
 }
 
 function toDesktopSettings(stored: StoredDesktopSettings): DesktopSettings {
   return {
-    uiMode: stored.uiMode,
     releaseChannel: stored.releaseChannel,
     notifications: { playSound: stored.notifications.playSound },
     daemon: {
@@ -382,10 +363,6 @@ function coerceDesktopSettingsPatch(input: unknown): DesktopSettingsPatch {
   }
 
   const patch: DesktopSettingsPatch = {};
-  const uiMode = coerceUiMode(input.uiMode);
-  if (uiMode) {
-    patch.uiMode = uiMode;
-  }
   const releaseChannel = coerceReleaseChannel(input.releaseChannel);
   if (releaseChannel) {
     patch.releaseChannel = releaseChannel;
@@ -601,9 +578,7 @@ function hasLegacyRendererOwnedPatch(patch: DesktopSettingsPatch): boolean {
 }
 
 function coerceDocument(input: unknown): PersistedDesktopSettingsDocument {
-  return applyWebRendererDefault(
-    applyDaemonStopOnQuitDefault(PersistedDocumentSchema.parse(input)),
-  );
+  return applyDaemonStopOnQuitDefault(PersistedDocumentSchema.parse(input));
 }
 
 function applyDaemonStopOnQuitDefault(
@@ -623,26 +598,6 @@ function applyDaemonStopOnQuitDefault(
       },
     },
     migrations: { ...document.migrations, daemonStopOnQuitDefaultApplied: true },
-  };
-}
-
-/**
- * The web renderer became the default. A saved "native" cannot tell an explicit choice from the
- * old default that was written on first launch, so every profile moves to "web" once; the menu's
- * native option stays as the way back, and that choice then sticks.
- * COMPAT(webRendererDefault): added in v0.16.0, remove after 2027-05-09 together with the native
- * renderer option.
- */
-function applyWebRendererDefault(
-  document: PersistedDesktopSettingsDocument,
-): PersistedDesktopSettingsDocument {
-  if (document.migrations.webRendererDefaultApplied) {
-    return document;
-  }
-  return {
-    ...document,
-    settings: { ...document.settings, uiMode: "web" },
-    migrations: { ...document.migrations, webRendererDefaultApplied: true },
   };
 }
 

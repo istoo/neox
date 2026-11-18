@@ -6,8 +6,8 @@ import { app, nativeImage } from "electron";
  * The provider marks the Mac menu bar draws in a card (myna's trayCell.Icon).
  * Neolix's provider marks in the app are SVGs, and nativeImage cannot read
  * SVG, so the marks that ship as 16pt-ready PNGs live here. `claude` and
- * `codex` were rendered from packages/app/assets/icons; another provider's
- * mark is a PNG in this folder under its gateway provider id.
+ * `codex` were rendered from the web client's provider icon assets; another
+ * provider's mark is a PNG in this folder under its gateway provider id.
  *
  * A card without a mark here keeps its provider name in the text, as myna
  * does with trayCell.Letter when a logo cannot be read.

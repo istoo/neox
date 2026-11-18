@@ -46,6 +46,8 @@ describe("OpenCode reasoning events (e2e)", () => {
 
     expect(agent.id).toBeTruthy();
 
+    await ctx.client.subscribeAgentTimeline(agent.id, () => {}).ready;
+
     // Send a message that should trigger reasoning
     await ctx.client.sendMessage(agent.id, "What is 2+2? Think step by step.");
 

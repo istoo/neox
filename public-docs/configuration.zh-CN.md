@@ -111,34 +111,16 @@ Agent Provider，包括 Neox 自带的一等 Provider 和你在 `agents.provider
 
 语音的设计理念、架构以及完整的本地和 OpenAI 设置示例，见[语音文档](/docs/voice)。
 
-## 内置的 Web UI {#bundled-web-ui}
+## daemon 托管的 Web 客户端 {#daemon-hosted-web-client}
 
-daemon 可以在同一个 HTTP 服务器上提供浏览器 Web 客户端。官方 Docker 镜像中默认启用此功能，普通 CLI 和由桌面应用管理的 daemon 默认关闭。
+存在构建产物时，daemon 会从同一个 HTTP 服务器提供桌面 Web 客户端。用
+`npm run build:daemon-web-app` 构建；打包后的桌面应用会把它作为 `resources/desktop-web` 附带。
 
-从 CLI 启用它：
+`features.webUi.enabled` 和 `NEOLIX_WEB_UI_ENABLED` 为向后兼容而保留，但不再控制 daemon
+同源页面。`features.webUi.distDir` 和 `NEOLIX_WEB_UI_DIST_DIR` 仍用于选择
+设置 › 网络 › 浏览器访问在独立端口上提供的构建。
 
-```bash
-neox daemon config set features.webUi.enabled true
-neox daemon start
-```
-
-或者设置环境变量：
-
-```bash
-NEOLIX_WEB_UI_ENABLED=true neox daemon run
-```
-
-或者把它持久化到 `config.json` 中：
-
-```json
-{
-  "features": {
-    "webUi": {
-      "enabled": true
-    }
-  }
-}
-```
+````
 
 启用后，打开 daemon 的 HTTP 地址（例如 `http://localhost:6767/`）即可加载 Web 应用。静态 UI 文件无需 daemon 身份验证即可加载；API 和 WebSocket 请求仍然需要配置的密码。
 
@@ -167,7 +149,7 @@ daemon 日志默认使用独立的控制台输出和文件输出：
     }
   }
 }
-```
+````
 
 旧版字段 `log.level` 和 `log.format` 仍然受支持，并映射到新的输出目标设置。
 
@@ -251,8 +233,8 @@ URI 中的 `password=` 总是优先于环境变量，因此你可以全局设置
 - `NEOLIX_RELAY_ENABLED`，为本次 daemon 启动启用或关闭出站中继
 - `NEOLIX_HOSTNAMES`，覆盖或扩展 `daemon.hostnames`
 - `NEOLIX_ALLOWED_HOSTS`，`NEOLIX_HOSTNAMES` 的已弃用别名
-- `NEOLIX_WEB_UI_ENABLED`，启用或关闭由 daemon 提供的 Web UI
-- `NEOLIX_WEB_UI_DIST_DIR`，覆盖 daemon Web UI 的构建目录
+- `NEOLIX_WEB_UI_ENABLED`，为向后兼容而保留；不再控制 daemon 同源页面
+- `NEOLIX_WEB_UI_DIST_DIR`，覆盖设置 › 网络 › 浏览器访问所提供构建的目录
 - `NEOLIX_TRUSTED_PROXIES`，为 `X-Forwarded-*` 请求头配置受信任的反向代理范围
 - `NEOLIX_LOG_CONSOLE_LEVEL`，覆盖 `log.console.level`
 - `NEOLIX_LOG_FILE_LEVEL`，覆盖 `log.file.level`

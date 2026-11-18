@@ -48,3 +48,11 @@ it("exposes CLI probes through the plugin host's server SDK", async () => {
   // This contribution uses no server context APIs; it exercises the host's real SDK binding.
   await expect(setup(undefined as never)).resolves.toBeUndefined();
 });
+
+it("keeps a network failure's cause in the message sent to the daemon", async () => {
+  const { describeError } = await import("./plugin-process.js");
+  const error = new TypeError("fetch failed", {
+    cause: Object.assign(new Error("getaddrinfo ENOTFOUND api.x.ai"), { code: "ENOTFOUND" }),
+  });
+  expect(describeError(error)).toBe("fetch failed: getaddrinfo ENOTFOUND api.x.ai");
+});

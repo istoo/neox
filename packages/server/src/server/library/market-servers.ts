@@ -22,6 +22,8 @@ export interface MarketServer {
   description: string;
   publisher?: string;
   icon?: string;
+  /** The registry's icon for a dark theme; `icon` is the light one. */
+  iconDark?: string;
   homepage?: string;
   transport: "stdio" | "http" | "sse";
   /** npx, uvx or docker for a local one. */
@@ -42,6 +44,8 @@ export interface MarketServerView {
   description: string;
   publisher?: string;
   icon?: string;
+  /** The registry's icon for a dark theme; `icon` is the light one. */
+  iconDark?: string;
   homepage?: string;
   transport: "stdio" | "http" | "sse";
   runs?: string;
@@ -83,7 +87,7 @@ interface RegistryServer {
   description?: unknown;
   websiteUrl?: unknown;
   repository?: { url?: unknown };
-  icons?: { src?: unknown }[];
+  icons?: { src?: unknown; theme?: unknown }[];
   remotes?: { type?: unknown; url?: unknown; headers?: RegistryHeader[] }[];
   packages?: {
     registryType?: unknown;
@@ -598,6 +602,23 @@ function stringValue(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
+/** The first safe icon the registry lists for a theme. An icon without a
+ * theme works in either one, so it counts as the light default. */
+function registryIcon(
+  icons: { src?: unknown; theme?: unknown }[] | undefined,
+  theme?: "dark",
+): string | undefined {
+  return (icons ?? [])
+    .filter((entry) => {
+      const entryTheme = stringValue(entry.theme);
+      return theme === "dark"
+        ? entryTheme === "dark"
+        : entryTheme.length === 0 || entryTheme === "light";
+    })
+    .map((entry) => stringValue(entry.src))
+    .find((src) => src.startsWith("https://"));
+}
+
 function boolValue(value: unknown): boolean {
   return value === true;
 }
@@ -617,10 +638,9 @@ function baseFromRegistry(raw: RegistryServer, id: string, name: string): Market
     githubOwner(stringValue(raw.repository?.url)) ||
     (id.startsWith("io.github.") ? id.slice("io.github.".length).split("/")[0] : "");
   const publisher = owner || id.split("/")[0].split(".").toReversed().join(".");
-  const icon =
-    (raw.icons ?? [])
-      .map((entry) => stringValue(entry.src))
-      .find((src) => src.startsWith("https://")) ?? (owner ? ownerAvatar(owner) : undefined);
+  const iconDark = registryIcon(raw.icons, "dark");
+  // A registry with only a dark icon still gets one in the light theme.
+  const icon = registryIcon(raw.icons) ?? iconDark ?? (owner ? ownerAvatar(owner) : undefined);
   return {
     id,
     name,
@@ -628,6 +648,7 @@ function baseFromRegistry(raw: RegistryServer, id: string, name: string): Market
     description: stringValue(raw.description),
     publisher,
     ...(icon ? { icon } : {}),
+    ...(iconDark ? { iconDark } : {}),
     ...(homepage ? { homepage } : {}),
     addresses,
   };
@@ -993,6 +1014,9 @@ export async function searchMarketServers(
     }
     if (server.icon) {
       entry.icon = server.icon;
+    }
+    if (server.iconDark) {
+      entry.iconDark = server.iconDark;
     }
     if (server.homepage) {
       entry.homepage = server.homepage;

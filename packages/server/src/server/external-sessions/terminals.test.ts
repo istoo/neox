@@ -41,18 +41,23 @@ describe("terminal detection", () => {
     ).toEqual([{ id: "com.googlecode.iterm2", name: "iTerm" }]);
   });
 
-  it("finds an app installed under the home folder", async () => {
-    expect(
-      (
-        await installedTerminals(
-          (candidatePath) => candidatePath === "/Users/nobody/Applications/Ghostty.app",
-          "/Users/nobody",
-        )
-      ).map((app) => app.id),
-    ).toEqual(["com.mitchellh.ghostty"]);
-  });
+  // Mac terminals are the only ones this module offers; Windows has no .app bundles.
+  it.skipIf(process.platform === "win32")(
+    "finds an app installed under the home folder",
+    async () => {
+      expect(
+        (
+          await installedTerminals(
+            (candidatePath) => candidatePath === "/Users/nobody/Applications/Ghostty.app",
+            "/Users/nobody",
+          )
+        ).map((app) => app.id),
+      ).toEqual(["com.mitchellh.ghostty"]);
+    },
+  );
 
-  it("offers Rex when its native CLI is on PATH", async () => {
+  // Rex is a Mac terminal; Windows has neither the native Mach-O CLI nor the .app.
+  it.skipIf(process.platform === "win32")("offers Rex when its native CLI is on PATH", async () => {
     const bin = await temp();
     const rex = path.join(bin, "rex");
     await writeFile(rex, Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0x02, 0x01]));

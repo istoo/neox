@@ -9,12 +9,23 @@
 // Exports: deriveEnvironmentSubagentRoster, environmentSubagentElapsedMs,
 //          formatEnvironmentSubagentMeta, and the roster types
 
-import type { OrchestrationThreadActivity, ThreadId } from "@synara/contracts";
+import type {
+  OrchestrationLatestTurn,
+  OrchestrationThreadActivity,
+  ThreadId,
+} from "@synara/contracts";
 
 import { t } from "~/i18n";
 import { formatContextWindowTokens } from "~/lib/contextWindow";
+import {
+  formatSubagentModelLabel,
+  resolveSubagentPresentationForThread,
+  resolveSubagentThreadStatusKind,
+  type SubagentStatusKind,
+} from "~/lib/subagentPresentation";
 
 import type { WorkLogEntry } from "../../../session-logic";
+import type { ThreadSession, ThreadShell } from "../../../types";
 import {
   collectSubagentStripItems,
   type ComposerSubagentStripItem,
@@ -56,6 +67,119 @@ function compareIsoAscending(left: string | null, right: string | null): number 
   if (left === null) return 1;
   if (right === null) return -1;
   return left < right ? -1 : 1;
+}
+
+/**
+ * A managed child agent as the dock needs it. Managed children (`create_agent`) exist as
+ * first-class threads linked by `parentThreadId`; their launch tool call is an MCP call,
+ * not a collab activity, so the activity-derived roster never sees them. Reading the
+ * thread link is the same source the old app's agent list used.
+ */
+export interface ManagedChildThread {
+  readonly id: ThreadId;
+  readonly title: string;
+  readonly parentThreadId: ThreadId | null;
+  readonly createdAt: string;
+  readonly archivedAt: string | null;
+  readonly settledAt: string | null;
+  readonly error: string | null;
+  readonly subagentAgentId: string | null;
+  readonly subagentNickname: string | null;
+  readonly subagentRole: string | null;
+  readonly modelSelection: ThreadShell["modelSelection"];
+  readonly session: Pick<ThreadSession, "status"> | null;
+  readonly latestTurn: Pick<OrchestrationLatestTurn, "state" | "completedAt"> | null;
+}
+
+const MANAGED_STATUS_LABEL_KEYS: Record<SubagentStatusKind, string> = {
+  running: "chat:runStatus_running",
+  completed: "workspace:triageOutcome_completed",
+  failed: "chat:runStatus_failed",
+  stopped: "chat:stopped",
+  queued: "workspace:runStatus_queued",
+  idle: "chat:idle",
+};
+
+function managedStatusLabel(statusKind: SubagentStatusKind | null): string | undefined {
+  return statusKind ? t(MANAGED_STATUS_LABEL_KEYS[statusKind]) : undefined;
+}
+
+/**
+ * Rows for the managed child agents of `parentThreadId`. Status and identity come from
+ * the child thread itself (its own session and latest turn), which is what makes a
+ * running child visible before its parent's work log mentions it.
+ */
+export function deriveManagedChildRosterItems(input: {
+  threads: ReadonlyArray<ManagedChildThread>;
+  parentThreadId: ThreadId;
+  viewedThreadId?: ThreadId | null;
+}): EnvironmentSubagentRosterItem[] {
+  const viewedThreadId = input.viewedThreadId ?? null;
+  return input.threads
+    .filter(
+      (thread) => thread.parentThreadId === input.parentThreadId && thread.archivedAt === null,
+    )
+    .map((thread): EnvironmentSubagentRosterItem => {
+      const presentation = resolveSubagentPresentationForThread({
+        thread,
+        threads: input.threads,
+      });
+      const statusKind = resolveSubagentThreadStatusKind(thread);
+      const isActive = isLiveRosterItem({ statusKind });
+      return {
+        kind: "subagent",
+        // `managed:` keeps the key distinct from work-log rows keyed by provider thread id.
+        key: `managed:${thread.id}`,
+        threadId: thread.id,
+        providerThreadId: thread.id,
+        primaryLabel: presentation.primaryLabel,
+        fullLabel: presentation.fullLabel,
+        role: presentation.role,
+        modelLabel: formatSubagentModelLabel(thread.modelSelection?.model),
+        statusLabel: managedStatusLabel(statusKind),
+        statusKind,
+        isActive,
+        isViewed: viewedThreadId === thread.id,
+        isBackground: false,
+        accentColor: presentation.accentColor,
+        startedAt: thread.createdAt,
+        settledAt: isActive ? null : (thread.settledAt ?? thread.latestTurn?.completedAt ?? null),
+        totalTokens: null,
+        toolUses: null,
+        durationMs: null,
+        lastToolName: null,
+        summary: null,
+      };
+    });
+}
+
+/**
+ * Adds managed-child rows to an activity-derived roster. A child that already produced a
+ * collab row (provider-native children imported as agents) is keyed by the same thread id
+ * there, so the work-log row wins and carries its task usage.
+ */
+export function mergeEnvironmentSubagentRosters(
+  base: EnvironmentSubagentRoster,
+  managed: ReadonlyArray<EnvironmentSubagentRosterItem>,
+): EnvironmentSubagentRoster {
+  if (managed.length === 0) {
+    return base;
+  }
+  const seenThreadIds = new Set([...base.active, ...base.previous].map((item) => item.threadId));
+  const additions = managed.filter((item) => !seenThreadIds.has(item.threadId));
+  if (additions.length === 0) {
+    return base;
+  }
+  const active = [...base.active, ...additions.filter(isLiveRosterItem)].toSorted((left, right) =>
+    compareIsoAscending(left.startedAt, right.startedAt),
+  );
+  const previous = [
+    ...base.previous,
+    ...additions.filter((item) => !isLiveRosterItem(item)),
+  ].toSorted((left, right) =>
+    compareIsoAscending(right.settledAt ?? right.startedAt, left.settledAt ?? left.startedAt),
+  );
+  return { active, previous };
 }
 
 export function deriveEnvironmentSubagentRoster(input: {

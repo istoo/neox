@@ -101,3 +101,24 @@ export function primaryProjectScript(scripts: ProjectScript[]): ProjectScript | 
 export function setupProjectScript(scripts: ProjectScript[]): ProjectScript | null {
   return scripts.find((script) => script.runOnWorktreeCreate) ?? null;
 }
+
+/** The app's "run as a service" flag is `scripts[name].type === "service"`. */
+export function isServiceProjectScript(script: ProjectScript): boolean {
+  return script.type === "service";
+}
+
+export function projectScriptPortText(script: ProjectScript): string {
+  if (typeof script.port === "number") return String(script.port);
+  return typeof script.port === "string" ? script.port : "";
+}
+
+/** Empty clears the port; digits become a number, anything else stays the config's string. */
+export function parseProjectScriptPort(value: string): number | string | null {
+  const trimmed = value.trim();
+  if (trimmed.length === 0) return null;
+  if (/^[0-9]+$/.test(trimmed)) {
+    const parsed = Number(trimmed);
+    if (Number.isSafeInteger(parsed)) return parsed;
+  }
+  return trimmed;
+}

@@ -37,15 +37,16 @@ export const LOCAL_HOST_ID = "neolix-local-daemon";
 export function localHostFromPairingOffer(
   offer: { readonly url: string },
   options: {
-    readonly environmentId?: string | undefined;
+    /** The controller descriptor's environment id (its daemon's serverId). */
+    readonly environmentId: string;
     readonly label?: string | undefined;
-  } = {},
+  },
 ): AccountHost {
   const now = new Date().toISOString();
   const url = offer.url.trim();
   return {
     id: LOCAL_HOST_ID,
-    environmentId: (options.environmentId ?? "neolix-local") as AccountHost["environmentId"],
+    environmentId: options.environmentId as AccountHost["environmentId"],
     name: options.label?.trim() || "This computer",
     platform: platformForHost(),
     kind: "local",
@@ -62,9 +63,9 @@ export function localHostFromPairingOffer(
 export function makePairingHandlers(
   model: BridgeModel,
   options: {
-    readonly environmentId?: string | undefined;
+    readonly environmentId: string;
     readonly label?: string | undefined;
-  } = {},
+  },
 ): Record<string, AnyHandler> {
   return {
     [WS_METHODS.hostsEnrollment]: () =>

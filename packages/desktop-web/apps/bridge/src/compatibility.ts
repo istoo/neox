@@ -6,9 +6,13 @@ import {
   WS_COMPATIBILITY_QUERY,
   WS_NEGOTIATE_QUERY,
   WS_PROTOCOL_EPOCH,
+  WS_CLIENT_REQUIRED_CAPABILITIES,
+  WS_GITHUB_PROJECT_PROVISIONING_CAPABILITY,
+  WS_PROJECT_FILE_WATCH_CAPABILITY,
   WS_PROTOCOL_MAX_REVISION,
   WS_PROTOCOL_MIN_REVISION,
-  WS_SERVER_CAPABILITIES,
+  WS_SERVER_RUNTIME_STATUS_CAPABILITY,
+  WS_TURN_DISPATCH_SETTLEMENT_CAPABILITY,
   WsCompatibilityError,
   type WsBootstrapNegotiateInput,
   type WsBootstrapNegotiateResult,
@@ -16,30 +20,74 @@ import {
 } from "@synara/contracts";
 import { Effect } from "effect";
 
-const serverBuild = "neolix-bridge-0.0.0";
+// The bridge's own build identity, used only when the daemon version is unknown. It is a
+// real build, not a claim about the daemon.
+const bridgeBuild = "neolix-bridge-0.0.0";
 
+/**
+ * What this bridge serves on every daemon. `WS_SERVER_CAPABILITIES` is Synara's full surface;
+ * methods this bridge does not implement (usage-limit recovery, goal visibility, the remote
+ * agent gateway) stay out. A capability appears here only when its RPC has a handler in
+ * `handlers.ts`/`hostRpc.ts`; capabilities that also need a daemon RPC are added per
+ * connection by {@link bridgeServerCapabilities}.
+ */
+export const BRIDGE_SERVER_CAPABILITIES = [
+  ...WS_CLIENT_REQUIRED_CAPABILITIES,
+  WS_GITHUB_PROJECT_PROVISIONING_CAPABILITY,
+  WS_PROJECT_FILE_WATCH_CAPABILITY,
+  WS_TURN_DISPATCH_SETTLEMENT_CAPABILITY,
+  // The bridge serves `/rpc/negotiate` over plain HTTP, so a connect is one upgrade.
+  "transport.http-negotiate",
+] as const;
+
+/**
+ * The capabilities this bridge can serve for one daemon. Runtime status is only advertised
+ * when the daemon has the metrics RPC, so a client on an older host gets its update-server
+ * path instead of a call that cannot answer.
+ */
+export function bridgeServerCapabilities(
+  options: {
+    readonly daemonRuntimeStatus?: boolean;
+  } = {},
+): readonly string[] {
+  return options.daemonRuntimeStatus === true
+    ? [...BRIDGE_SERVER_CAPABILITIES, WS_SERVER_RUNTIME_STATUS_CAPABILITY]
+    : BRIDGE_SERVER_CAPABILITIES;
+}
+
+/** Identifies this bridge process; a restart changes it and the client reloads. */
 const serverInstanceId = randomUUID();
 
 function incompatibility(
   action: WsCompatibilityAction,
   message: string,
   code: WsCompatibilityError["code"] = "WS_PROTOCOL_INCOMPATIBLE",
+  build: string = bridgeBuild,
 ): WsCompatibilityError {
   return new WsCompatibilityError({
     message,
     code,
     retryable: false,
     action,
-    serverBuild,
+    serverBuild: build,
     protocolEpoch: WS_PROTOCOL_EPOCH,
     minRevision: WS_PROTOCOL_MIN_REVISION,
     maxRevision: WS_PROTOCOL_MAX_REVISION,
   });
 }
 
+export interface WsNegotiationOptions {
+  /** The daemon's version when known; the bridge build otherwise. */
+  readonly serverBuild?: string | undefined;
+  readonly capabilities?: readonly string[] | undefined;
+}
+
 export function negotiateWsCompatibility(
   input: WsBootstrapNegotiateInput,
+  options: WsNegotiationOptions = {},
 ): Effect.Effect<WsBootstrapNegotiateResult, WsCompatibilityError> {
+  const serverBuild = options.serverBuild?.trim() || bridgeBuild;
+  const capabilities = options.capabilities ?? BRIDGE_SERVER_CAPABILITIES;
   if (input.minRevision > input.maxRevision) {
     return Effect.fail(
       incompatibility("reload", "The client sent an invalid WebSocket protocol range."),
@@ -66,7 +114,7 @@ export function negotiateWsCompatibility(
   }
 
   const missingCapabilities = input.requiredCapabilities.filter(
-    (capability) => !WS_SERVER_CAPABILITIES.some((supported) => supported === capability),
+    (capability) => !capabilities.some((supported) => supported === capability),
   );
   if (missingCapabilities.length > 0) {
     return Effect.fail(
@@ -83,7 +131,7 @@ export function negotiateWsCompatibility(
     negotiatedRevision,
     serverBuild,
     serverInstanceId,
-    capabilities: [...WS_SERVER_CAPABILITIES],
+    capabilities: [...capabilities],
   });
 }
 

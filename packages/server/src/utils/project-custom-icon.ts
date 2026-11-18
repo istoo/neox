@@ -67,18 +67,34 @@ export interface ProjectIconSnapshot {
 
 /** Keeps the icon bytes served by a session aligned with its advertised revision. */
 export class ProjectIconReader {
-  private readonly snapshots = new Map<string, ProjectIconSnapshot>();
+  private readonly snapshots = new Map<
+    string,
+    { snapshot: ProjectIconSnapshot; customIconRevision: string | null }
+  >();
 
   constructor(private readonly neolixHome: string) {}
 
   async snapshot(project: PersistedProjectRecord): Promise<ProjectIconSnapshot> {
     const snapshot = await readProjectIconSnapshot({ neolixHome: this.neolixHome, project });
-    this.snapshots.set(project.projectId, snapshot);
+    this.snapshots.set(project.projectId, {
+      snapshot,
+      customIconRevision: project.customIconRevision ?? null,
+    });
     return snapshot;
   }
 
+  /**
+   * The bytes of the revision this session last advertised. A custom icon set or
+   * cleared since then (by any session) moves the registry revision, so a cached
+   * entry built from an older one is stale, whether or not this session ever
+   * received the project update that would have refreshed it.
+   */
   async read(project: PersistedProjectRecord): Promise<ProjectIcon | null> {
-    return (this.snapshots.get(project.projectId) ?? (await this.snapshot(project))).icon;
+    const cached = this.snapshots.get(project.projectId);
+    if (cached && cached.customIconRevision === (project.customIconRevision ?? null)) {
+      return cached.snapshot.icon;
+    }
+    return (await this.snapshot(project)).icon;
   }
 }
 

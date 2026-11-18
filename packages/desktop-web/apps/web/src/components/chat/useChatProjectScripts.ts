@@ -15,7 +15,9 @@ import { newCommandId, randomUUID } from "~/lib/utils";
 import { readNativeApi } from "~/nativeApi";
 import {
   commandForProjectScript,
+  isServiceProjectScript,
   nextProjectScriptId,
+  parseProjectScriptPort,
   type ProjectScriptRunOptions,
   type ProjectScriptRunResult,
 } from "~/projectScripts";
@@ -101,9 +103,51 @@ export function useChatProjectScripts({
       }
       const targetTerminalId = randomTerminalId();
 
+      // Attach only after the requested cwd/env are set, but before writing so the
+      // session stays accessible if command delivery fails.
+      const attachTerminalToDock = () => {
+        storeEnsureDockTerminal(terminalThreadId, targetPaneId, targetTerminalId);
+        const dockStore = useRightDockStore.getState();
+        if (
+          selectRightDockState(activeThreadId)(dockStore).panes.some(
+            (pane) => pane.id === targetPaneId,
+          )
+        ) {
+          dockStore.setActivePane(activeThreadId, targetPaneId);
+          dockStore.setDockOpen(activeThreadId, true);
+        } else {
+          dockStore.openPane(activeThreadId, { kind: "terminal", paneId: targetPaneId });
+        }
+      };
+
       // React Compiler cannot lower value blocks directly inside `try`; keep
       // those expressions in the nested function while retaining error handling.
       const runScriptInTargetTerminal = async () => {
+        if (isServiceProjectScript(script)) {
+          // Service scripts must go through the workspace-script runtime: it allocates
+          // the ports and injects NEOLIX_PORT/NEOLIX_URL. Reuse the dev-server path
+          // instead of opening a plain terminal, which would leave the script with NaN.
+          const { server } = await api.projects.runDevServer({
+            projectId: activeProject.id,
+            command: script.name,
+            cwd: targetCwd,
+          });
+          if (server.scriptName !== script.name || !server.terminalId) {
+            throw new Error(`The service "${script.name}" is not configured for this workspace.`);
+          }
+          await api.terminal.open({
+            threadId: terminalThreadId,
+            terminalId: targetTerminalId,
+            cwd: targetCwd,
+            attachToDaemonTerminalId: server.terminalId,
+          });
+          attachTerminalToDock();
+          storeSetTerminalMetadata(terminalThreadId, targetTerminalId, {
+            cliKind: null,
+            label: script.name,
+          });
+          return;
+        }
         const { metadata } = await runProjectCommandInTerminal({
           api,
           threadId: terminalThreadId,
@@ -115,22 +159,7 @@ export function useChatProjectScripts({
           command: script.command,
           worktreePath: options?.worktreePath ?? activeThread.worktreePath ?? null,
           ...(options?.env ? { env: options.env } : {}),
-          onOpened: () => {
-            // Attach only after the requested cwd/env are set, but before writing
-            // so the session stays accessible if command delivery fails.
-            storeEnsureDockTerminal(terminalThreadId, targetPaneId, targetTerminalId);
-            const dockStore = useRightDockStore.getState();
-            if (
-              selectRightDockState(activeThreadId)(dockStore).panes.some(
-                (pane) => pane.id === targetPaneId,
-              )
-            ) {
-              dockStore.setActivePane(activeThreadId, targetPaneId);
-              dockStore.setDockOpen(activeThreadId, true);
-            } else {
-              dockStore.openPane(activeThreadId, { kind: "terminal", paneId: targetPaneId });
-            }
-          },
+          onOpened: attachTerminalToDock,
         });
         if (metadata) {
           storeSetTerminalMetadata(terminalThreadId, targetTerminalId, {
@@ -228,6 +257,8 @@ export function useChatProjectScripts({
         command: input.command,
         icon: input.icon,
         runOnWorktreeCreate: input.runOnWorktreeCreate,
+        type: input.runAsService ? "service" : null,
+        port: parseProjectScriptPort(input.port),
       };
       const nextScripts = input.runOnWorktreeCreate
         ? [
@@ -261,6 +292,8 @@ export function useChatProjectScripts({
         command: input.command,
         icon: input.icon,
         runOnWorktreeCreate: input.runOnWorktreeCreate,
+        type: input.runAsService ? "service" : null,
+        port: parseProjectScriptPort(input.port),
       };
       const nextScripts = activeProject.scripts.map((script) =>
         script.id === scriptId
@@ -313,11 +346,31 @@ export function useChatProjectScripts({
     },
     [activeProject, persistProjectScripts],
   );
+  /**
+   * Worktree lifecycle commands live in `neox.json` beside the actions. Emptied fields are
+   * sent as null so the bridge deletes them instead of keeping the previous command.
+   */
+  const saveProjectWorktree = useCallback(
+    async (input: { setup: string; teardown: string }) => {
+      const api = readNativeApi();
+      if (!api || !activeProject) return;
+      await api.orchestration.dispatchCommand({
+        type: "project.meta.update",
+        commandId: newCommandId(),
+        projectId: activeProject.id,
+        worktreeSetup: input.setup.trim() || null,
+        worktreeTeardown: input.teardown.trim() || null,
+      });
+    },
+    [activeProject],
+  );
+
   return {
     runProjectScript,
     saveProjectScript,
     updateProjectScript,
     deleteProjectScript,
+    saveProjectWorktree,
     lastInvokedScriptByProjectId,
   };
 }

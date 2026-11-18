@@ -289,8 +289,9 @@ describe("daemon checkout PR merge loop", () => {
         });
         expect(archiveResult.error).toBeNull();
         expect(archiveResult.success).toBe(true);
-        // Archiving leaves the worktree on disk; disk deletion is a separate step.
-        expect(existsSync(worktree.worktreePath)).toBe(true);
+        // The workspace was the last reference to this Neox-owned worktree, so
+        // archiving removes it from disk (see archive worktree teardown).
+        expect(existsSync(worktree.worktreePath)).toBe(false);
 
         const remainingAgents = await ctx.client.fetchAgents();
         expect(remainingAgents.entries.some((entry) => entry.agent.id === agent.id)).toBe(false);

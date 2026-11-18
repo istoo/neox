@@ -1,7 +1,43 @@
 import { describe, expect, it } from "vitest";
 import { anthropicCodec } from "./anthropic-codec.js";
-import type { IrCitation } from "./ir.js";
+import { geminiCodec } from "./gemini-codec.js";
+import type { IrCitation, IrResponse } from "./ir.js";
+import { openAiChatCodec } from "./openai-chat-codec.js";
+import { openAiResponsesCodec } from "./openai-responses-codec.js";
 import { Citer, CiteStream, citesOf, citeText, urlIn } from "./search-cite.js";
+
+function sseEvents(stream: string): Array<Record<string, unknown>> {
+  return stream
+    .split("\n\n")
+    .map((event) => event.slice(event.indexOf("data:") + 5).trim())
+    .filter((data) => data.length > 0 && data !== "[DONE]")
+    .map((data) => JSON.parse(data) as Record<string, unknown>);
+}
+
+function citedReply(): IrResponse {
+  return {
+    id: "m",
+    parts: [
+      {
+        type: "text",
+        text: "see https://a.test/page.\n",
+        citations: [citationOf("https://a.test/page")],
+      },
+    ],
+    stopReason: "end_turn",
+    usage: { inputTokens: 1, outputTokens: 1 },
+  };
+}
+
+const urlCitation = {
+  type: "url_citation",
+  url_citation: {
+    url: "https://a.test/page",
+    title: "A",
+    start_index: 4,
+    end_index: 23,
+  },
+};
 
 const PAGES = [
   { url: "https://a.test/page", title: "A", text: "  a snippet  " },
@@ -112,5 +148,101 @@ describe("search citations", () => {
     expect(out).toContain('"type":"citations_delta"');
     expect(out).toContain("https://a.test/page");
     expect(out.indexOf("citations_delta")).toBeLessThan(out.indexOf("text_delta"));
+  });
+
+  it("gives Chat clients url_citation annotations on the message and stream", () => {
+    const body = openAiChatCodec.buildResponseBody(citedReply(), "gpt");
+    const choices = body.choices as Array<{ message: Record<string, unknown> }>;
+    expect(choices[0]?.message.annotations).toEqual([urlCitation]);
+
+    const encoder = openAiChatCodec.createStreamEncoder("gpt");
+    const stream =
+      encoder.start() +
+      encoder.push({
+        type: "text_delta",
+        text: "see https://a.test/page.\n",
+        citations: [citationOf("https://a.test/page")],
+      }) +
+      encoder.end();
+    const annotated = sseEvents(stream)
+      .map((chunk) => (chunk.choices as Array<{ delta: Record<string, unknown> }>)[0]?.delta)
+      .find((delta) => delta?.annotations !== undefined);
+    expect(annotated?.annotations).toEqual([urlCitation]);
+  });
+
+  it("gives Responses clients url_citation annotations on output_text", () => {
+    const body = openAiResponsesCodec.buildResponseBody(citedReply(), "gpt");
+    const output = body.output as Array<Record<string, unknown>>;
+    const message = output.find((item) => item.type === "message");
+    const content = message?.content as Array<Record<string, unknown>>;
+    expect(content[0]?.annotations).toEqual([urlCitation]);
+
+    const encoder = openAiResponsesCodec.createStreamEncoder("gpt");
+    const stream =
+      encoder.start() +
+      encoder.push({
+        type: "text_delta",
+        text: "see https://a.test/page.\n",
+        citations: [citationOf("https://a.test/page")],
+      }) +
+      encoder.push({ type: "stop", reason: "end_turn" }) +
+      encoder.end();
+    const added = sseEvents(stream).find(
+      (event) => event.type === "response.output_text.annotation.added",
+    );
+    expect(added?.annotation).toEqual(urlCitation);
+  });
+
+  it("gives Gemini clients grounding metadata on the candidate and stream", () => {
+    const body = geminiCodec.buildResponseBody(
+      {
+        ...citedReply(),
+        parts: [
+          { type: "search", query: "neolix", pages: PAGES },
+          {
+            type: "text",
+            text: "see https://a.test/page.\n",
+            citations: [citationOf("https://a.test/page")],
+          },
+        ],
+      },
+      "gemini",
+    );
+    const candidates = body.candidates as Array<Record<string, unknown>>;
+    expect(candidates[0]?.groundingMetadata).toEqual({
+      webSearchQueries: ["neolix"],
+      groundingChunks: [{ web: { uri: "https://a.test/page", title: "A" } }],
+      groundingSupports: [
+        {
+          segment: { startIndex: 0, endIndex: 25, text: "see https://a.test/page.\n" },
+          groundingChunkIndices: [0],
+        },
+      ],
+    });
+
+    const encoder = geminiCodec.createStreamEncoder("gemini");
+    const stream =
+      encoder.start() +
+      encoder.push({ type: "search", query: "neolix", pages: PAGES }) +
+      encoder.push({
+        type: "text_delta",
+        text: "see https://a.test/page.\n",
+        citations: [citationOf("https://a.test/page")],
+      }) +
+      encoder.push({ type: "stop", reason: "end_turn" }) +
+      encoder.end();
+    const last = sseEvents(stream).at(-1);
+    const streamedCandidates = last?.candidates as Array<Record<string, unknown>> | undefined;
+    const streamed = streamedCandidates?.[0];
+    expect(streamed?.groundingMetadata).toEqual({
+      webSearchQueries: ["neolix"],
+      groundingChunks: [{ web: { uri: "https://a.test/page", title: "A" } }],
+      groundingSupports: [
+        {
+          segment: { startIndex: 0, endIndex: 25, text: "see https://a.test/page.\n" },
+          groundingChunkIndices: [0],
+        },
+      ],
+    });
   });
 });

@@ -1,16 +1,20 @@
-import * as os from "node:os";
 import * as path from "node:path";
 import { Effect, Queue, Stream } from "effect";
 
 import type { BridgeModel } from "./model.ts";
 import type { AnyHandler } from "./stubs.ts";
 import { WS_METHODS } from "@synara/contracts";
-import type { ProviderKind, ServerListProviderUsageInput } from "@synara/contracts";
+import type {
+  ExecutionEnvironmentDescriptor,
+  ProviderKind,
+  ServerListProviderUsageInput,
+} from "@synara/contracts";
 import {
   environmentDescriptor,
   runtimeStatus,
   serverConfig,
   serverSettings,
+  type HostPaths,
 } from "./serverInfo.ts";
 import { ProviderDirectory } from "./providers.ts";
 import { composerCapabilities, listCommands, listModels, listSkills } from "./providerRpc.ts";
@@ -29,6 +33,7 @@ import { makeTerminalHandlers } from "./terminalRpc.ts";
 import { makeFileHandlers } from "./filesRpc.ts";
 import { makeGitHandlers } from "./gitRpc.ts";
 import { makeAutomationHandlers } from "./automationsRpc.ts";
+import { makeBrowserAutomationHandlers } from "./browserAutomationRpc.ts";
 import { makeDevServerHandlers } from "./devServersRpc.ts";
 import { makeVoiceHandlers } from "./voiceRpc.ts";
 import { makeImportHandlers } from "./importRpc.ts";
@@ -37,10 +42,19 @@ import { makeHostHandlers } from "./hostRpc.ts";
 import { makePluginHandlers } from "./pluginsRpc.ts";
 import { makePullRequestHandlers } from "./pullRequestsRpc.ts";
 import { makeSubagentHandlers } from "./subagentsRpc.ts";
+import { makeAttentionHandlers } from "./attentionRpc.ts";
 import { makeWorkspaceHandlers } from "./workspacesRpc.ts";
+import { makeWorkspaceSetupHandlers } from "./workspaceSetupRpc.ts";
 import { makeLibraryHandlers } from "./libraryRpc.ts";
 import { makeGatewayHandlers } from "./gatewayRpc.ts";
-import { projectProvisionFromGitHubHandler } from "./projectsRpc.ts";
+import { makeAgentConnectHandlers } from "./agentConnectRpc.ts";
+import { makeAgentSkillsHandlers } from "./agentSkillsRpc.ts";
+import { makeAppSettingsHandlers } from "./appSettingsRpc.ts";
+import { makeProjectIconHandlers } from "./projectIconsRpc.ts";
+import {
+  projectProvisionFromGitHubHandler,
+  projectSearchGitHubRepositoriesHandler,
+} from "./projectsRpc.ts";
 import { fromPromise } from "./rpcErrors.ts";
 import type { ProjectPins } from "./projectPins.ts";
 
@@ -59,6 +73,10 @@ export function makeHandlers(
   options: {
     readonly environmentId: string;
     readonly home: string;
+    /** Paths from the host this handler map talks to, never the controller's. */
+    readonly paths: HostPaths;
+    /** The host's OS/arch when known; the controller defaults to this process. */
+    readonly platform?: ExecutionEnvironmentDescriptor["platform"] | undefined;
     readonly log: (line: string) => void;
     /** Human name of the host these handlers speak to (the controller or a remote). */
     readonly label?: string;
@@ -81,10 +99,13 @@ export function makeHandlers(
     log: options.log,
   });
   const readConfig = async () =>
-    serverConfig(model.client, directory, os.homedir(), {
-      path: keybindings.path,
-      resolved: await keybindings.resolved(),
-      issues: keybindings.issues(),
+    serverConfig(model.client, directory, {
+      ...options.paths,
+      keybindings: {
+        path: keybindings.path,
+        resolved: await keybindings.resolved(),
+        issues: keybindings.issues(),
+      },
     });
   const state = new ServerState({
     config: readConfig,
@@ -102,8 +123,8 @@ export function makeHandlers(
       await model.client.patchDaemonConfig(daemonPatch as never);
     },
     localSettingsPatch: localProviderSettingsPatch,
-    cwd: os.homedir(),
-    ...(model.homeDir ? { homeDir: model.homeDir } : {}),
+    cwd: options.paths.cwd,
+    ...(options.paths.homeDir ? { homeDir: options.paths.homeDir } : {}),
     log: options.log,
   });
   /** Draft threads have no Neox agent yet, so discovery runs against their model selection. */
@@ -129,10 +150,17 @@ export function makeHandlers(
     ...makePluginHandlers(model),
     ...makePullRequestHandlers(model),
     ...makeSubagentHandlers(model),
+    ...makeAttentionHandlers(model),
     ...makeWorkspaceHandlers(model),
+    ...makeWorkspaceSetupHandlers(model),
     ...makeLibraryHandlers(model),
     ...makeGatewayHandlers(model),
+    ...makeAgentConnectHandlers(model),
+    ...makeAgentSkillsHandlers(model),
+    ...makeAppSettingsHandlers(model),
+    ...makeProjectIconHandlers(model),
     ...makeAutomationHandlers(model),
+    ...makeBrowserAutomationHandlers(model, { log: options.log }),
     ...makeDevServerHandlers(model),
     ...makeVoiceHandlers(model),
     ...makeImportHandlers(model),
@@ -142,7 +170,17 @@ export function makeHandlers(
     }),
     ...makeHostHandlers(model, { daemonHttpBase: options.daemonHttpBase, directory }),
     [WS_METHODS.serverGetEnvironment]: () =>
-      Effect.succeed(environmentDescriptor(options.environmentId, { label: options.label })),
+      Effect.sync(() => {
+        const info = model.client.getLastServerInfoMessage();
+        return environmentDescriptor({
+          environmentId: options.environmentId,
+          serverVersion: info?.version ?? null,
+          features: info?.features,
+          ...(options.label ? { label: options.label } : {}),
+          ...(info?.hostname ? { hostname: info.hostname } : {}),
+          ...(options.platform ? { platform: options.platform } : {}),
+        });
+      }),
     [WS_METHODS.serverGetConfig]: () => fromPromise("server.getConfig", readConfig),
     [WS_METHODS.serverGetSettings]: () => fromPromise("server.getSettings", () => state.settings()),
     [WS_METHODS.serverUpdateSettings]: (payload) =>
@@ -190,7 +228,8 @@ export function makeHandlers(
     [WS_METHODS.subscribeServerKeepAwake]: () =>
       Stream.concat(Stream.fromEffect(Effect.promise(() => state.keepAwake())), Stream.never),
     "orchestration.replayEvents": () => Effect.succeed([]),
-    [WS_METHODS.serverGetRuntimeStatus]: () => Effect.succeed(runtimeStatus()),
+    [WS_METHODS.serverGetRuntimeStatus]: () =>
+      fromPromise("server.getRuntimeStatus", () => runtimeStatus(model.client)),
     [WS_METHODS.providerListModels]: (payload) =>
       fromPromise("provider.listModels", () =>
         listModels(model.client, directory, payload as { provider: string; instanceId?: string }),
@@ -254,5 +293,6 @@ export function makeHandlers(
         ),
       ),
     [WS_METHODS.projectsProvisionFromGitHub]: projectProvisionFromGitHubHandler(model),
+    [WS_METHODS.projectsSearchGitHubRepositories]: projectSearchGitHubRepositoriesHandler(model),
   };
 }

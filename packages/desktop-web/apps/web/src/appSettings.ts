@@ -62,6 +62,7 @@ import {
   RAIL_ORDERABLE_ITEM_IDS,
 } from "./appRail.logic";
 import { normalizeSidebarFooterOrder } from "./sidebarNavOrdering";
+import { normalizeSidebarNavPreferences } from "./lib/sidebarNav.model";
 import { ensureNativeApi } from "./nativeApi";
 import { githubInboxQueryKeys } from "./lib/githubInboxQueryOptions";
 import { providerDiscoveryQueryKeys } from "./lib/providerDiscoveryReactQuery";
@@ -83,6 +84,29 @@ import {
 } from "./lib/chatWidth";
 
 const SERVER_SETTINGS_MIGRATION_STORAGE_KEY = "synara:server-settings-migrated:v1";
+
+/**
+ * When this app last wrote its own settings. The settings sync compares it to
+ * the daemon's per-key patch times, so a change made elsewhere is not erased by
+ * a stale local copy.
+ */
+export const APP_SETTINGS_UPDATED_AT_STORAGE_KEY = "synara:app-settings-updated-at:v1";
+
+export function appSettingsUpdatedAt(): string | null {
+  try {
+    return globalThis.localStorage?.getItem(APP_SETTINGS_UPDATED_AT_STORAGE_KEY) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function markAppSettingsUpdatedAt(): void {
+  try {
+    globalThis.localStorage?.setItem(APP_SETTINGS_UPDATED_AT_STORAGE_KEY, new Date().toISOString());
+  } catch {
+    // Settings still apply for this session when storage is unavailable.
+  }
+}
 
 function hasCompletedServerSettingsMigration(): boolean {
   return globalThis.localStorage?.getItem(SERVER_SETTINGS_MIGRATION_STORAGE_KEY) === "1";
@@ -201,6 +225,7 @@ function persistedKnownIdList<const Ids extends ReadonlyArray<string>>(ids: Ids)
 }
 
 const RailOrderableItemIdList = persistedKnownIdList(RAIL_ORDERABLE_ITEM_IDS);
+
 /** Where the Tasks entry opens: the to-do list or the Kanban board of chats. */
 export const TasksViewMode = Schema.Literals(["list", "kanban"]);
 export type TasksViewMode = typeof TasksViewMode.Type;
@@ -327,6 +352,11 @@ const withDefaults =
       Schema.withConstructorDefault(() => Option.some(fallback())),
       Schema.withDecodingDefault(() => fallback()),
     );
+
+/** Saved sidebar row order and visibility; unknown keys are kept for a returning plugin. */
+const SidebarNavPreferenceList = Schema.Array(
+  Schema.Struct({ key: Schema.String, visible: Schema.Boolean }),
+).pipe(withDefaults(() => []));
 
 /** Which composer key sends: plain Enter, or the platform modifier + Enter. */
 export const SendShortcut = Schema.Literals(["enter", "mod-enter"]);
@@ -737,6 +767,9 @@ export const AppSettingsSchema = Schema.Struct({
     withDefaults(() => DEFAULT_SIDEBAR_THREAD_TRAILING),
   ),
   sidebarRowItems: SidebarRowItemsSchema.pipe(withDefaults(() => DEFAULT_SIDEBAR_ROW_ITEMS)),
+  // Sidebar header/footer entries in display order; empty uses the built-in order.
+  sidebarNavItems: SidebarNavPreferenceList,
+  sidebarFooterItems: SidebarNavPreferenceList,
   timestampFormat: TimestampFormat.pipe(withDefaults(() => DEFAULT_TIMESTAMP_FORMAT)),
   customCodexModels: Schema.Array(Schema.String).pipe(withDefaults(() => [])),
   customClaudeModels: Schema.Array(Schema.String).pipe(withDefaults(() => [])),
@@ -1737,6 +1770,8 @@ function normalizeAppSettings(settings: AppSettings): AppSettings {
     railItemOrder: normalizeRailItemOrder(settings.railItemOrder),
     hiddenRailItems: normalizeHiddenRailItems(settings.hiddenRailItems),
     sidebarFooterOrder: normalizeSidebarFooterOrder(settings.sidebarFooterOrder),
+    sidebarNavItems: normalizeSidebarNavPreferences(settings.sidebarNavItems),
+    sidebarFooterItems: normalizeSidebarNavPreferences(settings.sidebarFooterItems),
     hiddenModels: [],
   };
 }
@@ -3047,6 +3082,7 @@ export function useAppSettings() {
   };
 
   const updateSettingsAndWait = async (patch: Partial<AppSettings>): Promise<void> => {
+    markAppSettingsUpdatedAt();
     const providerInstancesBeforePatch =
       patch.providerInstances !== undefined ? localSettings.providerInstances : undefined;
     // The pending migration ref retains the one plaintext snapshot that still
@@ -3105,6 +3141,7 @@ export function useAppSettings() {
   };
 
   const resetSettings = async (): Promise<void> => {
+    markAppSettingsUpdatedAt();
     // "Restore defaults" resets preferences, not lifecycle markers: clearing the
     // onboarding completion timestamp would replay the first-run tour on the next launch.
     const { onboardingCompletedAt: _keepOnboardingCompletedAt, ...resettableDefaults } = defaults;

@@ -7,6 +7,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 
+import { useBuiltinFeatures } from "~/hooks/useBuiltinFeatures";
 import { neolixGatewayApi } from "~/lib/neolixGatewayApi";
 import type {
   GatewayConfig,
@@ -176,6 +177,7 @@ function parseAliases(value: string): Record<string, string> {
 
 export function GatewayAdvancedPane({ config, searchVendors, edit, apply }: GatewayAdvancedProps) {
   const { t } = useTranslation();
+  const { isEnabled } = useBuiltinFeatures();
   const [raw, setRaw] = useState(() => JSON.stringify(config, null, 2));
   const [rawError, setRawError] = useState<string | null>(null);
   useEffect(() => {
@@ -236,23 +238,25 @@ export function GatewayAdvancedPane({ config, searchVendors, edit, apply }: Gate
             />
           }
         />
-        <GatewayRow
-          title={t("gateway:budget")}
-          description={t("gateway:budget_hint")}
-          trailing={
-            <div className="w-36">
-              <BudgetField
-                value={config.budget?.monthlyUsd}
-                onSave={(value) =>
-                  void apply((draft) => {
-                    draft.budget =
-                      value === undefined ? undefined : { ...draft.budget, monthlyUsd: value };
-                  })
-                }
-              />
-            </div>
-          }
-        />
+        {isEnabled("budget") ? (
+          <GatewayRow
+            title={t("gateway:budget")}
+            description={t("gateway:budget_hint")}
+            trailing={
+              <div className="w-36">
+                <BudgetField
+                  value={config.budget?.monthlyUsd}
+                  onSave={(value) =>
+                    void apply((draft) => {
+                      draft.budget =
+                        value === undefined ? undefined : { ...draft.budget, monthlyUsd: value };
+                    })
+                  }
+                />
+              </div>
+            }
+          />
+        ) : null}
         <GatewayRow
           title={t("gateway:model_names")}
           description={t("gateway:model_names_hint")}
@@ -400,301 +404,315 @@ export function GatewayAdvancedPane({ config, searchVendors, edit, apply }: Gate
             ) : null}
           </div>
         </GatewayRow>
-        <GatewayRow title={t("gateway:turn_done_title")} description={t("gateway:turn_done_hint")}>
-          <div className="flex flex-wrap items-end gap-2">
-            <label className="flex items-center gap-2 text-ui-sm">
-              <GatewayToggle
-                checked={(config.turnDoneSeconds ?? 0) > 0}
-                label={t("gateway:turn_done_title")}
-                onChange={(checked) =>
-                  void apply((draft) => {
-                    draft.turnDoneSeconds = checked ? 120 : 0;
-                  })
-                }
-              />
-              {t("gateway:enabled")}
-            </label>
-            {(config.turnDoneSeconds ?? 0) > 0 ? (
-              <div className="w-32">
-                <GatewayNumberField
-                  label={t("gateway:turn_done_seconds")}
-                  value={config.turnDoneSeconds}
-                  min={1}
-                  max={3600}
-                  onChange={(value) =>
-                    edit((draft) => {
-                      draft.turnDoneSeconds = value ?? 0;
-                    })
-                  }
-                />
-              </div>
-            ) : null}
-          </div>
-        </GatewayRow>
-      </SettingsSection>
-
-      <SettingsSection title="gateway:search_title">
-        <GatewayRow
-          title={t("gateway:search_enabled")}
-          description={t("gateway:search_enabled_hint")}
-          trailing={
-            <GatewayToggle
-              checked={config.search?.enabled === true}
-              label={t("gateway:search_enabled")}
-              onChange={(checked) =>
-                void apply((draft) => {
-                  draft.search = { ...draft.search, enabled: checked };
-                })
-              }
-            />
-          }
-        />
-        {config.search?.enabled === true ? (
-          <>
-            {apis.length === 0 ? (
-              <div className="px-3 py-2">
-                <GatewayEmpty>{t("gateway:search_no_apis")}</GatewayEmpty>
-              </div>
-            ) : (
-              apis.map((api, index) => (
-                <div key={`${api.vendor}-${api.url ?? ""}-${api.key ?? ""}`} className="px-3 py-2">
-                  <div className="grid gap-2 sm:grid-cols-3">
-                    <label className="flex flex-col gap-1">
-                      <span className="text-ui-sm text-muted-foreground">
-                        {t("gateway:search_vendor")}
-                      </span>
-                      <select
-                        value={api.vendor}
-                        onChange={(event) =>
-                          writeApis(
-                            apis.map((entry, at) =>
-                              at === index
-                                ? { ...entry, vendor: event.currentTarget.value }
-                                : entry,
-                            ),
-                          )
-                        }
-                        className="h-7 rounded-md border border-[color:var(--color-border)] bg-background px-2 text-ui-sm"
-                      >
-                        {vendors.map((vendor) => (
-                          <option key={vendor.vendor} value={vendor.vendor}>
-                            {vendor.name}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <GatewayField
-                      label={t("gateway:api_key")}
-                      value={api.key ?? ""}
-                      type="password"
-                      onChange={(value) =>
-                        writeApis(
-                          apis.map((entry, at) =>
-                            at === index ? { ...entry, key: value || undefined } : entry,
-                          ),
-                        )
-                      }
-                    />
-                    <GatewayField
-                      label={t("gateway:search_url")}
-                      value={api.url ?? ""}
-                      onChange={(value) =>
-                        writeApis(
-                          apis.map((entry, at) =>
-                            at === index ? { ...entry, url: value || undefined } : entry,
-                          ),
-                        )
-                      }
-                    />
-                  </div>
-                  <div className="mt-1 flex flex-wrap items-center gap-2">
-                    <label className="flex items-center gap-2 text-ui-sm">
-                      <GatewayToggle
-                        checked={api.off !== true}
-                        label={t("gateway:search_api_on", { vendor: api.vendor })}
-                        onChange={(checked) =>
-                          writeApis(
-                            apis.map((entry, at) =>
-                              at === index ? { ...entry, off: checked ? undefined : true } : entry,
-                            ),
-                          )
-                        }
-                      />
-                      {t("gateway:enabled")}
-                    </label>
-                    <label className="flex items-center gap-2 text-ui-sm">
-                      <GatewayToggle
-                        checked={api.pick === "order"}
-                        label={`${api.vendor} order`}
-                        onChange={(checked) =>
-                          writeApis(
-                            apis.map((entry, at) =>
-                              at === index
-                                ? { ...entry, pick: checked ? "order" : undefined }
-                                : entry,
-                            ),
-                          )
-                        }
-                      />
-                      {t("gateway:search_pick")}
-                    </label>
-                    <Button
-                      size="xs"
-                      variant="ghost"
-                      onClick={() => writeApis(apis.filter((_, at) => at !== index))}
-                    >
-                      {t("gateway:remove")}
-                    </Button>
-                  </div>
-                  <SearchKeysQuota api={api} />
-                </div>
-              ))
-            )}
-            <div className="flex flex-wrap items-center gap-2 px-3 py-2">
-              <Button
-                size="xs"
-                variant="outline"
-                onClick={() =>
-                  writeApis([...apis, { vendor: vendors[0]?.vendor ?? "tavily", key: "" }])
-                }
-              >
-                {t("gateway:add_search_api")}
-              </Button>
-              <div className="w-40">
-                <GatewayNumberField
-                  label={t("gateway:search_monthly")}
-                  value={config.search?.monthlyCalls ?? undefined}
-                  min={1}
-                  onChange={(value) =>
-                    void apply((draft) => {
-                      draft.search = {
-                        ...draft.search,
-                        enabled: true,
-                        monthlyCalls: value ?? null,
-                      };
-                    })
-                  }
-                />
-              </div>
-            </div>
-            <div className="grid gap-2 px-3 py-2 sm:grid-cols-2">
-              <label className="flex flex-col gap-1">
-                <span className="text-ui-sm text-muted-foreground">{t("gateway:searcher")}</span>
-                <select
-                  value={searcherValue}
-                  onChange={(event) =>
-                    void apply((draft) => {
-                      draft.search = {
-                        ...draft.search,
-                        searcher: event.currentTarget.value || undefined,
-                      };
-                    })
-                  }
-                  className="h-7 rounded-md border border-[color:var(--color-border)] bg-background px-2 text-ui-sm"
-                >
-                  <option value="">{t("gateway:searcher_auto")}</option>
-                  <option value="off">{t("gateway:searcher_off")}</option>
-                  {searcherExtra.map((choice) => (
-                    <option key={choice.value} value={choice.value}>
-                      {choice.label}
-                    </option>
-                  ))}
-                  {searcherChoices.map((choice) => (
-                    <option key={choice.value} value={choice.value}>
-                      {choice.label}
-                    </option>
-                  ))}
-                </select>
-                {searcherChoices.length === 0 ? (
-                  <span className="text-ui-xs text-muted-foreground">
-                    {t("gateway:searcher_none")}
-                  </span>
-                ) : null}
-              </label>
-              <GatewayField
-                label={t("gateway:searcher_then")}
-                value={listText(config.search?.searcherThen)}
-                onChange={(value) =>
-                  void apply((draft) => {
-                    draft.search = { ...draft.search, searcherThen: stringList(value) };
-                  })
-                }
-              />
-            </div>
-            <div className="flex flex-wrap gap-4 px-3 py-2">
+        {isEnabled("middleware") ? (
+          <GatewayRow
+            title={t("gateway:turn_done_title")}
+            description={t("gateway:turn_done_hint")}
+          >
+            <div className="flex flex-wrap items-end gap-2">
               <label className="flex items-center gap-2 text-ui-sm">
                 <GatewayToggle
-                  checked={config.search?.searchAll === true}
-                  label={t("gateway:search_all")}
+                  checked={(config.turnDoneSeconds ?? 0) > 0}
+                  label={t("gateway:turn_done_title")}
                   onChange={(checked) =>
                     void apply((draft) => {
-                      draft.search = { ...draft.search, searchAll: checked };
+                      draft.turnDoneSeconds = checked ? 120 : 0;
                     })
                   }
                 />
-                {t("gateway:search_all")}
+                {t("gateway:enabled")}
               </label>
-              <label className="flex items-center gap-2 text-ui-sm">
-                <select
-                  value={config.search?.searchFirst ?? ""}
-                  onChange={(event) =>
-                    void apply((draft) => {
-                      draft.search = {
-                        ...draft.search,
-                        searchFirst: event.currentTarget.value as "" | "model" | "api",
-                      };
-                    })
-                  }
-                  className="h-7 rounded-md border border-[color:var(--color-border)] bg-background px-2 text-ui-xs"
-                >
-                  <option value="">model</option>
-                  <option value="api">api</option>
-                </select>
-                {t("gateway:search_first")}
-              </label>
+              {(config.turnDoneSeconds ?? 0) > 0 ? (
+                <div className="w-32">
+                  <GatewayNumberField
+                    label={t("gateway:turn_done_seconds")}
+                    value={config.turnDoneSeconds}
+                    min={1}
+                    max={3600}
+                    onChange={(value) =>
+                      edit((draft) => {
+                        draft.turnDoneSeconds = value ?? 0;
+                      })
+                    }
+                  />
+                </div>
+              ) : null}
             </div>
-          </>
+          </GatewayRow>
         ) : null}
       </SettingsSection>
 
-      <SettingsSection title="gateway:middleware_title">
-        <div className="px-3 py-2">
-          <GatewayTextarea
-            label={t("gateway:aliases")}
-            value={aliasesText(config.middleware?.aliases)}
-            onChange={(value) =>
-              edit((draft) => {
-                draft.middleware = {
-                  ...draft.middleware,
-                  aliases: parseAliases(value),
-                };
-              })
+      {isEnabled("search") ? (
+        <SettingsSection title="gateway:search_title">
+          <GatewayRow
+            title={t("gateway:search_enabled")}
+            description={t("gateway:search_enabled_hint")}
+            trailing={
+              <GatewayToggle
+                checked={config.search?.enabled === true}
+                label={t("gateway:search_enabled")}
+                onChange={(checked) =>
+                  void apply((draft) => {
+                    draft.search = { ...draft.search, enabled: checked };
+                  })
+                }
+              />
             }
-            rows={3}
-            placeholder="fast=deepseek/deepseek-v4-pro"
-            hint={t("gateway:aliases_hint")}
           />
-        </div>
-        <div className="px-3 py-2">
-          <GatewayTextarea
-            label={t("gateway:overrides")}
-            value={JSON.stringify(config.middleware?.overrides ?? [], null, 2)}
-            onChange={(value) => {
-              try {
-                const parsed: unknown = JSON.parse(value);
-                if (!Array.isArray(parsed)) return;
+          {config.search?.enabled === true ? (
+            <>
+              {apis.length === 0 ? (
+                <div className="px-3 py-2">
+                  <GatewayEmpty>{t("gateway:search_no_apis")}</GatewayEmpty>
+                </div>
+              ) : (
+                apis.map((api, index) => (
+                  <div
+                    key={`${api.vendor}-${api.url ?? ""}-${api.key ?? ""}`}
+                    className="px-3 py-2"
+                  >
+                    <div className="grid gap-2 sm:grid-cols-3">
+                      <label className="flex flex-col gap-1">
+                        <span className="text-ui-sm text-muted-foreground">
+                          {t("gateway:search_vendor")}
+                        </span>
+                        <select
+                          value={api.vendor}
+                          onChange={(event) =>
+                            writeApis(
+                              apis.map((entry, at) =>
+                                at === index
+                                  ? { ...entry, vendor: event.currentTarget.value }
+                                  : entry,
+                              ),
+                            )
+                          }
+                          className="h-7 rounded-md border border-[color:var(--color-border)] bg-background px-2 text-ui-sm"
+                        >
+                          {vendors.map((vendor) => (
+                            <option key={vendor.vendor} value={vendor.vendor}>
+                              {vendor.name}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <GatewayField
+                        label={t("gateway:api_key")}
+                        value={api.key ?? ""}
+                        type="password"
+                        onChange={(value) =>
+                          writeApis(
+                            apis.map((entry, at) =>
+                              at === index ? { ...entry, key: value || undefined } : entry,
+                            ),
+                          )
+                        }
+                      />
+                      <GatewayField
+                        label={t("gateway:search_url")}
+                        value={api.url ?? ""}
+                        onChange={(value) =>
+                          writeApis(
+                            apis.map((entry, at) =>
+                              at === index ? { ...entry, url: value || undefined } : entry,
+                            ),
+                          )
+                        }
+                      />
+                    </div>
+                    <div className="mt-1 flex flex-wrap items-center gap-2">
+                      <label className="flex items-center gap-2 text-ui-sm">
+                        <GatewayToggle
+                          checked={api.off !== true}
+                          label={t("gateway:search_api_on", { vendor: api.vendor })}
+                          onChange={(checked) =>
+                            writeApis(
+                              apis.map((entry, at) =>
+                                at === index
+                                  ? { ...entry, off: checked ? undefined : true }
+                                  : entry,
+                              ),
+                            )
+                          }
+                        />
+                        {t("gateway:enabled")}
+                      </label>
+                      <label className="flex items-center gap-2 text-ui-sm">
+                        <GatewayToggle
+                          checked={api.pick === "order"}
+                          label={`${api.vendor} order`}
+                          onChange={(checked) =>
+                            writeApis(
+                              apis.map((entry, at) =>
+                                at === index
+                                  ? { ...entry, pick: checked ? "order" : undefined }
+                                  : entry,
+                              ),
+                            )
+                          }
+                        />
+                        {t("gateway:search_pick")}
+                      </label>
+                      <Button
+                        size="xs"
+                        variant="ghost"
+                        onClick={() => writeApis(apis.filter((_, at) => at !== index))}
+                      >
+                        {t("gateway:remove")}
+                      </Button>
+                    </div>
+                    <SearchKeysQuota api={api} />
+                  </div>
+                ))
+              )}
+              <div className="flex flex-wrap items-center gap-2 px-3 py-2">
+                <Button
+                  size="xs"
+                  variant="outline"
+                  onClick={() =>
+                    writeApis([...apis, { vendor: vendors[0]?.vendor ?? "tavily", key: "" }])
+                  }
+                >
+                  {t("gateway:add_search_api")}
+                </Button>
+                <div className="w-40">
+                  <GatewayNumberField
+                    label={t("gateway:search_monthly")}
+                    value={config.search?.monthlyCalls ?? undefined}
+                    min={1}
+                    onChange={(value) =>
+                      void apply((draft) => {
+                        draft.search = {
+                          ...draft.search,
+                          enabled: true,
+                          monthlyCalls: value ?? null,
+                        };
+                      })
+                    }
+                  />
+                </div>
+              </div>
+              <div className="grid gap-2 px-3 py-2 sm:grid-cols-2">
+                <label className="flex flex-col gap-1">
+                  <span className="text-ui-sm text-muted-foreground">{t("gateway:searcher")}</span>
+                  <select
+                    value={searcherValue}
+                    onChange={(event) =>
+                      void apply((draft) => {
+                        draft.search = {
+                          ...draft.search,
+                          searcher: event.currentTarget.value || undefined,
+                        };
+                      })
+                    }
+                    className="h-7 rounded-md border border-[color:var(--color-border)] bg-background px-2 text-ui-sm"
+                  >
+                    <option value="">{t("gateway:searcher_auto")}</option>
+                    <option value="off">{t("gateway:searcher_off")}</option>
+                    {searcherExtra.map((choice) => (
+                      <option key={choice.value} value={choice.value}>
+                        {choice.label}
+                      </option>
+                    ))}
+                    {searcherChoices.map((choice) => (
+                      <option key={choice.value} value={choice.value}>
+                        {choice.label}
+                      </option>
+                    ))}
+                  </select>
+                  {searcherChoices.length === 0 ? (
+                    <span className="text-ui-xs text-muted-foreground">
+                      {t("gateway:searcher_none")}
+                    </span>
+                  ) : null}
+                </label>
+                <GatewayField
+                  label={t("gateway:searcher_then")}
+                  value={listText(config.search?.searcherThen)}
+                  onChange={(value) =>
+                    void apply((draft) => {
+                      draft.search = { ...draft.search, searcherThen: stringList(value) };
+                    })
+                  }
+                />
+              </div>
+              <div className="flex flex-wrap gap-4 px-3 py-2">
+                <label className="flex items-center gap-2 text-ui-sm">
+                  <GatewayToggle
+                    checked={config.search?.searchAll === true}
+                    label={t("gateway:search_all")}
+                    onChange={(checked) =>
+                      void apply((draft) => {
+                        draft.search = { ...draft.search, searchAll: checked };
+                      })
+                    }
+                  />
+                  {t("gateway:search_all")}
+                </label>
+                <label className="flex items-center gap-2 text-ui-sm">
+                  <select
+                    value={config.search?.searchFirst ?? ""}
+                    onChange={(event) =>
+                      void apply((draft) => {
+                        draft.search = {
+                          ...draft.search,
+                          searchFirst: event.currentTarget.value as "" | "model" | "api",
+                        };
+                      })
+                    }
+                    className="h-7 rounded-md border border-[color:var(--color-border)] bg-background px-2 text-ui-xs"
+                  >
+                    <option value="">model</option>
+                    <option value="api">api</option>
+                  </select>
+                  {t("gateway:search_first")}
+                </label>
+              </div>
+            </>
+          ) : null}
+        </SettingsSection>
+      ) : null}
+
+      {isEnabled("middleware") ? (
+        <SettingsSection title="gateway:middleware_title">
+          <div className="px-3 py-2">
+            <GatewayTextarea
+              label={t("gateway:aliases")}
+              value={aliasesText(config.middleware?.aliases)}
+              onChange={(value) =>
                 edit((draft) => {
-                  draft.middleware = { ...draft.middleware, overrides: parsed };
-                });
-              } catch {
-                // Keep typing; the last valid JSON stays in the draft.
+                  draft.middleware = {
+                    ...draft.middleware,
+                    aliases: parseAliases(value),
+                  };
+                })
               }
-            }}
-            rows={5}
-            hint={t("gateway:overrides_hint")}
-          />
-        </div>
-      </SettingsSection>
+              rows={3}
+              placeholder="fast=deepseek/deepseek-v4-pro"
+              hint={t("gateway:aliases_hint")}
+            />
+          </div>
+          <div className="px-3 py-2">
+            <GatewayTextarea
+              label={t("gateway:overrides")}
+              value={JSON.stringify(config.middleware?.overrides ?? [], null, 2)}
+              onChange={(value) => {
+                try {
+                  const parsed: unknown = JSON.parse(value);
+                  if (!Array.isArray(parsed)) return;
+                  edit((draft) => {
+                    draft.middleware = { ...draft.middleware, overrides: parsed };
+                  });
+                } catch {
+                  // Keep typing; the last valid JSON stays in the draft.
+                }
+              }}
+              rows={5}
+              hint={t("gateway:overrides_hint")}
+            />
+          </div>
+        </SettingsSection>
+      ) : null}
 
       <SettingsSection title="gateway:raw_title">
         <div className="space-y-2 px-3 py-2">
@@ -1066,7 +1084,7 @@ function PluginSubscriptionsSection() {
         .then((result) => {
           if (stopped || result.status !== "signed_in") return;
           setPending(null);
-          setSignedIn(pendingProvider.id);
+          setSignedIn(pendingProvider.label);
         })
         .catch((cause: unknown) => {
           if (stopped) return;
@@ -1100,7 +1118,7 @@ function PluginSubscriptionsSection() {
       })
       .then((result) => {
         if (result.status === "signed_in") {
-          setSignedIn(provider.id);
+          setSignedIn(provider.label);
           return;
         }
         if (result.token === undefined) {
@@ -1157,12 +1175,14 @@ function PluginSubscriptionsSection() {
               {prompt.type === "select" ? (
                 <select
                   value={values[prompt.key] ?? ""}
-                  onChange={(event) =>
+                  onChange={(event) => {
+                    // React clears currentTarget before the updater runs.
+                    const value = event.currentTarget.value;
                     setValues((current) => ({
                       ...current,
-                      [prompt.key]: event.currentTarget.value,
-                    }))
-                  }
+                      [prompt.key]: value,
+                    }));
+                  }}
                   className="h-7 rounded-md border border-[color:var(--color-border)] bg-background px-2 text-ui-sm"
                 >
                   <option value="">{prompt.placeholder ?? ""}</option>
@@ -1178,12 +1198,14 @@ function PluginSubscriptionsSection() {
                   placeholder={prompt.placeholder}
                   size="sm"
                   variant="soft"
-                  onChange={(event) =>
+                  onChange={(event) => {
+                    // React clears currentTarget before the updater runs.
+                    const value = event.currentTarget.value;
                     setValues((current) => ({
                       ...current,
-                      [prompt.key]: event.currentTarget.value,
-                    }))
-                  }
+                      [prompt.key]: value,
+                    }));
+                  }}
                 />
               )}
             </label>

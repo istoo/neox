@@ -139,6 +139,7 @@ describe("tool call structure", () => {
       modeId: "bypassPermissions",
     });
 
+    await ctx.client.subscribeAgentTimeline(agent.id, () => {}).ready;
     collector.clear();
 
     await ctx.client.sendMessage(
@@ -181,6 +182,7 @@ describe("tool call structure", () => {
       modeId: "bypassPermissions",
     });
 
+    await ctx.client.subscribeAgentTimeline(agent.id, () => {}).ready;
     collector.clear();
 
     await ctx.client.sendMessage(
@@ -225,6 +227,7 @@ describe("tool call structure", () => {
       modeId: "bypassPermissions",
     });
 
+    await ctx.client.subscribeAgentTimeline(agent.id, () => {}).ready;
     collector.clear();
 
     await ctx.client.sendMessage(
@@ -271,6 +274,7 @@ describe("tool call structure", () => {
       modeId: "full-access",
     });
 
+    await ctx.client.subscribeAgentTimeline(agent.id, () => {}).ready;
     collector.clear();
 
     await ctx.client.sendMessage(
@@ -314,6 +318,7 @@ describe("tool call structure", () => {
       modeId: "full-access",
     });
 
+    await ctx.client.subscribeAgentTimeline(agent.id, () => {}).ready;
     collector.clear();
 
     await ctx.client.sendMessage(
@@ -356,6 +361,7 @@ describe("tool call structure", () => {
       modeId: "full-access",
     });
 
+    await ctx.client.subscribeAgentTimeline(agent.id, () => {}).ready;
     collector.clear();
 
     await ctx.client.sendMessage(

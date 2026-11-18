@@ -25,7 +25,11 @@ import {
   decodeProjectScriptKeybindingRule,
   keybindingValueForCommand,
 } from "~/lib/projectScriptKeybindings";
-import { commandForProjectScript, nextProjectScriptId } from "~/projectScripts";
+import {
+  commandForProjectScript,
+  nextProjectScriptId,
+  projectScriptPortText,
+} from "~/projectScripts";
 import {
   AlertDialog,
   AlertDialogClose,
@@ -81,6 +85,10 @@ export interface NewProjectScriptInput {
   command: string;
   icon: ProjectScriptIcon;
   runOnWorktreeCreate: boolean;
+  /** Persists as `scripts[name].type = "service"`. */
+  runAsService: boolean;
+  /** Persists as `scripts[name].port`; empty clears it. */
+  port: string;
   keybinding: string | null;
 }
 
@@ -117,6 +125,8 @@ export function ProjectActionDialog({
   const [icon, setIcon] = useState<ProjectScriptIcon>("play");
   const [iconPickerOpen, setIconPickerOpen] = useState(false);
   const [runOnWorktreeCreate, setRunOnWorktreeCreate] = useState(false);
+  const [runAsService, setRunAsService] = useState(false);
+  const [port, setPort] = useState("");
   const [keybinding, setKeybinding] = useState("");
   const [validationError, setValidationError] = useState<string | null>(null);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
@@ -140,6 +150,8 @@ export function ProjectActionDialog({
       setCommand(editingScript.command);
       setIcon(editingScript.icon);
       setRunOnWorktreeCreate(editingScript.runOnWorktreeCreate);
+      setRunAsService(editingScript.type === "service");
+      setPort(projectScriptPortText(editingScript));
       setKeybinding(
         keybindingValueForCommand(keybindings, commandForProjectScript(editingScript.id)) ?? "",
       );
@@ -149,6 +161,8 @@ export function ProjectActionDialog({
     setCommand("");
     setIcon("play");
     setRunOnWorktreeCreate(false);
+    setRunAsService(false);
+    setPort("");
     setKeybinding("");
   }, [open, editingScript, keybindings]);
 
@@ -201,6 +215,8 @@ export function ProjectActionDialog({
         command: trimmedCommand,
         icon,
         runOnWorktreeCreate,
+        runAsService,
+        port: port.trim(),
         keybinding: keybindingValue,
       });
       onOpenChange(false);
@@ -320,6 +336,33 @@ export function ProjectActionDialog({
                   onCheckedChange={(checked) => setRunOnWorktreeCreate(Boolean(checked))}
                 />
               </label>
+              <label className="flex items-center justify-between gap-3 rounded-md border border-border/70 px-3 py-2 text-ui leading-snug">
+                <span className="flex flex-col">
+                  <span>{t("workspace:scripts_runAsService")}</span>
+                  <span className="text-muted-foreground">
+                    {t("workspace:scripts_serviceHint")}
+                  </span>
+                </span>
+                <Switch
+                  checked={runAsService}
+                  aria-label={t("workspace:scripts_runAsService")}
+                  onCheckedChange={(checked) => setRunAsService(Boolean(checked))}
+                />
+              </label>
+              {runAsService && (
+                <div className="space-y-1.5">
+                  <Label htmlFor={`${fieldIdPrefix}-script-port`}>
+                    {t("workspace:scripts_port")}
+                  </Label>
+                  <Input
+                    id={`${fieldIdPrefix}-script-port`}
+                    inputMode="numeric"
+                    placeholder="3000"
+                    value={port}
+                    onChange={(event) => setPort(event.target.value)}
+                  />
+                </div>
+              )}
               {validationError && (
                 <p className="text-ui leading-snug text-destructive">{validationError}</p>
               )}

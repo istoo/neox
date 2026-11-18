@@ -10,6 +10,10 @@ import type {
   PullRequestCheck,
   PullRequestComment,
   PullRequestDetail,
+  PullRequestPipeline,
+  PullRequestPipelineJob,
+  PullRequestPipelineStage,
+  PullRequestPipelineSummary,
   PullRequestState,
 } from "@synara/contracts";
 
@@ -19,15 +23,33 @@ export interface NeolixPrCheck {
   readonly name: string;
   readonly status: string;
   readonly url: string | null;
+  readonly duration?: string;
+  readonly checkRunId?: number;
+  readonly workflowRunId?: number;
 }
 
 export interface NeolixPrGithubFacts {
   readonly mergeStateStatus?: string | null;
+  /** Set when the forge already holds an auto-merge request. */
+  readonly autoMergeRequest?: {
+    readonly mergeMethod?: string | null;
+  } | null;
+  readonly viewerCanEnableAutoMerge?: boolean;
+  readonly viewerCanDisableAutoMerge?: boolean;
   readonly repository?: {
     readonly mergeCommitAllowed?: boolean;
     readonly squashMergeAllowed?: boolean;
     readonly rebaseMergeAllowed?: boolean;
   };
+}
+
+/** The forge's validated PR facts: pipeline identity, plus GitLab's approval rule. */
+export interface NeolixPrForgeFacts {
+  readonly pipelineId?: number | null;
+  readonly pipelineStatus?: string | null;
+  readonly pipelineUrl?: string | null;
+  readonly approvalsRequired?: number | null;
+  readonly approvalsGiven?: number | null;
 }
 
 export interface NeolixPrStatus {
@@ -46,6 +68,33 @@ export interface NeolixPrStatus {
   readonly repoOwner?: string;
   readonly repoName?: string;
   readonly github?: NeolixPrGithubFacts;
+  readonly forgeSpecific?: NeolixPrForgeFacts;
+}
+
+/** The forge check-details payload's pipeline, as the daemon normalizes it. */
+export interface NeolixPipelineJob {
+  readonly id: number;
+  readonly name: string;
+  readonly stage: string;
+  readonly status: string;
+  readonly url?: string | null;
+  readonly allowFailure?: boolean;
+  readonly durationSeconds?: number | null;
+}
+
+export interface NeolixPipelineStage {
+  readonly name: string;
+  readonly status: string;
+  readonly jobs?: ReadonlyArray<NeolixPipelineJob>;
+}
+
+export interface NeolixPipeline {
+  readonly id: number;
+  readonly status: string;
+  readonly url?: string | null;
+  readonly ref?: string | null;
+  readonly sha?: string | null;
+  readonly stages?: ReadonlyArray<NeolixPipelineStage>;
 }
 
 export interface NeolixPrStatusPayload {
@@ -201,7 +250,111 @@ function checkStatus(value: string): PullRequestCheck["status"] {
   return "pending";
 }
 
-export function toPullRequestChecks(status: NeolixPrStatus): ReadonlyArray<PullRequestCheck> {
+/** Formatted the way the daemon formats GitHub check durations, e.g. "1m 4s". */
+export function formatCheckDurationSeconds(totalSeconds: number): string {
+  const hours = Math.floor(totalSeconds / 3_600);
+  const minutes = Math.floor((totalSeconds % 3_600) / 60);
+  const seconds = totalSeconds % 60;
+  const parts: string[] = [];
+  if (hours > 0) parts.push(`${hours}h`);
+  if (minutes > 0) parts.push(`${minutes}m`);
+  if (seconds > 0 || parts.length === 0) parts.push(`${seconds}s`);
+  return parts.join(" ");
+}
+
+/**
+ * The duration the status already carries wins; for forges that only expose job
+ * timing through check details (GitLab), fall back to the pipeline job's id.
+ */
+function checkDuration(
+  check: NeolixPrCheck,
+  durationsByCheckRunId: ReadonlyMap<number, string> | undefined,
+): string | undefined {
+  const reported = check.duration?.trim();
+  if (reported) {
+    return reported;
+  }
+  if (check.checkRunId === undefined) {
+    return undefined;
+  }
+  return durationsByCheckRunId?.get(check.checkRunId);
+}
+
+/** The forge-side pipeline id, when the checkout's PR has one. */
+export function forgePipelineId(status: NeolixPrStatus): number | null {
+  const id = status.forgeSpecific?.pipelineId;
+  return typeof id === "number" && Number.isFinite(id) && id > 0 ? Math.trunc(id) : null;
+}
+
+export function toPullRequestPipelineSummary(
+  status: NeolixPrStatus,
+): PullRequestPipelineSummary | null {
+  const id = forgePipelineId(status);
+  if (id === null) {
+    return null;
+  }
+  return {
+    id,
+    status: status.forgeSpecific?.pipelineStatus?.trim() ?? "",
+    url: status.forgeSpecific?.pipelineUrl?.trim() || null,
+  };
+}
+
+function toPipelineJob(job: NeolixPipelineJob): PullRequestPipelineJob | null {
+  const name = job.name?.trim();
+  const stage = job.stage?.trim();
+  if (!name || !stage || !Number.isFinite(job.id) || job.id <= 0) {
+    return null;
+  }
+  const duration =
+    typeof job.durationSeconds === "number" &&
+    Number.isFinite(job.durationSeconds) &&
+    job.durationSeconds >= 0
+      ? Math.trunc(job.durationSeconds)
+      : null;
+  return {
+    id: Math.trunc(job.id),
+    name,
+    stage,
+    status: job.status?.trim() || "unknown",
+    url: job.url?.trim() || null,
+    allowFailure: job.allowFailure === true,
+    durationSeconds: duration,
+  };
+}
+
+export function toPullRequestPipeline(
+  pipeline: NeolixPipeline | null | undefined,
+): PullRequestPipeline | null {
+  if (!pipeline || !Number.isFinite(pipeline.id) || pipeline.id <= 0) {
+    return null;
+  }
+  const stages: PullRequestPipelineStage[] = [];
+  for (const stage of pipeline.stages ?? []) {
+    const name = stage.name?.trim();
+    if (!name) {
+      continue;
+    }
+    const jobs = (stage.jobs ?? []).flatMap((job) => {
+      const mapped = toPipelineJob(job);
+      return mapped ? [mapped] : [];
+    });
+    stages.push({ name, status: stage.status?.trim() || "unknown", jobs });
+  }
+  return {
+    id: Math.trunc(pipeline.id),
+    status: pipeline.status?.trim() || "unknown",
+    url: pipeline.url?.trim() || null,
+    ref: pipeline.ref?.trim() || null,
+    sha: pipeline.sha?.trim() || null,
+    stages,
+  };
+}
+
+export function toPullRequestChecks(
+  status: NeolixPrStatus,
+  durationsByCheckRunId?: ReadonlyMap<number, string>,
+): ReadonlyArray<PullRequestCheck> {
   return (status.checks ?? []).map((check) => ({
     name: check.name,
     status: checkStatus(check.status),
@@ -209,14 +362,19 @@ export function toPullRequestChecks(status: NeolixPrStatus): ReadonlyArray<PullR
     url: check.url,
     startedAt: null,
     completedAt: null,
+    duration: checkDuration(check, durationsByCheckRunId),
   }));
 }
 
-export function toGitPullRequestChecks(status: NeolixPrStatus): ReadonlyArray<GitPullRequestCheck> {
+export function toGitPullRequestChecks(
+  status: NeolixPrStatus,
+  durationsByCheckRunId?: ReadonlyMap<number, string>,
+): ReadonlyArray<GitPullRequestCheck> {
   return (status.checks ?? []).map((check) => ({
     name: check.name,
     status: checkStatus(check.status),
     url: check.url,
+    duration: checkDuration(check, durationsByCheckRunId),
   }));
 }
 
@@ -261,10 +419,27 @@ export interface PullRequestDetailContext {
   readonly now?: string;
 }
 
+/**
+ * GitLab's approval rule, when the daemon reported one. A rule with no required approvals is
+ * no rule; GitHub reports `reviewDecision` instead and carries no counts.
+ */
+function toPullRequestApprovals(status: NeolixPrStatus): PullRequestDetail["approvals"] {
+  const required = status.forgeSpecific?.approvalsRequired;
+  if (typeof required !== "number" || !Number.isFinite(required) || required <= 0) {
+    return null;
+  }
+  const given = status.forgeSpecific?.approvalsGiven;
+  return {
+    given: typeof given === "number" && Number.isFinite(given) && given > 0 ? Math.trunc(given) : 0,
+    required: Math.trunc(required),
+  };
+}
+
 export function toPullRequestDetail(
   status: NeolixPrStatus,
   timeline: NeolixPrTimeline | null,
   context: PullRequestDetailContext,
+  durationsByCheckRunId?: ReadonlyMap<number, string>,
 ): PullRequestDetail {
   const now = context.now ?? new Date().toISOString();
   const number = pullRequestNumber(status);
@@ -305,7 +480,9 @@ export function toPullRequestDetail(
     maintainerCanModify: false,
     reviewers: [],
     labels: [],
-    checks: toPullRequestChecks(status),
+    checks: toPullRequestChecks(status, durationsByCheckRunId),
+    pipeline: toPullRequestPipelineSummary(status),
+    approvals: toPullRequestApprovals(status),
     comments: timeline ? toPullRequestComments(timeline, now) : [],
     commentsTruncated: timeline?.truncated === true,
     commentsIncomplete: timeline?.error != null,
@@ -318,5 +495,8 @@ export function toPullRequestDetail(
     },
     stack: null,
     stackMetadataIncomplete: false,
+    autoMergeEnabled: status.github?.autoMergeRequest != null,
+    canEnableAutoMerge: status.github?.viewerCanEnableAutoMerge === true,
+    canDisableAutoMerge: status.github?.viewerCanDisableAutoMerge === true,
   };
 }

@@ -42,8 +42,19 @@ export interface PluginSettings<Schema extends ZodType> {
   subscribe(listener: (state: PluginSettingsState<Schema>) => void | Promise<void>): PluginCleanup;
 }
 
+/** What every gateway hook is told of the request it belongs to. */
+export interface GatewayMiddlewareRequestIdentity {
+  /**
+   * The client call these hooks belong to, the same across its attempts. The
+   * host also gives every hook of one request the same `state` object per
+   * middleware, released when the request ends (myna's `ctx.state`).
+   */
+  requestKey?: string;
+  state?: Record<string, unknown>;
+}
+
 /** What the gateway is about to send upstream, as a middleware sees it. */
-export interface GatewayMiddlewareRequest {
+export interface GatewayMiddlewareRequest extends GatewayMiddlewareRequestIdentity {
   providerId: string;
   protocol: string;
   model: string;
@@ -51,13 +62,22 @@ export interface GatewayMiddlewareRequest {
   body: Record<string, unknown>;
 }
 
+/** A request a middleware turns away (myna's `ctx.reject`). */
+export interface GatewayMiddlewareRejection {
+  /** myna's 400–599, default 403. */
+  status?: number;
+  message?: string;
+}
+
 /** What a middleware may change on its way out; nothing keeps the request as it is. */
 export interface GatewayMiddlewareRequestChange {
   body?: Record<string, unknown>;
+  /** Ends the request before it is sent; the client gets this answer. */
+  reject?: GatewayMiddlewareRejection;
 }
 
 /** The vendor's answer, before the gateway hands it on (non-streaming only). */
-export interface GatewayMiddlewareResponse {
+export interface GatewayMiddlewareResponse extends GatewayMiddlewareRequestIdentity {
   providerId: string;
   model: string;
   accountId: string;
@@ -73,7 +93,7 @@ export interface GatewayMiddlewareResponseChange {
 }
 
 /** One try of the request: the provider and account it is about to go to. */
-export interface GatewayMiddlewareProvider {
+export interface GatewayMiddlewareProvider extends GatewayMiddlewareRequestIdentity {
   providerId: string;
   protocol: string;
   /** Null when the try uses the provider's own key rather than an account. */
@@ -87,7 +107,7 @@ export interface GatewayMiddlewareProviderChange {
 }
 
 /** The account a try would go to, before anything is asked of it. */
-export interface GatewayMiddlewareAccount {
+export interface GatewayMiddlewareAccount extends GatewayMiddlewareRequestIdentity {
   providerId: string;
   protocol: string;
   accountId: string;
@@ -100,7 +120,7 @@ export interface GatewayMiddlewareAccountDecision {
 }
 
 /** One event of a streamed answer, as onEvent sees it (myna's 50ms hook). */
-export interface GatewayMiddlewareEvent {
+export interface GatewayMiddlewareEvent extends GatewayMiddlewareRequestIdentity {
   providerId: string;
   model: string;
   accountId: string;
@@ -112,6 +132,19 @@ export interface GatewayMiddlewareEventChange {
   event?: unknown;
 }
 
+/** The request a headers hook is told of, beside myna's `chat.headers`. */
+export interface GatewayMiddlewareHeaders extends GatewayMiddlewareRequestIdentity {
+  providerId: string;
+  protocol: string;
+  model: string;
+  accountId: string | null;
+}
+
+/** Headers to add to one outgoing request; a later hook wins. */
+export interface GatewayMiddlewareHeadersChange {
+  headers?: Record<string, string>;
+}
+
 /**
  * A hook on gateway traffic, beside myna's `magpie.middleware`: rewrite a
  * request body before it goes out, an answer before it is returned, or one
@@ -120,6 +153,10 @@ export interface GatewayMiddlewareEventChange {
  */
 export interface GatewayMiddlewareRegistration {
   id: string;
+  /** Adds headers to one outgoing request (myna's `chat.headers`). */
+  onHeaders?(
+    input: GatewayMiddlewareHeaders,
+  ): void | GatewayMiddlewareHeadersChange | Promise<void | GatewayMiddlewareHeadersChange>;
   onRequest?(
     input: GatewayMiddlewareRequest,
   ): void | GatewayMiddlewareRequestChange | Promise<void | GatewayMiddlewareRequestChange>;

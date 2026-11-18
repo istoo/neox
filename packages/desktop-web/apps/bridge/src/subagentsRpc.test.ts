@@ -47,6 +47,9 @@ function makeHandlers() {
         error: null,
       };
     },
+    detachAgent: async (agentId: string) => {
+      calls.push(["detachAgent", agentId]);
+    },
   } as unknown as DaemonClient;
   const model = { client } as unknown as BridgeModel;
   return { handlers: makeSubagentHandlers(model), calls };
@@ -92,5 +95,11 @@ describe("subagentsRpc", () => {
         },
       ],
     ]);
+  });
+
+  it("detaches a child agent by its thread id", async () => {
+    const { handlers, calls } = makeHandlers();
+    await run(handlers[WS_METHODS.neolixSubagentsDetach]!({ agentId: "child-1" }, undefined));
+    expect(calls).toEqual([["detachAgent", "child-1"]]);
   });
 });

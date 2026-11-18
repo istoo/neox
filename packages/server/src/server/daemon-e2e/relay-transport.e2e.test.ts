@@ -76,7 +76,9 @@ async function getPairingOfferUrl(args: {
     relayEndpoint: args.relayEndpoint,
     relayPublicEndpoint: args.relayPublicEndpoint,
     relayRequireProtectedSecurity: args.relayRequireProtectedSecurity,
-    appBaseUrl: args.appBaseUrl,
+    // No default app address ships (a test daemon's is ""), and an offer needs one; these tests
+    // only decode the fragment.
+    appBaseUrl: args.appBaseUrl || "https://app.neox.test",
     includeQr: false,
   });
   if (!pairing.url) {
@@ -711,6 +713,7 @@ async function waitForCapturedLog(
       logger,
       relayEnabled: true,
       relayEndpoint: `127.0.0.1:${relayPort}`,
+      relayUseTls: false,
     });
 
     try {
@@ -852,6 +855,7 @@ async function waitForCapturedLog(
       logger,
       relayEnabled: true,
       relayEndpoint: `127.0.0.1:${relayPort}`,
+      relayUseTls: false,
     });
 
     try {
@@ -907,6 +911,7 @@ async function waitForCapturedLog(
       logger,
       relayEnabled: true,
       relayEndpoint: `127.0.0.1:${relayPort}`,
+      relayUseTls: false,
       relayRequireProtectedSecurity: true,
     });
 
@@ -1014,6 +1019,7 @@ async function waitForCapturedLog(
         logger,
         relayEnabled: true,
         relayEndpoint: `127.0.0.1:${relayPort}`,
+        relayUseTls: false,
       });
 
       try {
@@ -1132,6 +1138,7 @@ async function waitForCapturedLog(
       logger,
       relayEnabled: true,
       relayEndpoint: `127.0.0.1:${relayPort}`,
+      relayUseTls: false,
     });
 
     try {
@@ -1278,6 +1285,7 @@ async function waitForCapturedLog(
       logger,
       relayEnabled: true,
       relayEndpoint: `127.0.0.1:${relayPort}`,
+      relayUseTls: false,
     });
 
     try {
@@ -1424,6 +1432,7 @@ async function waitForCapturedLog(
         logger,
         relayEnabled: true,
         relayEndpoint: `127.0.0.1:${relayPort}`,
+        relayUseTls: false,
       });
       workspaceDir = await mkdtemp(path.join(os.tmpdir(), "neolix-relay-download-"));
       await writeFile(path.join(workspaceDir, fileName), source);

@@ -119,34 +119,15 @@ Voice is configured through `features.dictation` and `features.voiceMode`. Provi
 
 For voice philosophy, architecture, and complete local/OpenAI setup examples, see [Voice docs](/docs/voice).
 
-## Bundled web UI
+## Daemon-hosted web client
 
-The daemon can serve the browser web client from the same HTTP server. This is enabled in the official Docker image and disabled by default for normal CLI and desktop-managed daemons.
+The daemon serves the desktop web client from the same HTTP server when a build is present. Build
+one with `npm run build:daemon-web-app`; packaged desktop builds ship it as `resources/desktop-web`.
 
-Enable it from the CLI:
-
-```bash
-neox daemon config set features.webUi.enabled true
-neox daemon start
-```
-
-Or set the environment variable:
-
-```bash
-NEOLIX_WEB_UI_ENABLED=true neox daemon run
-```
-
-Or persist it in `config.json`:
-
-```json
-{
-  "features": {
-    "webUi": {
-      "enabled": true
-    }
-  }
-}
-```
+`features.webUi.enabled` and `NEOLIX_WEB_UI_ENABLED` are accepted for backward compatibility, but
+they no longer gate the daemon-origin page. `features.webUi.distDir` and
+`NEOLIX_WEB_UI_DIST_DIR` still select the build that Settings › Network › Browser access serves on
+its separate port.
 
 When enabled, open the daemon HTTP origin, for example `http://localhost:6767/`, to load the web app. Static UI files load without daemon auth; API and WebSocket requests still require the configured password.
 
@@ -259,8 +240,8 @@ Set the persisted value in `config.json`:
 - `NEOLIX_RELAY_ENABLED`, enable or disable the outbound relay for this daemon launch
 - `NEOLIX_HOSTNAMES`, override/extend `daemon.hostnames`
 - `NEOLIX_ALLOWED_HOSTS`, deprecated alias for `NEOLIX_HOSTNAMES`
-- `NEOLIX_WEB_UI_ENABLED`, enable or disable the daemon-served web UI
-- `NEOLIX_WEB_UI_DIST_DIR`, override the daemon web UI build directory
+- `NEOLIX_WEB_UI_ENABLED`, accepted for backward compatibility; no longer gates the daemon-origin page
+- `NEOLIX_WEB_UI_DIST_DIR`, override the build directory served by Settings › Network › Browser access
 - `NEOLIX_TRUSTED_PROXIES`, configure trusted reverse proxy ranges for `X-Forwarded-*` headers
 - `NEOLIX_LOG_CONSOLE_LEVEL`, override `log.console.level`
 - `NEOLIX_LOG_FILE_LEVEL`, override `log.file.level`

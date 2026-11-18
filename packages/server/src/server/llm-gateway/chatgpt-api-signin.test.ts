@@ -228,7 +228,10 @@ describe("loadOrCreateChatGptHostId", () => {
       expect(first).toMatch(
         /^urn:uuid:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
       );
-      expect(statSync(join(dir, "chatgpt-api-host")).mode & 0o777).toBe(0o600);
+      // Windows cannot express POSIX permissions; the file is private by location there.
+      if (process.platform !== "win32") {
+        expect(statSync(join(dir, "chatgpt-api-host")).mode & 0o777).toBe(0o600);
+      }
       expect(readFileSync(join(dir, "chatgpt-api-host"), "utf8").trim()).toBe(first);
       expect(await loadOrCreateChatGptHostId(dir)).toBe(first);
     } finally {

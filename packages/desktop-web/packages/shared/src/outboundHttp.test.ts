@@ -5,11 +5,11 @@ import {
   type RequestListener,
   type Server as HttpServer,
 } from "node:http";
-import { stripTypeScriptTypes } from "node:module";
 import { createServer as createNetServer, type Server as NetServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
 import { decodeOutboundJson, outboundHttp } from "./outboundHttp";
@@ -97,10 +97,17 @@ describe("outbound requests that cannot connect", () => {
     try {
       for (const name of ["outboundHttpPolicy", "outboundHttp"]) {
         const source = await readFile(new URL(`./${name}.ts`, import.meta.url), "utf8");
-        const transformed = stripTypeScriptTypes(source, { mode: "transform" }).replace(
-          '"./outboundHttpPolicy"',
-          '"./outboundHttpPolicy.mjs"',
-        );
+        // outboundHttp.ts uses a parameter property, which Node's type stripping
+        // only handled in the "transform" mode that Node 26 removed.
+        const transformed = ts
+          .transpileModule(source, {
+            compilerOptions: {
+              module: ts.ModuleKind.ESNext,
+              target: ts.ScriptTarget.ES2022,
+              verbatimModuleSyntax: false,
+            },
+          })
+          .outputText.replace('"./outboundHttpPolicy"', '"./outboundHttpPolicy.mjs"');
         await writeFile(join(directory, `${name}.mjs`), transformed);
       }
       const fixture = join(directory, "connection-failure.mjs");

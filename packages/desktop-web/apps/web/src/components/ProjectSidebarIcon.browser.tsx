@@ -18,6 +18,26 @@ vi.mock("~/lib/wsHttpUrl", async (importOriginal) => ({
     cwd.includes("missing") ? "data:image/png;base64,AAAA" : favicon,
 }));
 
+const iconRequest = vi.hoisted(() =>
+  vi.fn(async (method: string, payload?: { projectId?: string }) => {
+    if (method === "neolix.projectIcons.get")
+      return {
+        icon: { data: "Q1VTVE9N", mimeType: "image/png" },
+        supportsCustomIcons: payload?.projectId !== "unsupported",
+      };
+    return { icon: null };
+  }),
+);
+
+vi.mock("~/lib/hosts/connectionClients", () => {
+  const transport = { request: iconRequest };
+  return {
+    getConnectionClients: () => ({ execution: transport, controller: transport }),
+    forEnvironment: () => undefined,
+    acquireEnvironment: async () => ({ transport, release: async () => undefined }),
+  };
+});
+
 afterEach(() => {
   document.body.innerHTML = "";
 });
@@ -36,6 +56,19 @@ it("uses a project's favicon as the sidebar glyph when one is available", async 
     expect(icon?.getAttribute("aria-hidden")).toBe("true");
   });
   expect(document.querySelector('[data-testid="project-icon"] [data-slot="hugeicon"]')).toBeNull();
+});
+
+it("prefers the custom icon the daemon stores for a project", async () => {
+  await render(
+    <span data-testid="project-icon">
+      <ProjectSidebarIcon cwd="/present" projectId="project-custom" expanded={false} />
+    </span>,
+  );
+
+  await vi.waitFor(() => {
+    const icon = document.querySelector<HTMLImageElement>('[data-testid="project-icon"] img');
+    expect(icon?.getAttribute("src")).toBe("data:image/png;base64,Q1VTVE9N");
+  });
 });
 
 it("keeps the folder glyph when a project has no usable favicon", async () => {

@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "bun --watch src/main.ts",
     "start": "bun src/main.ts",
-    "build:bundle": "bun build src/main.ts --target=node --format=esm --outfile dist/main.js",
+    "build:bundle": "bun build src/main.ts --target=node --format=esm --outdir dist --minify && bun build src/embed.ts --target=node --format=esm --outdir dist --minify",
     "typecheck": "node ../../node_modules/@typescript/native/bin/tsc --noEmit",
     "test": "vitest run"
   },

@@ -49,7 +49,7 @@ describe("AffinityStore", () => {
     const dir = home();
     const store = new AffinityStore({ neolixHome: dir, logger });
     store.scheduleSave(new Map([["conv-9", "p/m#b"]]));
-    store.dispose();
+    await store.dispose();
     const file = path.join(dir, "gateway-affinity.json");
     await waitForFile(file);
     const parsed = JSON.parse(readFileSync(file, "utf8")) as {
@@ -76,7 +76,7 @@ describe("AffinityStore", () => {
     const bindings = await store.load(now);
     bindings.set("new", "q/m");
     store.scheduleSave(bindings);
-    store.dispose();
+    await store.dispose();
 
     const parsed = await waitForBindings(file, 2);
 
@@ -84,6 +84,21 @@ describe("AffinityStore", () => {
     expect(
       parsed.bindings.find((entry) => entry.conversation === "new")?.at,
     ).toBeGreaterThanOrEqual(now);
+  });
+
+  it("writes nothing once disposed, and dispose waits for the save in flight", async () => {
+    const dir = home();
+    const file = path.join(dir, "gateway-affinity.json");
+    const store = new AffinityStore({ neolixHome: dir, logger });
+
+    store.scheduleSave(new Map([["conv-1", "p/m#a"]]));
+    await store.dispose();
+    // The save started by dispose() finished before it resolved.
+    const written = readFileSync(file, "utf8");
+
+    store.scheduleSave(new Map([["conv-2", "p/m#b"]]));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(readFileSync(file, "utf8")).toBe(written);
   });
 });
 

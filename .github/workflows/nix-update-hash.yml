@@ -14,6 +14,7 @@ on:
       - "packages/server/**"
       - "packages/relay/**"
       - "packages/cli/**"
+      - "packages/desktop-web/**"
       - "scripts/update-nix.sh"
       - "scripts/fix-lockfile.mjs"
       - ".github/workflows/nix-update-hash.yml"
@@ -53,9 +54,9 @@ jobs:
 
       - name: Commit hash/lockfile updates
         run: |
-          git diff --quiet package-lock.json nix/npm-deps.hash && exit 0
+          git diff --quiet package-lock.json nix/npm-deps.hash nix/desktop-web-deps.hash && exit 0
           git config user.name "neolix-ai[bot]"
           git config user.email "266920839+neolix-ai[bot]@users.noreply.github.com"
-          git add package-lock.json nix/npm-deps.hash
+          git add package-lock.json nix/npm-deps.hash nix/desktop-web-deps.hash
           git commit -m "fix: update lockfile signatures and Nix hash [skip ci]"
           git push

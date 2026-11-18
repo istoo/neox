@@ -21,6 +21,8 @@ import {
   type McpConnectorProposal,
   DEVICE_WS_METHODS,
   COMPUTER_WS_METHODS,
+  NEOLIX_APP_SETTINGS_WS_METHODS,
+  NEOLIX_HOST_WS_METHODS,
   ORCHESTRATION_WS_METHODS,
   OrchestrationProposedPlanId,
   type OrchestrationReadModel,
@@ -100,6 +102,8 @@ import { gitQueryKeys } from "../lib/gitReactQuery";
 import { useSpacesUiStore } from "../spacesUiStore";
 import { usePinnedThreadsStore } from "../pinnedThreadsStore";
 import { getAppTypographyScale } from "../lib/appTypography";
+import { addChatFileComment } from "../lib/chatReferences";
+import type { OpenInSidePanePreferences } from "../appSettings";
 import { threadJumpCommandForIndex } from "../keybindings";
 import { useStore } from "../store";
 import {
@@ -222,6 +226,13 @@ const DEFAULT_VIEWPORT: ViewportSpec = {
   width: 960,
   height: 1_100,
 };
+// Routes are auto-code-split, so the first mount of a browser file waits on
+// route-chunk compilation and evaluation. On a cold Vite cache or a loaded
+// machine that exceeds a short fixed wait; the composer is the real readiness
+// signal, and this budget is a backstop below the 90s test timeout.
+const CHAT_READY_TIMEOUT_MS = 60_000;
+// The warmup mount below pays the cold chunk cost once inside the hook budget.
+const CHAT_WARMUP_TIMEOUT_MS = 80_000;
 const TEXT_VIEWPORT_MATRIX = [
   DEFAULT_VIEWPORT,
   { name: "tablet", width: 720, height: 1_024 },
@@ -1183,6 +1194,281 @@ function findInlineToolsTurnDisclosure(): HTMLButtonElement | null {
   );
 }
 
+function createSnapshotWithReasoningActivity(): OrchestrationReadModel {
+  const snapshot = createSnapshotForTargetUser({
+    targetMessageId: MessageId.makeUnsafe("msg-user-reasoning"),
+    targetText: "Think before answering",
+  });
+  const turnId = TurnId.makeUnsafe("turn-reasoning");
+  const assistantId = MessageId.makeUnsafe("msg-assistant-reasoning");
+
+  return {
+    ...snapshot,
+    threads: snapshot.threads.map((thread) =>
+      thread.id === THREAD_ID
+        ? {
+            ...thread,
+            latestTurn: {
+              turnId,
+              state: "completed" as const,
+              requestedAt: isoAt(1_100),
+              startedAt: isoAt(1_101),
+              completedAt: isoAt(1_108),
+              assistantMessageId: assistantId,
+            },
+            activities: [
+              {
+                id: EventId.makeUnsafe("activity-reasoning"),
+                createdAt: isoAt(1_102),
+                kind: "tool.completed" as const,
+                summary: "Reasoning",
+                tone: "tool" as const,
+                turnId,
+                payload: {
+                  title: "activity.reasoningtrace",
+                  itemType: "reasoning",
+                  detail: "Weighing the tradeoffs before editing.",
+                },
+              },
+            ],
+            messages: [
+              ...thread.messages,
+              {
+                turnId,
+                id: assistantId,
+                role: "assistant",
+                text: "The answer is ready.",
+                createdAt: isoAt(1_109),
+                updatedAt: isoAt(1_109),
+                completedAt: isoAt(1_109),
+                streaming: false,
+                source: "native",
+              },
+            ],
+            session: thread.session
+              ? {
+                  ...thread.session,
+                  status: "ready",
+                  activeTurnId: null,
+                  updatedAt: isoAt(1_108),
+                }
+              : null,
+            updatedAt: isoAt(1_109),
+          }
+        : thread,
+    ),
+  };
+}
+
+function findReasoningTurnDisclosure(): HTMLButtonElement | null {
+  return document.querySelector<HTMLButtonElement>(
+    "[data-message-id='msg-assistant-reasoning'] [data-turn-header='completed'] button[aria-expanded]",
+  );
+}
+
+function createSnapshotWithTurnDiff(): OrchestrationReadModel {
+  const snapshot = createSnapshotForTargetUser({
+    targetMessageId: MessageId.makeUnsafe("msg-user-diff"),
+    targetText: "Change the file",
+  });
+  const turnId = TurnId.makeUnsafe("turn-diff");
+  const assistantId = MessageId.makeUnsafe("msg-assistant-diff");
+
+  return {
+    ...snapshot,
+    threads: snapshot.threads.map((thread) =>
+      thread.id === THREAD_ID
+        ? {
+            ...thread,
+            latestTurn: {
+              turnId,
+              state: "completed" as const,
+              requestedAt: isoAt(1_100),
+              startedAt: isoAt(1_101),
+              completedAt: isoAt(1_108),
+              assistantMessageId: assistantId,
+            },
+            checkpoints: [
+              {
+                turnId,
+                checkpointTurnCount: 1,
+                checkpointRef: CheckpointRef.makeUnsafe("checkpoint-turn-diff"),
+                status: "ready",
+                assistantMessageId: assistantId,
+                completedAt: isoAt(1_108),
+                files: [{ path: "src/app.ts", kind: "modified", additions: 2, deletions: 1 }],
+              },
+            ],
+            messages: [
+              {
+                turnId,
+                id: MessageId.makeUnsafe("msg-user-diff"),
+                role: "user",
+                text: "Change the file",
+                createdAt: isoAt(1_100),
+                updatedAt: isoAt(1_100),
+                streaming: false,
+                source: "native",
+              },
+              {
+                turnId,
+                id: assistantId,
+                role: "assistant",
+                text: "Changed it.",
+                createdAt: isoAt(1_109),
+                updatedAt: isoAt(1_109),
+                completedAt: isoAt(1_109),
+                streaming: false,
+                source: "native",
+              },
+            ],
+            session: thread.session
+              ? {
+                  ...thread.session,
+                  status: "ready",
+                  activeTurnId: null,
+                  updatedAt: isoAt(1_108),
+                }
+              : null,
+            updatedAt: isoAt(1_109),
+          }
+        : thread,
+    ),
+  };
+}
+
+function createSnapshotWithAgentActivity(): OrchestrationReadModel {
+  const snapshot = createSnapshotForTargetUser({
+    targetMessageId: MessageId.makeUnsafe("msg-user-agent-task"),
+    targetText: "Delegate the review",
+    sessionStatus: "running",
+  });
+  const turnId = TurnId.makeUnsafe("turn-agent-task");
+
+  return {
+    ...snapshot,
+    threads: snapshot.threads.map((thread) =>
+      thread.id === THREAD_ID
+        ? {
+            ...thread,
+            latestTurn: {
+              turnId,
+              state: "running" as const,
+              requestedAt: isoAt(1_100),
+              startedAt: isoAt(1_101),
+              completedAt: null,
+              assistantMessageId: null,
+            },
+            activities: [
+              {
+                id: EventId.makeUnsafe("activity-agent-task"),
+                createdAt: isoAt(1_102),
+                kind: "tool.started" as const,
+                summary: "Agent task",
+                tone: "tool" as const,
+                turnId,
+                payload: {
+                  itemType: "collab_agent_tool_call",
+                  title: "Agent task",
+                  detail: "Reviewing the implementation in detail.",
+                },
+              },
+            ],
+            session: thread.session
+              ? {
+                  ...thread.session,
+                  status: "running",
+                  activeTurnId: turnId,
+                  updatedAt: isoAt(1_102),
+                }
+              : null,
+            updatedAt: isoAt(1_102),
+          }
+        : thread,
+    ),
+  };
+}
+
+function createSnapshotWithFileLink(): OrchestrationReadModel {
+  const snapshot = createSnapshotForTargetUser({
+    targetMessageId: MessageId.makeUnsafe("msg-user-file-link-target"),
+    targetText: "Show me a file",
+  });
+  const turnId = TurnId.makeUnsafe("turn-file-link");
+  const userId = MessageId.makeUnsafe("msg-user-file-link");
+  const assistantId = MessageId.makeUnsafe("msg-assistant-file-link");
+
+  return {
+    ...snapshot,
+    threads: snapshot.threads.map((thread) =>
+      thread.id === THREAD_ID
+        ? {
+            ...thread,
+            latestTurn: {
+              turnId,
+              state: "completed" as const,
+              requestedAt: isoAt(1_100),
+              startedAt: isoAt(1_101),
+              completedAt: isoAt(1_108),
+              assistantMessageId: assistantId,
+            },
+            messages: [
+              {
+                turnId,
+                id: userId,
+                role: "user",
+                text: "Open the changed file",
+                createdAt: isoAt(1_100),
+                updatedAt: isoAt(1_100),
+                streaming: false,
+                source: "native",
+              },
+              {
+                turnId,
+                id: assistantId,
+                role: "assistant",
+                text: "Open [src/app.ts](src/app.ts) now",
+                createdAt: isoAt(1_109),
+                updatedAt: isoAt(1_109),
+                completedAt: isoAt(1_109),
+                streaming: false,
+                source: "native",
+              },
+            ],
+            session: thread.session
+              ? {
+                  ...thread.session,
+                  status: "ready",
+                  activeTurnId: null,
+                  updatedAt: isoAt(1_108),
+                }
+              : null,
+            updatedAt: isoAt(1_109),
+          }
+        : thread,
+    ),
+  };
+}
+
+function setOpenInSidePaneSetting(patch: Partial<OpenInSidePanePreferences>): void {
+  localStorage.setItem(
+    "synara:app-settings:v1",
+    JSON.stringify({
+      openInSidePane: {
+        chatFiles: true,
+        explorerFiles: true,
+        diffs: true,
+        subagents: false,
+        ...patch,
+      },
+    }),
+  );
+}
+
+function chatDockPanes(threadId: ThreadId) {
+  return useRightDockStore.getState().dockStateByThreadId[threadId]?.panes ?? [];
+}
+
 function createSnapshotWithHistoricalToolHydrationDuringLiveTurn(options: {
   hydrateHistoricalActivities: boolean;
 }): OrchestrationReadModel {
@@ -1690,7 +1976,14 @@ const worker = setupWorker(
         // socket dying and answers with a full reconnect. That loops forever
         // and starves the RPCs these tests are actually asserting on.
         method === DEVICE_WS_METHODS.subscribeEvents ||
-        method === COMPUTER_WS_METHODS.subscribeEvents
+        method === COMPUTER_WS_METHODS.subscribeEvents ||
+        // The app shell now syncs its settings through this stream; leaving it
+        // unanswered would let the reconnect loop starve every subscription.
+        method === NEOLIX_APP_SETTINGS_WS_METHODS.subscribe ||
+        method === NEOLIX_HOST_WS_METHODS.subscribeFeatures ||
+        method === NEOLIX_HOST_WS_METHODS.subscribeUpdateProgress ||
+        method === WS_METHODS.neolixWorkspaceSetupSubscribe ||
+        method === WS_METHODS.browserAutomationSubscribe
       ) {
         return;
       }
@@ -2293,6 +2586,7 @@ async function waitForMountedChatReady(options: {
   host: HTMLElement;
   snapshot: OrchestrationReadModel;
   routeThreadId: ThreadId;
+  readyTimeoutMs: number;
 }): Promise<void> {
   const expectedThread = options.snapshot.threads.find(
     (thread) => thread.id === options.routeThreadId,
@@ -2318,7 +2612,7 @@ async function waitForMountedChatReady(options: {
         "Active thread detail did not hydrate.",
       ).toBe(true);
     },
-    { timeout: 20_000, interval: 16 },
+    { timeout: options.readyTimeoutMs, interval: 16 },
   );
   await waitForLayout();
 }
@@ -2330,6 +2624,7 @@ async function mountChatView(options: {
   initialEntry?: string;
   onRender?: ProfilerOnRenderCallback;
   strictMode?: boolean;
+  readyTimeoutMs?: number;
 }): Promise<MountedChatView> {
   fixture = buildFixture(options.snapshot);
   options.configureFixture?.(fixture);
@@ -2365,6 +2660,7 @@ async function mountChatView(options: {
       host,
       snapshot: options.snapshot,
       routeThreadId: ThreadId.makeUnsafe(initialEntry.slice(1)),
+      readyTimeoutMs: options.readyTimeoutMs ?? CHAT_READY_TIMEOUT_MS,
     });
   } catch (cause) {
     await screen.unmount();
@@ -2400,6 +2696,10 @@ async function mountChatView(options: {
     router,
   };
 }
+
+// The warmup mount below can spend most of the default 90s hook budget on a
+// cold route-chunk transform, so give this file room for worker start too.
+vi.setConfig({ hookTimeout: 150_000 });
 
 describe("ChatView transcript geometry (full app)", () => {
   it("keeps the active chat explicitly unread until the next visit", async () => {
@@ -2451,6 +2751,23 @@ describe("ChatView transcript geometry (full app)", () => {
         url: "/mockServiceWorker.js",
       },
     });
+    // Warm the code-split route graph before any test mounts. A cold Vite
+    // cache (or a loaded machine) can spend longer than a test's own wait
+    // loading and evaluating the route chunks, which leaves the first mount
+    // blank until the chunks arrive. Paying that cost here keeps every test's
+    // wait for the composer a real readiness check. A timeout is deliberately
+    // ignored: the chunks that did load stay cached, and a still-cold mount
+    // fails loudly in the test below.
+    try {
+      const warmup = await mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot: createSnapshotWithInlineToolOverflow({ active: false }),
+        readyTimeoutMs: CHAT_WARMUP_TIMEOUT_MS,
+      });
+      await warmup.cleanup();
+    } catch {
+      // Deliberate ignore, reason above.
+    }
   });
 
   afterAll(async () => {
@@ -11877,6 +12194,8 @@ describe("ChatView transcript geometry (full app)", () => {
       const settledComposerEditor = await waitForComposerEditor();
       settledComposerEditor.focus();
       await waitForLayout();
+      // The reset skips its focus-restoring frame only while the editor already holds focus.
+      expect(document.activeElement).toBe(settledComposerEditor);
 
       const originalRequestAnimationFrame = window.requestAnimationFrame;
       let frameRequestCount = 0;
@@ -11885,24 +12204,31 @@ describe("ChatView transcript geometry (full app)", () => {
         return originalRequestAnimationFrame(callback);
       };
       try {
-        await resetProjectButton.click();
-        await vi.waitFor(
-          () => {
-            expect(useComposerDraftStore.getState().getDraftThread(newThreadId)).toMatchObject({
-              projectId: HOME_PROJECT_ID,
-              envMode: "local",
-              branch: null,
-              worktreePath: null,
-            });
-          },
-          { timeout: 8_000, interval: 16 },
+        // Dispatch the click synchronously so only frames the reset itself schedules are
+        // counted; a Playwright click spans arbitrary app frames and makes this racy.
+        const resetButtonElement = resetProjectButton.element() as HTMLElement;
+        resetButtonElement.dispatchEvent(
+          new MouseEvent("mousedown", { bubbles: true, cancelable: true }),
         );
+        resetButtonElement.click();
+        await Promise.resolve();
       } finally {
         window.requestAnimationFrame = originalRequestAnimationFrame;
       }
 
       expect(frameRequestCount).toBe(0);
       expect(document.activeElement).toBe(settledComposerEditor);
+      await vi.waitFor(
+        () => {
+          expect(useComposerDraftStore.getState().getDraftThread(newThreadId)).toMatchObject({
+            projectId: HOME_PROJECT_ID,
+            envMode: "local",
+            branch: null,
+            worktreePath: null,
+          });
+        },
+        { timeout: 8_000, interval: 16 },
+      );
       await expect.element(page.getByText("Don't work in a project")).not.toBeInTheDocument();
       await expect.element(page.getByTestId("workspace-picker-trigger")).toBeInTheDocument();
     } finally {
@@ -14400,7 +14726,7 @@ describe("ChatView transcript geometry (full app)", () => {
         addWorkspaceSession({
           hostId: "remote-owner-test",
           hostName: "Remote computer",
-          wsPath: "/ws/remote/owner-test",
+          wsPath: "/rpc/remote/owner-test",
           executionScope: {
             environmentId: "remote-owner-test",
             accountAuthority: "https://account.example",
@@ -16796,6 +17122,270 @@ describe("ChatView transcript geometry (full app)", () => {
         transitionFrames: 0,
         toolRowFrames: 0,
       });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  // Auto-expanded reasoning is lifted out of the settled turn's work
+  // disclosure and stays readable above the answer, while the surrounding work
+  // still folds. With the setting off the same row folds and only appears when
+  // the user opens the turn.
+  it("keeps reasoning visible outside the folded turn when auto-expand is on", async () => {
+    localStorage.setItem("synara:app-settings:v1", JSON.stringify({ autoExpandReasoning: true }));
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotWithReasoningActivity(),
+    });
+
+    try {
+      await vi.waitFor(
+        () => {
+          expect(document.body.textContent).toContain("The answer is ready.");
+          const trigger = findReasoningTurnDisclosure();
+          expect(trigger).not.toBeNull();
+          expect(trigger!.getAttribute("aria-expanded")).toBe("false");
+          expect(document.body.textContent).toContain("Weighing the tradeoffs before editing.");
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("folds reasoning into the turn header by default", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotWithReasoningActivity(),
+    });
+
+    try {
+      await vi.waitFor(
+        () => {
+          expect(document.body.textContent).toContain("The answer is ready.");
+          expect(findReasoningTurnDisclosure()?.getAttribute("aria-expanded")).toBe("false");
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+      expect(document.body.textContent).not.toContain("Weighing the tradeoffs before editing.");
+
+      findReasoningTurnDisclosure()!.click();
+      await vi.waitFor(
+        () => {
+          expect(document.body.textContent).toContain("Weighing the tradeoffs before editing.");
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  // Implicit opens follow Settings › General › Open in: the right dock (side)
+  // or the main editor surface.
+  describe("open-in preferences", () => {
+    it.each([
+      ["dock", true],
+      ["main surface", false],
+    ] as const)("opens a turn diff in the %s", async (_where, side) => {
+      setOpenInSidePaneSetting({ diffs: side });
+      const mounted = await mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot: createSnapshotWithTurnDiff(),
+      });
+      try {
+        const row = page.getByRole("button", { name: "Review", exact: true });
+        await expect.element(row).toBeVisible();
+        await row.click();
+
+        if (side) {
+          await vi.waitFor(
+            () => {
+              expect(chatDockPanes(THREAD_ID)).toEqual(
+                expect.arrayContaining([
+                  expect.objectContaining({
+                    kind: "diff",
+                    diffTurnId: "turn-diff",
+                    diffFilePath: null,
+                  }),
+                ]),
+              );
+            },
+            { timeout: 8_000, interval: 16 },
+          );
+          expect((mounted.router.state.location.search as { view?: string }).view).not.toBe(
+            "editor",
+          );
+        } else {
+          await vi.waitFor(
+            () => {
+              expect((mounted.router.state.location.search as { view?: string }).view).toBe(
+                "editor",
+              );
+            },
+            { timeout: 8_000, interval: 16 },
+          );
+          expect(chatDockPanes(THREAD_ID).some((pane) => pane.kind === "diff")).toBe(false);
+        }
+      } finally {
+        await mounted.cleanup();
+      }
+    });
+
+    it.each([
+      ["dock", true],
+      ["inline transcript", false],
+    ] as const)("opens an agent activity in the %s", async (_where, side) => {
+      setOpenInSidePaneSetting({ subagents: side });
+      const mounted = await mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot: createSnapshotWithAgentActivity(),
+      });
+      try {
+        const row = await vi.waitFor(
+          () =>
+            Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find((button) =>
+              (button.textContent ?? "").includes("Agent task"),
+            ),
+          { timeout: 8_000, interval: 16 },
+        );
+        expect(row).toBeDefined();
+        row!.click();
+
+        if (side) {
+          await vi.waitFor(
+            () => {
+              expect(chatDockPanes(THREAD_ID)).toEqual(
+                expect.arrayContaining([expect.objectContaining({ kind: "subagents" })]),
+              );
+            },
+            { timeout: 8_000, interval: 16 },
+          );
+          expect(document.querySelector("[data-agent-activity-detail='true']")).toBeNull();
+        } else {
+          await vi.waitFor(
+            () => {
+              expect(document.querySelector("[data-agent-activity-detail='true']")).not.toBeNull();
+            },
+            { timeout: 8_000, interval: 16 },
+          );
+          expect(chatDockPanes(THREAD_ID).some((pane) => pane.kind === "subagents")).toBe(false);
+        }
+      } finally {
+        await mounted.cleanup();
+      }
+    });
+
+    it.each([
+      ["dock", true],
+      ["main surface", false],
+    ] as const)("opens a chat file reference in the %s", async (_where, side) => {
+      setOpenInSidePaneSetting({ chatFiles: side });
+      const previousNativeApi = window.nativeApi;
+      const api = readNativeApi()!;
+      Object.defineProperty(window, "nativeApi", {
+        configurable: true,
+        value: {
+          ...api,
+          projects: {
+            ...api.projects,
+            resolveWorkspaceFileReferences: async ({
+              relativePaths,
+            }: {
+              relativePaths: string[];
+            }) => ({ relativePaths }),
+          },
+        },
+      });
+      const mounted = await mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot: createSnapshotWithFileLink(),
+      });
+      try {
+        const link = page.getByRole("link", { name: /src\/app\.ts/ });
+        await expect.element(link).toBeVisible();
+        await link.click();
+
+        if (side) {
+          await vi.waitFor(
+            () => {
+              expect(chatDockPanes(THREAD_ID)).toEqual(
+                expect.arrayContaining([
+                  expect.objectContaining({ kind: "file", filePath: "src/app.ts" }),
+                ]),
+              );
+            },
+            { timeout: 8_000, interval: 16 },
+          );
+        } else {
+          await vi.waitFor(
+            () => {
+              const search = mounted.router.state.location.search as {
+                view?: string;
+                editorFilePath?: string;
+              };
+              expect(search.view).toBe("editor");
+              expect(search.editorFilePath).toBe("src/app.ts");
+            },
+            { timeout: 8_000, interval: 16 },
+          );
+          expect(chatDockPanes(THREAD_ID).some((pane) => pane.kind === "file")).toBe(false);
+        }
+      } finally {
+        if (previousNativeApi) {
+          Object.defineProperty(window, "nativeApi", {
+            configurable: true,
+            value: previousNativeApi,
+          });
+        } else {
+          Reflect.deleteProperty(window, "nativeApi");
+        }
+        await mounted.cleanup();
+      }
+    });
+  });
+
+  // A file comment added from a diff reaches the composer as a chip and is
+  // serialized into the outgoing turn's message text.
+  it("sends a composer file comment with the message", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: MessageId.makeUnsafe("msg-user-file-comment"),
+        targetText: "Look at the diff",
+      }),
+    });
+    try {
+      useComposerDraftStore.getState().setPrompt(THREAD_ID, "Fix the diff");
+      expect(
+        addChatFileComment(THREAD_ID, {
+          path: "src/app.ts",
+          startLine: 3,
+          endLine: 3,
+          text: "Please rename this value.",
+        }),
+      ).toBe(true);
+      await vi.waitFor(
+        () => {
+          expect(document.body.textContent).toContain("1 comment");
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+
+      (await waitForSendButton()).click();
+      await vi.waitFor(
+        () => {
+          const text =
+            wsRequests
+              .map((request) => turnStartText(request))
+              .find((value) => value?.includes("Fix the diff")) ?? "";
+          expect(text).toContain("<file_comments>");
+          expect(text).toContain("src/app.ts line 3");
+          expect(text).toContain("Please rename this value.");
+        },
+        { timeout: 8_000, interval: 16 },
+      );
     } finally {
       await mounted.cleanup();
     }

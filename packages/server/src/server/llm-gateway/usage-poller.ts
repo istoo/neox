@@ -28,6 +28,9 @@ export class UsagePoller {
   /** When each plan (access key and plan) was last asked. */
   private readonly planAt = new Map<string, number>();
   private timer: NodeJS.Timeout | null = null;
+  private disposed = false;
+  /** The tick in flight; `dispose()` waits for it. */
+  private inFlight: Promise<void> | null = null;
 
   constructor(options: {
     state: AccountRoutingState;
@@ -64,22 +67,48 @@ export class UsagePoller {
     | undefined;
 
   public start(): void {
+    if (this.disposed || this.timer !== null) {
+      return;
+    }
     this.timer = setInterval(() => {
-      void this.tick();
+      void this.runTick();
     }, TICK_MS);
     this.timer.unref();
-    void this.tick();
+    void this.runTick();
   }
 
-  public dispose(): void {
+  /** Stops the timer, waits for the tick in flight, and refuses new reads. */
+  public async dispose(): Promise<void> {
+    this.disposed = true;
     if (this.timer !== null) {
       clearInterval(this.timer);
       this.timer = null;
     }
+    if (this.inFlight !== null) {
+      await this.inFlight;
+    }
+  }
+
+  private runTick(): Promise<void> {
+    if (this.disposed) {
+      return Promise.resolve();
+    }
+    if (this.inFlight !== null) {
+      return this.inFlight;
+    }
+    const running = this.tick()
+      .catch(() => undefined)
+      .finally(() => {
+        if (this.inFlight === running) {
+          this.inFlight = null;
+        }
+      });
+    this.inFlight = running;
+    return running;
   }
 
   private async tick(): Promise<void> {
-    if (this.readsAsked()) {
+    if (this.disposed || this.readsAsked()) {
       return;
     }
     const now = Date.now();
@@ -106,6 +135,9 @@ export class UsagePoller {
 
   /** Reads every account's usage endpoint and plan now, when the user asked. */
   public async refreshAll(now: number = Date.now()): Promise<void> {
+    if (this.disposed) {
+      return;
+    }
     for (const provider of this.providers()) {
       if (!isProviderEnabled(provider)) {
         continue;
@@ -160,7 +192,7 @@ export class UsagePoller {
     account: GatewayAccount,
     now: number = Date.now(),
   ): Promise<void> {
-    if (!this.readable(account) || this.readsAsked()) {
+    if (this.disposed || !this.readable(account) || this.readsAsked()) {
       return;
     }
     this.readAt.set(accountKey(provider, account), now);

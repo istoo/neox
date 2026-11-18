@@ -131,6 +131,7 @@ import type {
   ProviderUsageListResponseMessage,
   UsageReportEntry,
   DaemonGetStatusResponse,
+  DaemonRuntimeStatusResponse,
   DaemonGetPairingOfferResponse,
   DaemonConfigReloadResponse,
   DaemonWebPage,
@@ -642,6 +643,7 @@ interface UsageListReportsPayload {
   reports: UsageReportEntry[];
 }
 type DaemonStatusPayload = DaemonGetStatusResponse["payload"];
+type DaemonRuntimeStatusPayload = DaemonRuntimeStatusResponse["payload"];
 type GatewayConfigPayload = Extract<
   SessionOutboundMessage,
   { type: "gateway.config.get.response" }
@@ -4003,13 +4005,14 @@ export class DaemonClient {
 
   async listExternalSessions(
     agent?: string,
-    options?: { activityDays?: number },
+    options?: { activityDays?: number; fast?: boolean },
   ): Promise<CorrelatedResponsePayload<"sessions.external.list.response">> {
     return this.sendNamespacedCorrelatedSessionRequest({
       message: {
         type: "sessions.external.list.request",
         ...(agent === undefined ? {} : { agent }),
         ...(options?.activityDays === undefined ? {} : { activityDays: options.activityDays }),
+        ...(options?.fast === undefined ? {} : { fast: options.fast }),
       },
       timeout: 60_000,
     });
@@ -7991,6 +7994,23 @@ export class DaemonClient {
       },
       responseType: "daemon.get_status.response",
       timeout: options?.timeout,
+    });
+  }
+
+  /** The daemon's event-loop health and live process metrics. */
+  async getDaemonRuntimeStatus(options?: {
+    requestId?: string;
+    timeout?: number;
+  }): Promise<DaemonRuntimeStatusPayload> {
+    if (this.lastServerInfoMessage?.features?.daemonRuntimeStatus !== true) {
+      throw new Error("Update the host to read runtime status.");
+    }
+    return this.sendNamespacedCorrelatedSessionRequest({
+      ...(options?.requestId === undefined ? {} : { requestId: options.requestId }),
+      message: {
+        type: "daemon.runtime.get_status.request",
+      },
+      ...(options?.timeout === undefined ? {} : { timeout: options.timeout }),
     });
   }
 

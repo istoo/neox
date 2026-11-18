@@ -40,6 +40,7 @@
         "@legendapp/list": "3.3.3",
         "@lexical/react": "^0.41.0",
         "@pierre/diffs": "1.3.5",
+        "@synara/client-runtime": "workspace:*",
         "@synara/contracts": "workspace:*",
         "@synara/profile-ui": "workspace:*",
         "@synara/shared": "workspace:*",
@@ -107,6 +108,21 @@
         "vitest-browser-react": "^2.0.5",
       },
     },
+    "packages/client-runtime": {
+      "name": "@synara/client-runtime",
+      "version": "0.0.0-alpha.1",
+      "dependencies": {
+        "@synara/contracts": "workspace:*",
+        "@synara/shared": "workspace:*",
+        "effect": "catalog:",
+      },
+      "devDependencies": {
+        "@effect/language-service": "catalog:",
+        "@types/node": "catalog:",
+        "typescript": "catalog:",
+        "vitest": "catalog:",
+      },
+    },
     "packages/contracts": {
       "name": "@synara/contracts",
       "version": "1.1.0",
@@ -162,6 +178,7 @@
   "patchedDependencies": {
     "@legendapp/list@3.3.3": "patches/@legendapp%2Flist@3.3.3.patch",
     "@pierre/diffs@1.3.5": "patches/@pierre%2Fdiffs@1.3.5.patch",
+    "@effect/platform-node@https://pkg.pr.new/Effect-TS/effect-smol/@effect/platform-node@8881a9b": "patches/@effect%2Fplatform-node@8881a9b.patch",
     "@effect/platform-node-shared@https://pkg.pr.new/Effect-TS/effect-smol/@effect/platform-node-shared@8881a9b606d84a6f5eb6615279138322984f5368": "patches/@effect%2Fplatform-node-shared@8881a9b.patch",
   },
   "overrides": {
@@ -600,6 +617,8 @@
     "@sindresorhus/merge-streams": ["@sindresorhus/merge-streams@4.0.0", "", {}, "sha512-tlqY9xq5ukxTUZBmoOp+m61cqwQD5pHJtFY3Mn8CA8ps6yghLH/Hw8UPdqg4OLmFW3IFlcXnQNmo/dh8HzXYIQ=="],
 
     "@standard-schema/spec": ["@standard-schema/spec@1.1.0", "", {}, "sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w=="],
+
+    "@synara/client-runtime": ["@synara/client-runtime@workspace:packages/client-runtime"],
 
     "@synara/contracts": ["@synara/contracts@workspace:packages/contracts"],
 

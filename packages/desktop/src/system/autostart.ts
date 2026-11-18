@@ -46,8 +46,8 @@ export interface AutostartHost {
 /** `$XDG_CONFIG_HOME/autostart`, as the XDG spec and every desktop read it. */
 export function linuxAutostartPath(env: NodeJS.ProcessEnv): string {
   const home = env.HOME ?? "";
-  const configHome = env.XDG_CONFIG_HOME?.trim() || path.join(home, ".config");
-  return path.join(configHome, "autostart", LINUX_AUTOSTART_FILENAME);
+  const configHome = env.XDG_CONFIG_HOME?.trim() || path.posix.join(home, ".config");
+  return path.posix.join(configHome, "autostart", LINUX_AUTOSTART_FILENAME);
 }
 
 /** Quotes one Exec argument the way the Desktop Entry spec asks. */
@@ -179,7 +179,7 @@ export async function setAutostart(host: AutostartHost, enabled: boolean): Promi
       await host.fs.rm(filePath, { force: true });
       return;
     }
-    await host.fs.mkdir(path.dirname(filePath), { recursive: true });
+    await host.fs.mkdir(path.posix.dirname(filePath), { recursive: true });
     await host.fs.writeFile(filePath, linuxDesktopEntry(host.execPath), "utf8");
     return;
   }
@@ -207,7 +207,10 @@ export async function refreshAutostart(host: AutostartHost): Promise<void> {
       return;
     }
     const registered = execPathFromEntry(entry);
-    if (registered !== null && path.resolve(registered) === path.resolve(host.execPath)) {
+    if (
+      registered !== null &&
+      path.posix.resolve(registered) === path.posix.resolve(host.execPath)
+    ) {
       return;
     }
     await host.fs.writeFile(

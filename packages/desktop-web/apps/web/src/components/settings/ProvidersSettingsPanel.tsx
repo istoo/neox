@@ -4,14 +4,12 @@ import { Translation } from "~/i18n/Translation";
 // Layer: Settings panel
 
 import {
-  DEFAULT_CODEX_ACCOUNT_ID,
   PROVIDER_DISPLAY_NAMES,
   type ProviderInstanceConfig,
   type ProviderInstanceConfigMap,
   type ProviderInstanceId,
   type ProviderKind,
   type ServerProviderStatus,
-  type ServerSettings,
 } from "@synara/contracts";
 import { isBetaFeatureOn, VISIBLE_PROVIDER_DESCRIPTORS } from "../../betaFeatures";
 import {
@@ -70,7 +68,6 @@ import { useProviderStatusesForLocalConfig } from "~/hooks/useProviderStatusesFo
 import { useRefreshProviderStatusesNow } from "~/hooks/useProviderStatusRefresh";
 import { CentralIcon } from "~/lib/central-icons";
 import {
-  ChevronRightIcon,
   CopyIcon,
   DownloadIcon,
   ExternalLinkIcon,
@@ -102,16 +99,14 @@ import { ensureNativeApi } from "~/nativeApi";
 import { isProviderKind, sameProviderOrder } from "~/providerOrdering";
 import {
   getVisibleProviderUpdateStatuses,
-  isProviderLatestVersionKnowable,
   isProviderUpdateActive,
   shouldOfferProviderUpdateAction,
-  shouldPromptProviderUpdate,
-  shouldShowProviderUpdateStatus,
   withProviderUpdateTimeout,
 } from "~/providerUpdates";
 import { providerStatusInstanceKey } from "~/lib/providerAvailability";
 import { SETTINGS_TARGETS } from "~/settingsNavigation";
 import {
+  SETTINGS_CARD_CLASS_NAME,
   SETTINGS_INSET_LIST_CLASS_NAME,
   SETTINGS_INSET_RADIUS_CLASS_NAME,
   SETTINGS_OUTLINED_SURFACE_CLASS_NAME,
@@ -143,7 +138,13 @@ import {
   SettingsSelectControl,
   useSettingsRestoreSignal,
 } from "./SettingControls";
-import { SettingsListRow, SettingsRow, SettingsSection } from "./SettingsPanelPrimitives";
+import {
+  SettingsCard,
+  SettingsListRow,
+  SettingsRow,
+  SettingsSection,
+  SettingsSectionShell,
+} from "./SettingsPanelPrimitives";
 import { UsageLimitRecoverySetting } from "./UsageLimitRecoverySetting";
 import { t, useTranslation } from "~/i18n";
 
@@ -595,31 +596,18 @@ export function isProviderInstallSettingsDirty(
   );
 }
 
-function createProviderInstallDisclosureState(
-  settings: AppSettings,
-): Record<ProviderKind, boolean> {
-  return Object.fromEntries(
-    PROVIDER_INSTALL_SETTINGS.map((config) => [
-      config.provider,
-      config.fields.some((field) =>
-        field.kind === "password"
-          ? settings[field.configuredKey]
-          : Boolean(settings[field.settingsKey]),
-      ) ||
-        Object.values(settings.providerInstances).some(
-          (instance) => instance.driver === config.provider,
-        ) ||
-        (config.provider === "codex" &&
-          (settings.codexAccounts.length > 0 ||
-            settings.selectedCodexAccountId !== DEFAULT_CODEX_ACCOUNT_ID)),
-    ]),
-  ) as Record<ProviderKind, boolean>;
-}
-
-function createClosedProviderInstallDisclosureState(): Record<ProviderKind, boolean> {
-  return Object.fromEntries(
-    PROVIDER_INSTALL_SETTINGS.map((config) => [config.provider, false]),
-  ) as Record<ProviderKind, boolean>;
+/** The provider the master-detail editor opens on: the deep-linked target, else the
+ *  first enabled provider, else the first provider in the user's order. */
+function defaultSelectedProvider(
+  settings: Pick<AppSettings, "providerOrder" | "disabledProviders">,
+  providerTarget: ProviderKind | null | undefined,
+): ProviderKind | null {
+  if (providerTarget) return providerTarget;
+  return (
+    settings.providerOrder.find((provider) => !settings.disabledProviders.includes(provider)) ??
+    settings.providerOrder[0] ??
+    null
+  );
 }
 
 export function createProviderInstallResetPatch(defaults: AppSettings): Partial<AppSettings> {
@@ -1080,16 +1068,20 @@ function ProviderAccountsControl(props: {
   const usageQuery = useQuery(
     serverAllProviderUsageQueryOptions({ enabled: provider === "claudeAgent" }),
   );
-  const usageByInstance = useMemo(
-    () =>
-      new Map(
-        (usageQuery.data ?? []).map((snapshot) => [
-          snapshot.instanceId ?? snapshot.provider,
-          snapshot,
-        ]),
-      ),
-    [usageQuery.data],
-  );
+  const usageByInstance = useMemo(() => {
+    const map = new Map(
+      (usageQuery.data ?? []).map((snapshot) => [
+        snapshot.instanceId ?? snapshot.provider,
+        snapshot,
+      ]),
+    );
+    // Account rows may carry their own ids; a provider-scoped lookup still finds its
+    // first account so the account's status line never goes blank.
+    for (const snapshot of usageQuery.data ?? []) {
+      if (!map.has(snapshot.provider)) map.set(snapshot.provider, snapshot);
+    }
+    return map;
+  }, [usageQuery.data]);
   const allAccounts = getProviderInstanceOptions(props.settings);
   // Default first, then the provider's other accounts by name.
   const accounts = allAccounts.filter((account) => account.provider === provider);
@@ -1677,7 +1669,7 @@ function ProviderAccountsControl(props: {
   };
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-3 @container/accounts">
       <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2 sm:flex-nowrap">
         <div className="min-w-0">
           <span className="block text-ui-sm font-medium text-foreground">
@@ -1712,14 +1704,18 @@ function ProviderAccountsControl(props: {
         </div>
       </div>
 
-      <div className="flex flex-col gap-3 md:flex-row md:items-start">
+      <div
+        data-slot="provider-accounts-layout"
+        className="flex flex-col gap-3 @min-[42rem]/accounts:flex-row @min-[42rem]/accounts:items-start"
+      >
         <div
           role="list"
           aria-label={t("settings:accounts2", { value0: providerLabel })}
+          data-slot="provider-account-list"
           className={cn(
-            SETTINGS_INSET_LIST_CLASS_NAME,
-            SETTINGS_STACKED_ROWS_DIVIDER_CLASS_NAME,
-            "shrink-0 md:w-60",
+            SETTINGS_OUTLINED_SURFACE_CLASS_NAME,
+            "flex gap-2 overflow-x-auto p-2",
+            "@min-[42rem]/accounts:block @min-[42rem]/accounts:w-60 @min-[42rem]/accounts:shrink-0 @min-[42rem]/accounts:divide-y @min-[42rem]/accounts:divide-border/50 @min-[42rem]/accounts:overflow-visible @min-[42rem]/accounts:p-0",
           )}
         >
           {accounts.map((account) => {
@@ -1737,7 +1733,7 @@ function ProviderAccountsControl(props: {
                 key={account.instanceId}
                 role="listitem"
                 className={cn(
-                  "relative flex items-center gap-2 px-3 py-2.5 transition-colors",
+                  "relative flex min-w-44 shrink-0 items-center gap-2 rounded-lg border border-border/60 px-2.5 py-2 transition-colors @min-[42rem]/accounts:w-full @min-[42rem]/accounts:min-w-0 @min-[42rem]/accounts:rounded-none @min-[42rem]/accounts:border-0 @min-[42rem]/accounts:px-3 @min-[42rem]/accounts:py-2.5",
                   selected
                     ? // The bar takes the account's accent, so the selection points at it.
                       "bg-muted/55 before:absolute before:inset-y-2 before:left-0 before:w-0.5 before:rounded-r-full before:bg-(--account-accent,var(--foreground))"
@@ -1862,156 +1858,6 @@ function ProviderInstanceAdvancedSection(props: { children: ReactNode }) {
   );
 }
 
-function ProviderToolRow(props: {
-  config: ProviderInstallSettings;
-  open: boolean;
-  settings: AppSettings;
-  defaults: AppSettings;
-  hiddenProviderSet: ReadonlySet<ProviderKind>;
-  serverSettings: Pick<
-    ServerSettings,
-    "providers" | "providerInstances" | "enableProviderUpdateChecks"
-  > | null;
-  providerStatus: ServerProviderStatus | undefined;
-  providerStatusByInstance: ReadonlyMap<string, ServerProviderStatus>;
-  updatingProviders: ReadonlySet<ProviderInstanceId>;
-  onOpenChange: (open: boolean) => void;
-  onUpdate: (provider: ProviderKind, instanceId?: ProviderInstanceId) => void;
-  updateSettings: (patch: Partial<AppSettings>) => void;
-  updateSettingsAndWait: (patch: Partial<AppSettings>) => Promise<void>;
-}) {
-  const { t } = useTranslation();
-
-  const title = PROVIDER_DISPLAY_NAMES[props.config.provider];
-  const isDirty = isProviderInstallConfigDirty(props.config, props.settings, props.defaults);
-  const showProviderUpdateStatus = props.providerStatus
-    ? shouldShowProviderUpdateStatus({
-        provider: props.providerStatus,
-        hiddenProviderSet: props.hiddenProviderSet,
-        serverSettings: props.serverSettings,
-      })
-    : false;
-  const updateAdvisory = props.providerStatus?.versionAdvisory;
-  const providerUpdateSuppressed =
-    updateAdvisory?.status === "behind_latest" && !showProviderUpdateStatus;
-  const currentProviderVersion = formatProviderVersion(props.providerStatus?.version);
-  const providerUpdateLabel = props.providerStatus
-    ? !props.settings.enableProviderUpdateChecks
-      ? currentProviderVersion
-        ? t("settings:current", { value0: currentProviderVersion })
-        : null
-      : providerUpdateSuppressed
-        ? null
-        : providerUpdateStatusLabel(props.providerStatus)
-    : null;
-  const updateActive = Boolean(
-    (props.providerStatus && isProviderUpdateActive(props.providerStatus)) ||
-    props.updatingProviders.has(
-      props.providerStatus
-        ? providerStatusInstanceKey(props.providerStatus)
-        : props.config.provider,
-    ),
-  );
-  const showUpdateButton =
-    NEOLIX_PROVIDER_CLI_UPDATES_ENABLED && props.providerStatus
-      ? shouldPromptProviderUpdate(props.providerStatus) &&
-        (showProviderUpdateStatus || updateAdvisory?.status === "unknown")
-      : false;
-  // Self-updating CLIs never report a latest version, so the update stays available
-  // inside the panel rather than as a header badge that can never be satisfied.
-  const showSelfManagedUpdate =
-    NEOLIX_PROVIDER_CLI_UPDATES_ENABLED && props.providerStatus
-      ? shouldOfferProviderUpdateAction(props.providerStatus) &&
-        !isProviderLatestVersionKnowable(props.providerStatus)
-      : false;
-
-  return (
-    <Collapsible open={props.open} onOpenChange={props.onOpenChange}>
-      <div className="border-t border-border/70 first:border-t-0">
-        <div className="flex min-h-11 items-center gap-2 px-3 py-2">
-          <CollapsibleTrigger
-            type="button"
-            className="flex min-w-0 flex-1 items-center gap-2 text-left"
-          >
-            <span className="min-w-0 flex-1 text-ui-lg font-medium text-foreground">{title}</span>
-            {isDirty ? (
-              <span className="shrink-0 text-ui-sm text-muted-foreground">
-                {t("settings:schedule_custom")}
-              </span>
-            ) : null}
-            {providerUpdateLabel ? (
-              <span
-                className={cn(
-                  "shrink-0 text-ui-sm",
-                  updateAdvisory?.status === "behind_latest"
-                    ? "text-foreground"
-                    : "text-muted-foreground",
-                )}
-              >
-                {providerUpdateLabel}
-              </span>
-            ) : null}
-            <DisclosureChevron
-              open={props.open}
-              className="size-4 shrink-0 text-muted-foreground"
-            />
-          </CollapsibleTrigger>
-          {showUpdateButton && props.providerStatus ? (
-            <ProviderUpdateAction
-              providerStatus={props.providerStatus}
-              active={updateActive}
-              disabled={updateActive}
-              onUpdate={props.onUpdate}
-            />
-          ) : null}
-          <PluginProviderActionsMenu providerId={props.config.provider} providerName={title} />
-        </div>
-
-        <CollapsiblePanel>
-          <div className="border-t border-border/70 bg-muted/20 px-3 py-3">
-            <div className="space-y-3">
-              <ProviderDocsLinks docs={props.config.docs} />
-              {showProviderUpdateStatus && updateAdvisory?.status === "behind_latest" ? (
-                <div className="text-ui leading-snug text-muted-foreground">
-                  {updateAdvisory.canUpdate && updateAdvisory.updateCommand ? (
-                    <>
-                      <span>{t("settings:command")} </span>
-                      <code className="font-mono">{updateAdvisory.updateCommand}</code>
-                    </>
-                  ) : (
-                    t("settings:providers_newerVersionAvailable")
-                  )}
-                </div>
-              ) : null}
-              {showSelfManagedUpdate && props.providerStatus ? (
-                <div className="flex items-center justify-between gap-3">
-                  <div className="min-w-0 text-ui leading-snug text-muted-foreground">
-                    {title} {t("settings:managesItsOwnReleasesSoSynaraCannotTellWhether")}
-                  </div>
-                  <ProviderUpdateAction
-                    providerStatus={props.providerStatus}
-                    active={updateActive}
-                    disabled={updateActive}
-                    onUpdate={props.onUpdate}
-                  />
-                </div>
-              ) : null}
-              <ProviderAccountsControl
-                config={props.config}
-                providerStatusByInstance={props.providerStatusByInstance}
-                settings={props.settings}
-                updateSettings={props.updateSettings}
-                updateSettingsAndWait={props.updateSettingsAndWait}
-              />
-              <PluginProviderPanels providerId={props.config.provider} providerName={title} />
-            </div>
-          </div>
-        </CollapsiblePanel>
-      </div>
-    </Collapsible>
-  );
-}
-
 export type ProvidersSettingsPanelProps = AppSettingsBinding & {
   readonly active: boolean;
   readonly providerTarget?: ProviderKind | null;
@@ -2050,11 +1896,8 @@ export function ProvidersSettingsPanel({
   const refreshProvidersInFlightRef = useRef(false);
   const providerStatusesReconciled = hasReconciledServerProviderStatuses(queryClient);
   const serverSettingsQuery = useQuery(serverSettingsQueryOptions());
-  const [openInstallProviders, setOpenInstallProviders] = useState<Record<ProviderKind, boolean>>(
-    () => ({
-      ...createProviderInstallDisclosureState(settings),
-      ...(providerTarget ? { [providerTarget]: true } : {}),
-    }),
+  const [selectedProvider, setSelectedProvider] = useState<ProviderKind | null>(() =>
+    defaultSelectedProvider(settings, providerTarget),
   );
   const [updatingProviders, setUpdatingProviders] = useState<ReadonlySet<ProviderInstanceId>>(
     () => new Set(),
@@ -2204,18 +2047,15 @@ export function ProvidersSettingsPanel({
   );
 
   useSettingsRestoreSignal(resetEpoch, () => {
-    setOpenInstallProviders(createClosedProviderInstallDisclosureState());
+    setSelectedProvider(defaultSelectedProvider(settings, null));
     setDisabledProvidersOpen(false);
     setDetailsProvider(null);
   });
 
   useEffect(() => {
     if (!active || !providerTarget) return;
-    if (disabledProviderSet.has(providerTarget)) {
-      setDisabledProvidersOpen(true);
-    } else {
-      setOpenInstallProviders((current) => ({ ...current, [providerTarget]: true }));
-    }
+    setSelectedProvider(providerTarget);
+    if (disabledProviderSet.has(providerTarget)) setDisabledProvidersOpen(true);
   }, [active, disabledProviderSet, providerTarget]);
 
   const handleProviderOrderDragEnd = useCallback(
@@ -2311,63 +2151,109 @@ export function ProvidersSettingsPanel({
     });
   };
 
-  const renderProviderActivityRow = (option: (typeof PROVIDER_VISIBILITY_OPTIONS)[number]) => {
+  const selectedProviderOption =
+    (selectedProvider ? providerVisibilityOptionsByProvider.get(selectedProvider) : undefined) ??
+    enabledProviderOptions[0] ??
+    disabledProviderOptions[0] ??
+    null;
+
+  // T3's provider master list: one selectable row per provider, status and version inline,
+  // an enablement switch at the trailing edge, and the setup guide one click away.
+  const renderProviderRow = (option: (typeof PROVIDER_VISIBILITY_OPTIONS)[number]) => {
     const enabled = !disabledProviderSet.has(option.provider);
     const providerStatus = providerStatusByProvider.get(option.provider);
     const customModelCount = getCustomModelsForProvider(settings, option.provider).length;
+    const selected = selectedProviderOption?.provider === option.provider;
+    const version = formatProviderVersion(providerStatus?.version);
+    const statusLabel = providerSetupStatusLabel(
+      {
+        status: providerStatus,
+        reconciled: providerStatusesReconciled,
+        disabled: !enabled,
+      },
+      t,
+    );
+    const statusMessage =
+      enabled &&
+      providerStatusesReconciled &&
+      providerStatus?.message &&
+      (providerStatus.status !== "ready" || providerStatus.authStatus !== "authenticated")
+        ? providerStatus.message
+        : null;
+    const statusText = [
+      statusLabel,
+      customModelCount > 0
+        ? t("settings:providerDetails_customCount", { count: customModelCount })
+        : null,
+    ]
+      .filter(Boolean)
+      .join(" · ");
+    const fullStatus = [statusText, statusMessage].filter(Boolean).join(" · ");
     return (
-      <SettingsListRow
+      <div
         key={option.provider}
-        title={
-          <button
-            type="button"
-            onClick={() => setDetailsProvider(option.provider)}
-            aria-label={t("settings:providerDetails_open", { value0: option.title })}
-            className="flex max-w-full min-w-0 cursor-pointer items-center gap-2 rounded-md text-left outline-none focus-visible:ring-1 focus-visible:ring-ring/60"
-          >
-            <ProviderIcon provider={option.provider} className="size-4 shrink-0" />
-            <span className="truncate">{option.title}</span>
-            <ChevronRightIcon className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
-          </button>
-        }
-        description={
-          <>
-            <span className="block">
-              {providerSetupStatusLabel(
-                {
-                  status: providerStatus,
-                  reconciled: providerStatusesReconciled,
-                  disabled: !enabled,
-                },
-                t,
-              )}
+        role="listitem"
+        data-slot="settings-row"
+        data-provider-row={option.provider}
+        className={cn(
+          "group relative flex min-h-16 items-center gap-3 px-3 py-3 transition-colors",
+          selected ? "bg-foreground/[0.06]" : "hover:bg-muted/25",
+        )}
+      >
+        <button
+          type="button"
+          onClick={() => setSelectedProvider(option.provider)}
+          aria-label={t("settings:select", { value0: option.title })}
+          aria-pressed={selected}
+          className="absolute inset-0 cursor-pointer rounded-lg outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+        />
+        <span
+          className={cn(
+            "pointer-events-none flex min-w-0 flex-1 items-start gap-3",
+            !enabled && !selected && "opacity-60 group-hover:opacity-100",
+          )}
+        >
+          <ProviderIcon provider={option.provider} className="mt-0.5 size-5 shrink-0" />
+          <span className="min-w-0 flex-1">
+            <span className="flex min-w-0 items-center gap-2">
+              <span className="truncate text-ui font-medium text-foreground">{option.title}</span>
+              {version ? (
+                <code className="max-w-24 shrink-0 truncate text-ui-xs text-muted-foreground">
+                  {version}
+                </code>
+              ) : null}
             </span>
-            {customModelCount > 0 ? (
-              <span className="mt-0.5 block">
-                {t("settings:providerDetails_customCount", { count: customModelCount })}
-              </span>
-            ) : null}
-            {enabled &&
-            providerStatusesReconciled &&
-            providerStatus?.message &&
-            (providerStatus.status !== "ready" || providerStatus.authStatus !== "authenticated") ? (
-              <span className="mt-1 block">{providerStatus.message}</span>
-            ) : null}
-          </>
-        }
-        actions={
-          <>
-            {option.setupDocsHref ? (
-              <Button
-                variant="outline"
-                size="xs"
-                render={<a href={option.setupDocsHref} target="_blank" rel="noreferrer" />}
-                aria-label={t("settings:setupGuide2", { value0: option.title })}
-              >
-                {t("settings:setupGuide")}
-                <ExternalLinkIcon className="size-3" />
-              </Button>
-            ) : null}
+            {/* One line in the list, matching T3's row rhythm; the title carries the full
+                status and the detail pane repeats the complete error. */}
+            <span
+              data-provider-status
+              title={fullStatus}
+              className="mt-0.5 block truncate text-ui-xs leading-normal text-muted-foreground"
+            >
+              {statusText}
+            </span>
+          </span>
+        </span>
+        <span className="pointer-events-none relative flex shrink-0 items-center gap-1">
+          {option.setupDocsHref ? (
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              className="pointer-events-auto text-foreground/60 hover:bg-muted/60 hover:text-foreground focus-visible:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+              render={
+                <a
+                  href={option.setupDocsHref}
+                  target="_blank"
+                  rel="noreferrer"
+                  aria-label={t("settings:setupGuide2", { value0: option.title })}
+                  title={t("settings:setupGuide2", { value0: option.title })}
+                />
+              }
+            >
+              <ExternalLinkIcon className="size-3.5" />
+            </Button>
+          ) : null}
+          <span className="pointer-events-auto">
             <Switch
               checked={enabled}
               disabled={!serverSettingsQuery.data || providerEnablementMutationPending}
@@ -2384,88 +2270,249 @@ export function ProvidersSettingsPanel({
                 provider: option.title,
               })}
             />
-          </>
-        }
-      />
+          </span>
+        </span>
+      </div>
+    );
+  };
+
+  // The right-hand editor mirrors T3's instance detail: status first, then the provider's
+  // own setup (accounts, binaries, environment, models) and its documentation.
+  const renderProviderEditor = (option: (typeof PROVIDER_VISIBILITY_OPTIONS)[number]) => {
+    const enabled = !disabledProviderSet.has(option.provider);
+    const providerStatus = providerStatusByProvider.get(option.provider);
+    const providerConfig =
+      VISIBLE_PROVIDER_INSTALL_SETTINGS.find((config) => config.provider === option.provider) ??
+      null;
+    const version = formatProviderVersion(providerStatus?.version);
+    const statusLabel = providerSetupStatusLabel(
+      {
+        status: providerStatus,
+        reconciled: providerStatusesReconciled,
+        disabled: !enabled,
+      },
+      t,
+    );
+    const statusMessage =
+      enabled &&
+      providerStatusesReconciled &&
+      providerStatus?.message &&
+      (providerStatus.status !== "ready" || providerStatus.authStatus !== "authenticated")
+        ? providerStatus.message
+        : null;
+    const updateLabel = providerStatus ? providerUpdateStatusLabel(providerStatus) : null;
+    const updateActive = providerStatus
+      ? isProviderUpdateActive(providerStatus) ||
+        updatingProviders.has(providerStatusInstanceKey(providerStatus))
+      : false;
+    const canUpdate =
+      NEOLIX_PROVIDER_CLI_UPDATES_ENABLED &&
+      settings.enableProviderUpdateChecks &&
+      providerStatus !== undefined &&
+      shouldOfferProviderUpdateAction(providerStatus);
+    return (
+      <section
+        aria-label={t("settings:providers_editorLabel", { value0: option.title })}
+        className="min-w-0"
+      >
+        <header className="flex flex-wrap items-start gap-x-3 gap-y-2 border-b border-border/60 px-4 py-3">
+          <ProviderIcon provider={option.provider} className="mt-0.5 size-5 shrink-0" />
+          <div className="min-w-0 flex-1">
+            <h2 className="flex min-w-0 items-center gap-2 text-ui-lg font-semibold text-foreground">
+              <span className="truncate">{option.title}</span>
+              {version ? (
+                <code className="shrink-0 text-ui-xs font-normal text-muted-foreground">
+                  {version}
+                </code>
+              ) : null}
+            </h2>
+            <p className="mt-0.5 text-ui-xs text-muted-foreground">{statusLabel}</p>
+          </div>
+          <div className="flex shrink-0 items-center gap-1">
+            <PluginProviderActionsMenu providerId={option.provider} providerName={option.title} />
+          </div>
+        </header>
+
+        <div className="space-y-6 p-4">
+          {!enabled ? (
+            <div className="flex flex-col items-center gap-3 rounded-lg border border-dashed border-[color:var(--color-border)] px-4 py-10 text-center">
+              <p className="max-w-sm text-ui leading-relaxed text-muted-foreground">
+                {t("settings:providers_disabledNotice")}
+              </p>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() =>
+                  void updateProviderEnablement(
+                    setProviderListMembership(settings.disabledProviders, option.provider, false),
+                  )
+                }
+              >
+                {t("settings:enableProvider", { provider: option.title })}
+              </Button>
+            </div>
+          ) : (
+            <>
+              <section aria-label={t("settings:providers_statusHeading")}>
+                <h3 className="mb-2 px-1 text-ui-sm font-medium text-foreground">
+                  {t("settings:providers_statusHeading")}
+                </h3>
+                <SettingsCard>
+                  <SettingsListRow
+                    title={statusLabel}
+                    description={statusMessage ?? updateLabel ?? undefined}
+                    actions={
+                      <>
+                        {canUpdate && providerStatus ? (
+                          <ProviderUpdateAction
+                            providerStatus={providerStatus}
+                            active={updateActive}
+                            disabled={updateActive}
+                            onUpdate={(provider) => void runProviderUpdate(provider)}
+                          />
+                        ) : null}
+                        <Button
+                          variant="outline"
+                          size="xs"
+                          onClick={() => setDetailsProvider(option.provider)}
+                          aria-label={t("settings:providerDetails_open", {
+                            value0: option.title,
+                          })}
+                        >
+                          {t("settings:providers_modelsDiagnostics")}
+                        </Button>
+                      </>
+                    }
+                  />
+                </SettingsCard>
+              </section>
+
+              {providerConfig ? (
+                <ProviderAccountsControl
+                  config={providerConfig}
+                  providerStatusByInstance={providerStatusByInstance}
+                  settings={settings}
+                  updateSettings={updateSettings}
+                  updateSettingsAndWait={updateSettingsAndWait}
+                />
+              ) : null}
+
+              {providerConfig ? (
+                <section aria-label={t("settings:providers_documentationHeading")}>
+                  <h3 className="mb-2 px-1 text-ui-sm font-medium text-foreground">
+                    {t("settings:providers_documentationHeading")}
+                  </h3>
+                  <ProviderDocsLinks docs={providerConfig.docs} />
+                </section>
+              ) : null}
+
+              <PluginProviderPanels providerId={option.provider} providerName={option.title} />
+            </>
+          )}
+        </div>
+      </section>
     );
   };
 
   return (
     <div className="space-y-6">
-      <SettingsSection title="settings:providerActivity">
-        <SettingsRow
-          id="setting-enabled-providers"
-          title="settings:enabledProviders"
-          description="settings:enableProvidersAcrossSynaraDisabledProvidersAreHiddenFrom"
-          control={
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={refreshingProviders}
-              onClick={() => void refreshProviders()}
-            >
-              {refreshingProviders ? <Loader2Icon className="size-3.5 animate-spin" /> : null}
-              {refreshingProviders ? t("settings:checkingSetup") : t("chat:refreshStatus")}
-            </Button>
-          }
-          status={
-            providerEnablementMutationPending
-              ? t("settings:providers_savingActivity")
-              : t("settings:providers_enabledCount", {
-                  enabled: enabledProviderCount,
-                  total: PROVIDER_VISIBILITY_OPTIONS.length,
-                })
-          }
-          resetAction={
-            disabledProviderSet.size > 0 && !providerEnablementMutationPending ? (
-              <SettingResetButton
-                label={t("settings:enabledProviders2")}
-                onClick={() => void updateProviderEnablement([...defaults.disabledProviders])}
-              />
-            ) : null
+      <div id={SETTINGS_TARGETS.providerInstalls}>
+        <SettingsSectionShell
+          title="settings:providers_title"
+          action={
+            <div className="flex items-center gap-2">
+              {installSettingsDirty ? (
+                <SettingResetButton
+                  label={t("settings:providerTools")}
+                  onClick={() => updateSettings(createProviderInstallResetPatch(defaults))}
+                />
+              ) : null}
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={refreshingProviders}
+                onClick={() => void refreshProviders()}
+              >
+                {refreshingProviders ? <Loader2Icon className="size-3.5 animate-spin" /> : null}
+                {refreshingProviders ? t("settings:checkingSetup") : t("chat:refreshStatus")}
+              </Button>
+            </div>
           }
         >
-          {enabledProviderCount > 0 ? (
-            <div
-              className={cn(
-                "mt-4",
-                SETTINGS_INSET_LIST_CLASS_NAME,
-                SETTINGS_STACKED_ROWS_DIVIDER_CLASS_NAME,
-              )}
-            >
-              {enabledProviderOptions.map(renderProviderActivityRow)}
-            </div>
-          ) : (
-            <p className="mt-4 text-ui text-muted-foreground">
-              {t("settings:noProvidersEnabledOpenDisabledProvidersBelowToEnable")}
-            </p>
-          )}
-          {disabledProviderOptions.length > 0 ? (
-            <Collapsible
-              open={disabledProvidersOpen}
-              onOpenChange={setDisabledProvidersOpen}
-              className="mt-3"
-            >
-              <CollapsibleTrigger className="flex w-full items-center gap-2 py-2 text-left text-ui text-muted-foreground">
-                <DisclosureChevron open={disabledProvidersOpen} className="size-4 shrink-0" />
+          <div
+            className={cn(SETTINGS_CARD_CLASS_NAME, "md:grid md:grid-cols-[17rem_minmax(0,1fr)]")}
+          >
+            <div className="flex min-w-0 flex-col border-b border-border/60 md:border-e md:border-b-0">
+              <div className="flex min-h-10 shrink-0 items-center justify-between gap-2 border-b border-border/60 px-3 text-ui-xs text-muted-foreground">
                 <span>
-                  {t("settings:disabledProviders", { value0: disabledProviderOptions.length })}
+                  {providerEnablementMutationPending
+                    ? t("settings:providers_savingActivity")
+                    : t("settings:providers_enabledCount", {
+                        enabled: enabledProviderCount,
+                        total: PROVIDER_VISIBILITY_OPTIONS.length,
+                      })}
                 </span>
-              </CollapsibleTrigger>
-              <CollapsiblePanel>
-                <div
-                  className={cn(
-                    SETTINGS_INSET_LIST_CLASS_NAME,
-                    SETTINGS_STACKED_ROWS_DIVIDER_CLASS_NAME,
-                  )}
-                >
-                  {disabledProviderOptions.map(renderProviderActivityRow)}
-                </div>
-              </CollapsiblePanel>
-            </Collapsible>
-          ) : null}
-        </SettingsRow>
-      </SettingsSection>
+                {disabledProviderSet.size > 0 && !providerEnablementMutationPending ? (
+                  <SettingResetButton
+                    label={t("settings:enabledProviders2")}
+                    onClick={() => void updateProviderEnablement([...defaults.disabledProviders])}
+                  />
+                ) : null}
+              </div>
+              <div className="min-w-0">
+                {enabledProviderCount > 0 ? (
+                  <div
+                    role="list"
+                    aria-label={t("settings:providers_listLabel")}
+                    className="divide-y divide-border/50"
+                  >
+                    {enabledProviderOptions.map(renderProviderRow)}
+                  </div>
+                ) : (
+                  <p className="px-3 py-6 text-ui leading-relaxed text-muted-foreground">
+                    {t("settings:noProvidersEnabledOpenDisabledProvidersBelowToEnable")}
+                  </p>
+                )}
+                {disabledProviderOptions.length > 0 ? (
+                  <Collapsible
+                    open={disabledProvidersOpen}
+                    onOpenChange={setDisabledProvidersOpen}
+                    className="border-t border-border/60"
+                  >
+                    <CollapsibleTrigger className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-ui text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">
+                      <DisclosureChevron open={disabledProvidersOpen} className="size-4 shrink-0" />
+                      <span>
+                        {t("settings:disabledProviders", {
+                          value0: disabledProviderOptions.length,
+                        })}
+                      </span>
+                    </CollapsibleTrigger>
+                    <CollapsiblePanel>
+                      <div
+                        role="list"
+                        aria-label={t("settings:disabledProvidersListLabel")}
+                        className="divide-y divide-border/50 border-t border-border/60"
+                      >
+                        {disabledProviderOptions.map(renderProviderRow)}
+                      </div>
+                    </CollapsiblePanel>
+                  </Collapsible>
+                ) : null}
+              </div>
+            </div>
+
+            <div data-provider-detail className="min-w-0">
+              {selectedProviderOption ? (
+                renderProviderEditor(selectedProviderOption)
+              ) : (
+                <p className="p-6 text-ui leading-relaxed text-muted-foreground">
+                  {t("settings:providers_noSelection")}
+                </p>
+              )}
+            </div>
+          </div>
+        </SettingsSectionShell>
+      </div>
 
       {pluginProviderStatuses.length > 0 ? (
         <SettingsSection title="settings:pluginProviders">
@@ -2735,64 +2782,6 @@ export function ProvidersSettingsPanel({
           </SettingsSection>
         </div>
       ) : null}
-
-      <div id={SETTINGS_TARGETS.providerInstalls}>
-        <SettingsSection title="settings:providers_providerTools">
-          <SettingsRow
-            id="setting-installed-clis"
-            title="settings:providers_installedClis"
-            description="settings:providers_installedClisDescription"
-            status={
-              !settings.enableProviderUpdateChecks
-                ? t("settings:providers_updatesAutomaticOff")
-                : outdatedProviderCount > 0
-                  ? t("settings:providers_updatesAvailable", { count: outdatedProviderCount })
-                  : t("settings:providers_updatesNone")
-            }
-            resetAction={
-              installSettingsDirty ? (
-                <SettingResetButton
-                  label={t("settings:providerTools")}
-                  onClick={() => {
-                    updateSettings(createProviderInstallResetPatch(defaults));
-                    setOpenInstallProviders(createClosedProviderInstallDisclosureState());
-                  }}
-                />
-              ) : null
-            }
-          >
-            <div className="mt-4">
-              <div className={SETTINGS_INSET_LIST_CLASS_NAME}>
-                {VISIBLE_PROVIDER_INSTALL_SETTINGS.filter(
-                  (config) => !disabledProviderSet.has(config.provider),
-                ).map((config) => (
-                  <ProviderToolRow
-                    key={config.provider}
-                    config={config}
-                    open={openInstallProviders[config.provider]}
-                    settings={settings}
-                    defaults={defaults}
-                    hiddenProviderSet={hiddenProviderSet}
-                    serverSettings={providerUpdateServerSettings}
-                    providerStatus={providerStatusByProvider.get(config.provider)}
-                    providerStatusByInstance={providerStatusByInstance}
-                    updatingProviders={updatingProviders}
-                    onOpenChange={(open) =>
-                      setOpenInstallProviders((existing) => ({
-                        ...existing,
-                        [config.provider]: open,
-                      }))
-                    }
-                    onUpdate={(provider) => void runProviderUpdate(provider)}
-                    updateSettings={updateSettings}
-                    updateSettingsAndWait={updateSettingsAndWait}
-                  />
-                ))}
-              </div>
-            </div>
-          </SettingsRow>
-        </SettingsSection>
-      </div>
 
       {detailsProvider ? (
         <Suspense fallback={null}>

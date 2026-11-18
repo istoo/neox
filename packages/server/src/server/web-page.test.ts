@@ -4,7 +4,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import pino from "pino";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   WEB_PAGE_DEFAULT_PORT,
   WebPageServer,
@@ -116,8 +116,11 @@ describe("web page settings", () => {
   it("keeps the key in a file only its owner may read", async () => {
     const home = await tempHome();
     await saveWebPageSettings(home, { mode: "local", port: 3431, key: "0123456789abcdef" });
-    const mode = (await stat(path.join(home, "web-page.json"))).mode & 0o777;
-    expect(mode).toBe(0o600);
+    // Windows cannot express POSIX permissions; the file is private by location there.
+    if (process.platform !== "win32") {
+      const mode = (await stat(path.join(home, "web-page.json"))).mode & 0o777;
+      expect(mode).toBe(0o600);
+    }
     expect(JSON.parse(await readFile(path.join(home, "web-page.json"), "utf8"))).toEqual({
       mode: "local",
       port: 3431,
@@ -326,6 +329,53 @@ describe("the browser page", () => {
     expect(webPageLinks({ mode: "lan", port: 3430, key: "0123456789abcdef" }).network).toEqual(
       expect.arrayContaining([expect.stringContaining("0123456789abcdef")]),
     );
+  });
+
+  it("does not report a port-taken error while another update is serving it", async () => {
+    const home = await tempHome();
+    const port = await freePort();
+    const page = new WebPageServer({
+      neolixHome: home,
+      distDir: await distDir(home),
+      logger,
+      daemonAddress: () => null,
+    });
+    servers.push(page);
+    await page.start();
+
+    // The settings screen can send two updates back to back. Both bind the same
+    // address; the loser records EADDRINUSE, and the serving winner must not leave
+    // that stale error on a page that is actually up.
+    await Promise.all([
+      page.update({ mode: "local", port, newKey: true }),
+      page.update({ mode: "local", port, newKey: true }),
+    ]);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const state = page.state();
+    expect(state.serving).toBe(true);
+    expect(state.error).toBeNull();
+  });
+
+  it("binds once per update and reports the page as served", async () => {
+    const home = await tempHome();
+    const port = await freePort();
+    const page = new WebPageServer({
+      neolixHome: home,
+      distDir: await distDir(home),
+      logger,
+      daemonAddress: () => null,
+    });
+    servers.push(page);
+    await page.start();
+    const internals = page as unknown as { apply: () => void };
+    const apply = vi.spyOn(internals, "apply");
+
+    const state = await page.update({ mode: "local", port, newKey: true });
+
+    expect(apply).toHaveBeenCalledTimes(1);
+    expect(state.serving).toBe(true);
+    expect(state.error).toBeNull();
+    apply.mockRestore();
   });
 
   it("answers a tunnel's own name only when NEOLIX_PUBLIC_URL names it", async () => {

@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
 
 import type { Project, SidebarThreadSummary } from "../types";
+import { APP_SETTINGS_STORAGE_KEY } from "../appSettingsStorage";
 import { DEFAULT_PROJECT_ICON, type ProjectAppearance } from "../lib/projectAppearance";
 import { resolveThreadStatusPill, type ThreadStatusPill } from "./Sidebar.logic";
 import { SidebarActivityView } from "./SidebarActivityView";
@@ -254,7 +255,7 @@ function makeRemoteEntry(
     host: {
       hostId: environmentId,
       hostName: `Computer ${environmentId}`,
-      wsPath: `/ws/remote/${environmentId}`,
+      wsPath: `/rpc/remote/${environmentId}`,
       executionScope: {
         environmentId,
         accountAuthority: "https://account.example.test",
@@ -432,6 +433,14 @@ describe("SidebarActivityView", () => {
     "matches remote glyph/action sizes and hides the resting marker on hover and focus (%s)",
     async (surface) => {
       const previousViewport = { width: window.innerWidth, height: window.innerHeight };
+      // The host marker is a row field; enable it the way the display options menu does.
+      const previousSettings = localStorage.getItem(APP_SETTINGS_STORAGE_KEY);
+      if (surface === "pinned") {
+        localStorage.setItem(
+          APP_SETTINGS_STORAGE_KEY,
+          JSON.stringify({ sidebarRowItems: { host: true } }),
+        );
+      }
       const owner = makeRemoteEntry("mini");
       const input = remoteActivityInput([owner.session]);
       // WorkspaceThreadRow reads useAppSettings, which needs a QueryClient.
@@ -498,6 +507,8 @@ describe("SidebarActivityView", () => {
         await userEvent.keyboard("{Escape}");
       } finally {
         await mounted.unmount();
+        if (previousSettings === null) localStorage.removeItem(APP_SETTINGS_STORAGE_KEY);
+        else localStorage.setItem(APP_SETTINGS_STORAGE_KEY, previousSettings);
         await page.viewport(previousViewport.width, previousViewport.height);
       }
     },

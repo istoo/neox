@@ -12,9 +12,11 @@ export const WS_PROTOCOL_EPOCH = 1;
 export const WS_PROTOCOL_MIN_REVISION = 3;
 export const WS_PROTOCOL_MAX_REVISION = 3;
 export const WS_BOOTSTRAP_METHOD = "bootstrap.negotiate";
-export const WS_BOOTSTRAP_PATH = "/ws/bootstrap";
-export const WS_NEGOTIATE_HTTP_PATH = "/ws/negotiate";
-export const WS_FEATURE_PATH = "/ws";
+export const WS_BOOTSTRAP_PATH = "/rpc/bootstrap";
+export const WS_NEGOTIATE_HTTP_PATH = "/rpc/negotiate";
+export const WS_FEATURE_PATH = "/rpc";
+/** Prefix for a remote host's mirrored RPC surface: `/rpc/remote/<hostId>`. */
+export const WS_REMOTE_PATH_PREFIX = "/rpc/remote/";
 
 // These are protocol budgets, not server implementation details. Keeping the
 // browser's desired lease set and server admission on the same values prevents

@@ -170,8 +170,10 @@ describe("Claude terminal agent hooks", () => {
       "utf8",
     ).toLowerCase();
 
+    // The daemon entry names providers for gateway bridges, so the boundary is
+    // narrower: it must not import a provider-specific hook module.
     for (const providerId of Object.keys(AGENT_HOOK_PROVIDERS)) {
-      expect(source).not.toContain(providerId);
+      expect(source).not.toContain(`agent-hooks/${providerId}`);
     }
   });
 

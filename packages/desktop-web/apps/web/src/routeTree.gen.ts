@@ -18,6 +18,7 @@ import { Route as ChatPullRequestsRouteImport } from './routes/_chat.pull-reques
 import { Route as ChatPluginsRouteImport } from './routes/_chat.plugins'
 import { Route as ChatLinkRouteImport } from './routes/_chat.link'
 import { Route as ChatInboxRouteImport } from './routes/_chat.inbox'
+import { Route as ChatHistoryRouteImport } from './routes/_chat.history'
 import { Route as ChatAutomationsRouteImport } from './routes/_chat.automations'
 import { Route as ChatThreadIdRouteImport } from './routes/_chat.$threadId'
 import { Route as ChatTasksIndexRouteImport } from './routes/_chat.tasks.index'
@@ -73,6 +74,11 @@ const ChatLinkRoute = ChatLinkRouteImport.update({
 const ChatInboxRoute = ChatInboxRouteImport.update({
   id: '/inbox',
   path: '/inbox',
+  getParentRoute: () => ChatRoute,
+} as any)
+const ChatHistoryRoute = ChatHistoryRouteImport.update({
+  id: '/history',
+  path: '/history',
   getParentRoute: () => ChatRoute,
 } as any)
 const ChatAutomationsRoute = ChatAutomationsRouteImport.update({
@@ -143,6 +149,7 @@ export interface FileRoutesByFullPath {
   '/panel': typeof PanelRoute
   '/$threadId': typeof ChatThreadIdRoute
   '/automations': typeof ChatAutomationsRouteWithChildren
+  '/history': typeof ChatHistoryRoute
   '/inbox': typeof ChatInboxRoute
   '/link': typeof ChatLinkRoute
   '/plugins': typeof ChatPluginsRoute
@@ -163,6 +170,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/panel': typeof PanelRoute
   '/$threadId': typeof ChatThreadIdRoute
+  '/history': typeof ChatHistoryRoute
   '/inbox': typeof ChatInboxRoute
   '/link': typeof ChatLinkRoute
   '/plugins': typeof ChatPluginsRoute
@@ -186,6 +194,7 @@ export interface FileRoutesById {
   '/panel': typeof PanelRoute
   '/_chat/$threadId': typeof ChatThreadIdRoute
   '/_chat/automations': typeof ChatAutomationsRouteWithChildren
+  '/_chat/history': typeof ChatHistoryRoute
   '/_chat/inbox': typeof ChatInboxRoute
   '/_chat/link': typeof ChatLinkRoute
   '/_chat/plugins': typeof ChatPluginsRoute
@@ -211,6 +220,7 @@ export interface FileRouteTypes {
     | '/panel'
     | '/$threadId'
     | '/automations'
+    | '/history'
     | '/inbox'
     | '/link'
     | '/plugins'
@@ -231,6 +241,7 @@ export interface FileRouteTypes {
   to:
     | '/panel'
     | '/$threadId'
+    | '/history'
     | '/inbox'
     | '/link'
     | '/plugins'
@@ -253,6 +264,7 @@ export interface FileRouteTypes {
     | '/panel'
     | '/_chat/$threadId'
     | '/_chat/automations'
+    | '/_chat/history'
     | '/_chat/inbox'
     | '/_chat/link'
     | '/_chat/plugins'
@@ -340,6 +352,13 @@ declare module '@tanstack/react-router' {
       path: '/inbox'
       fullPath: '/inbox'
       preLoaderRoute: typeof ChatInboxRouteImport
+      parentRoute: typeof ChatRoute
+    }
+    '/_chat/history': {
+      id: '/_chat/history'
+      path: '/history'
+      fullPath: '/history'
+      preLoaderRoute: typeof ChatHistoryRouteImport
       parentRoute: typeof ChatRoute
     }
     '/_chat/automations': {
@@ -457,6 +476,7 @@ const ChatPullRequestsRouteWithChildren =
 interface ChatRouteChildren {
   ChatThreadIdRoute: typeof ChatThreadIdRoute
   ChatAutomationsRoute: typeof ChatAutomationsRouteWithChildren
+  ChatHistoryRoute: typeof ChatHistoryRoute
   ChatInboxRoute: typeof ChatInboxRoute
   ChatLinkRoute: typeof ChatLinkRoute
   ChatPluginsRoute: typeof ChatPluginsRoute
@@ -476,6 +496,7 @@ interface ChatRouteChildren {
 const ChatRouteChildren: ChatRouteChildren = {
   ChatThreadIdRoute: ChatThreadIdRoute,
   ChatAutomationsRoute: ChatAutomationsRouteWithChildren,
+  ChatHistoryRoute: ChatHistoryRoute,
   ChatInboxRoute: ChatInboxRoute,
   ChatLinkRoute: ChatLinkRoute,
   ChatPluginsRoute: ChatPluginsRoute,

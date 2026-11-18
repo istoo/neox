@@ -27,7 +27,7 @@ import {
   selectPrimaryProjectRunCommand,
   upsertProjectRunCommandScripts,
 } from "../projectRunTargets";
-import { projectScriptRuntimeEnv } from "../projectScripts";
+import { projectScriptRuntimeEnv, isServiceProjectScript } from "../projectScripts";
 import type { Project } from "../types";
 import { useTranslation } from "~/i18n";
 
@@ -174,6 +174,15 @@ export function useSidebarProjectRunController(input: {
         return;
       }
       const command = commandOverride?.trim() || runCommand.command;
+      // A service action gets its port only from the workspace-script runtime. The run dialog
+      // shows the action's command text, so map an unchanged command back to the action name;
+      // an edited command is still run verbatim in a plain terminal.
+      const serviceScriptName =
+        runCommand.source === "saved" && isServiceProjectScript(runCommand.script)
+          ? runCommand.script.name
+          : null;
+      const startCommand =
+        serviceScriptName !== null && command === runCommand.command ? serviceScriptName : command;
       const env = projectScriptRuntimeEnv({
         project: { cwd: project.cwd },
         worktreePath: null,
@@ -190,7 +199,7 @@ export function useSidebarProjectRunController(input: {
       try {
         const { server } = await api.projects.runDevServer({
           projectId,
-          command,
+          command: startCommand,
           cwd: runCommand.cwd,
           env,
         });

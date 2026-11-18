@@ -22,9 +22,8 @@ describe("desktop dev process ownership", () => {
 
   test("keeps Electron in the runner process group", () => {
     const options = createElectronSpawnOptions({
-      env: { PATH: "/usr/bin" },
+      env: { PATH: "/usr/bin", NEOLIX_DESKTOP_WEB_URL: "http://localhost:5173" },
       colorEnv: { FORCE_COLOR: "1" },
-      expoDevUrl: "http://localhost:8082",
     });
 
     expect(options).toMatchObject({
@@ -32,7 +31,7 @@ describe("desktop dev process ownership", () => {
       env: {
         PATH: "/usr/bin",
         FORCE_COLOR: "1",
-        EXPO_DEV_URL: "http://localhost:8082",
+        NEOLIX_DESKTOP_WEB_URL: "http://localhost:5173",
       },
     });
   });

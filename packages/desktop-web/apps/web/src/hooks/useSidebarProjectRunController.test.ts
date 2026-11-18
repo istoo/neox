@@ -497,6 +497,93 @@ describe("useSidebarProjectRunController", () => {
     expect(controller.projectRunDialogCommandDraft).toBe("bun second");
   });
 
+  it("runs a saved service action by name so the workspace runtime allocates its port", async () => {
+    const serviceId = ProjectId.makeUnsafe("project-service");
+    const serviceProject: Project = {
+      ...PROJECT,
+      id: serviceId,
+      name: "Service Project",
+      scripts: [
+        {
+          id: "web",
+          name: "web",
+          command: "node server.mjs",
+          icon: "play",
+          runOnWorktreeCreate: false,
+          type: "service",
+        },
+      ],
+    };
+    const map = new Map([[serviceId, serviceProject]]);
+    const renderService = () =>
+      useSidebarProjectRunController({
+        projects: [serviceProject],
+        projectById: map,
+        homeDir: "/Users/test",
+        chatWorkspaceRoot: "/Users/test/.synara/chats",
+      });
+
+    reactHarness.beginRender();
+    let controller = renderService();
+    controller.openProjectRunDialog(serviceId);
+    reactHarness.beginRender();
+    controller = renderService();
+    controller.setProjectRunDialogCommandDraft("node server.mjs");
+    reactHarness.beginRender();
+    controller = renderService();
+    controller.handleConfirmProjectRun();
+
+    await vi.waitFor(() => expect(harness.runDevServer).toHaveBeenCalled());
+    expect(harness.runDevServer).toHaveBeenCalledWith({
+      projectId: serviceId,
+      command: "web",
+      cwd: "/repo",
+      env: { SYNARA_PROJECT_ROOT: "/repo" },
+    });
+  });
+
+  it("keeps an edited service command verbatim instead of mapping it to the action", async () => {
+    const serviceId = ProjectId.makeUnsafe("project-service-edited");
+    const serviceProject: Project = {
+      ...PROJECT,
+      id: serviceId,
+      name: "Service Project",
+      scripts: [
+        {
+          id: "web",
+          name: "web",
+          command: "node server.mjs",
+          icon: "play",
+          runOnWorktreeCreate: false,
+          type: "service",
+        },
+      ],
+    };
+    const map = new Map([[serviceId, serviceProject]]);
+    const renderService = () =>
+      useSidebarProjectRunController({
+        projects: [serviceProject],
+        projectById: map,
+        homeDir: "/Users/test",
+        chatWorkspaceRoot: "/Users/test/.synara/chats",
+      });
+
+    reactHarness.beginRender();
+    let controller = renderService();
+    controller.openProjectRunDialog(serviceId);
+    reactHarness.beginRender();
+    controller = renderService();
+    controller.setProjectRunDialogCommandDraft("node other.mjs");
+    reactHarness.beginRender();
+    controller = renderService();
+    controller.handleConfirmProjectRun();
+
+    await vi.waitFor(() => expect(harness.runDevServer).toHaveBeenCalled());
+    expect(harness.runDevServer).toHaveBeenCalledWith(
+      expect.objectContaining({ projectId: serviceId, command: "node other.mjs" }),
+    );
+  });
+
   it("restarts through the bridge and reports a refused restart", async () => {
     harness.restartDevServer.mockResolvedValue({ restarted: true });
     await render().handleRestartProjectRun(PROJECT_ID);

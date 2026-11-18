@@ -15,12 +15,12 @@ const bridges: ClaudeBridge[] = [];
 
 afterEach(async () => {
   for (const bridge of bridges.splice(0)) {
-    bridge.abortAll();
+    await bridge.abortAll();
   }
+  await Promise.all(runs.splice(0).map((run) => run.waitForExit()));
   for (const dir of cleanup.splice(0)) {
     await rm(dir, { recursive: true, force: true });
   }
-  await Promise.all(runs.splice(0).map((run) => run.waitForExit()));
 });
 
 const user = (text: string): ClaudePromptMessage => ({
@@ -35,39 +35,37 @@ const reply = (text: string): ClaudePromptMessage => ({
 
 function turnScript(): string {
   return `
-n=0
-while read -r line; do
-  n=$((n+1))
-  printf '%s\\n' \\
-    '{"type":"stream_event","event":{"type":"message_start","message":{"id":"m","model":"claude-sonnet-5","usage":{"input_tokens":10}}}}' \\
-    '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"pid '"$$"' turn '$n'"}}}' \\
-    '{"type":"stream_event","event":{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}}' \\
-    '{"type":"stream_event","event":{"type":"message_stop"}}'
-done
+let turn = 0;
+onLines(() => {
+  turn += 1;
+  out(JSON.stringify({ type: "stream_event", event: { type: "message_start", message: { id: "m", model: "claude-sonnet-5", usage: { input_tokens: 10 } } } }));
+  out(JSON.stringify({ type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "pid " + runPid + " turn " + turn } } }));
+  out(JSON.stringify({ type: "stream_event", event: { type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 2 } } }));
+  out(JSON.stringify({ type: "stream_event", event: { type: "message_stop" } }));
+});
 `;
 }
 
 function callScript(): string {
   return `
-n=0
-while read -r line; do
-  n=$((n+1))
-  if [ "$n" = "1" ]; then
-    printf '%s\\n' \\
-      '{"type":"stream_event","event":{"type":"message_start","message":{"id":"m1","model":"claude-sonnet-5","usage":{"input_tokens":1}}}}' \\
-      '{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"mcp__neox__read"}}}' \\
-      '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\\"path\\":\\"a\\"}"}}}' \\
-      '{"type":"stream_event","event":{"type":"content_block_stop","index":0}}' \\
-      '{"type":"stream_event","event":{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":2}}}' \\
-      '{"type":"stream_event","event":{"type":"message_stop"}}'
-    while [ ! -f "$SIGNAL" ]; do sleep 0.01; done
-    printf '%s\\n' \\
-      '{"type":"stream_event","event":{"type":"message_start","message":{"id":"m2","model":"claude-sonnet-5","usage":{"input_tokens":2}}}}' \\
-      '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"done"}}}' \\
-      '{"type":"stream_event","event":{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}}' \\
-      '{"type":"stream_event","event":{"type":"message_stop"}}'
-  fi
-done
+let turn = 0;
+onLines(async () => {
+  turn += 1;
+  if (turn !== 1) {
+    return;
+  }
+  out(JSON.stringify({ type: "stream_event", event: { type: "message_start", message: { id: "m1", model: "claude-sonnet-5", usage: { input_tokens: 1 } } } }));
+  out(JSON.stringify({ type: "stream_event", event: { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "toolu_1", name: "mcp__neox__read" } } }));
+  out(JSON.stringify({ type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: "{\\"path\\":\\"a\\"}" } } }));
+  out(JSON.stringify({ type: "stream_event", event: { type: "content_block_stop", index: 0 } }));
+  out(JSON.stringify({ type: "stream_event", event: { type: "message_delta", delta: { stop_reason: "tool_use" }, usage: { output_tokens: 2 } } }));
+  out(JSON.stringify({ type: "stream_event", event: { type: "message_stop" } }));
+  await waitForFile(process.env.SIGNAL);
+  out(JSON.stringify({ type: "stream_event", event: { type: "message_start", message: { id: "m2", model: "claude-sonnet-5", usage: { input_tokens: 2 } } } }));
+  out(JSON.stringify({ type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "done" } } }));
+  out(JSON.stringify({ type: "stream_event", event: { type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 1 } } }));
+  out(JSON.stringify({ type: "stream_event", event: { type: "message_stop" } }));
+});
 `;
 }
 
@@ -111,17 +109,22 @@ async function turnInput(
 /** A fake that says its session id and records its argv and each stdin line. */
 function sessionScript(): string {
   return `
-if [ -n "$NEOLIX_ARGS" ]; then echo "$@" >> "$NEOLIX_ARGS"; fi
-n=0
-while read -r line; do
-  n=$((n+1))
-  if [ -n "$NEOLIX_INPUT" ]; then printf '%s\\n' "$line" >> "$NEOLIX_INPUT"; fi
-  printf '%s\\n' \\
-    '{"session_id":"ses-'"$$"'","type":"stream_event","event":{"type":"message_start","message":{"id":"m","model":"claude-sonnet-5","usage":{"input_tokens":1}}}}' \\
-    '{"session_id":"ses-'"$$"'","type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"pid '"$$"' turn '$n'"}}}' \\
-    '{"session_id":"ses-'"$$"'","type":"stream_event","event":{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}}' \\
-    '{"session_id":"ses-'"$$"'","type":"stream_event","event":{"type":"message_stop"}}'
-done
+const scripted = process.argv.slice(2);
+if (process.env.NEOLIX_ARGS) {
+  fs.appendFileSync(process.env.NEOLIX_ARGS, scripted.join(" ") + "\\n");
+}
+const session = "ses-" + runPid;
+let turn = 0;
+onLines((line) => {
+  turn += 1;
+  if (process.env.NEOLIX_INPUT) {
+    fs.appendFileSync(process.env.NEOLIX_INPUT, line + "\\n");
+  }
+  out(JSON.stringify({ session_id: session, type: "stream_event", event: { type: "message_start", message: { id: "m", model: "claude-sonnet-5", usage: { input_tokens: 1 } } } }));
+  out(JSON.stringify({ session_id: session, type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "pid " + runPid + " turn " + turn } } }));
+  out(JSON.stringify({ session_id: session, type: "stream_event", event: { type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 1 } } }));
+  out(JSON.stringify({ session_id: session, type: "stream_event", event: { type: "message_stop" } }));
+});
 `;
 }
 
@@ -154,7 +157,7 @@ describe("ClaudeBridge", () => {
     expect(secondEvents.filter((event) => event.kind === "text")).toEqual([
       { kind: "text", text: `pid ${first.run.pid} turn 2` },
     ]);
-    bridge.abortAll();
+    await bridge.abortAll();
   });
 
   it("starts another process for another conversation", async () => {
@@ -169,7 +172,7 @@ describe("ClaudeBridge", () => {
     runs.push(other.run);
     await collect(other.events);
     expect(other.run.pid).not.toBe(first.run.pid);
-    bridge.abortAll();
+    await bridge.abortAll();
   });
 
   it("holds a tool call until the client's next request brings its result", async () => {
@@ -221,7 +224,7 @@ describe("ClaudeBridge", () => {
     await writeFile(signal, "");
     const secondEvents = await collect(second.events);
     expect(secondEvents).toContainEqual({ kind: "text", text: "done" });
-    bridge.abortAll();
+    await bridge.abortAll();
   });
 
   it("shelves a conversation let go past idleMost and resumes its session", async () => {
@@ -293,7 +296,7 @@ describe("ClaudeBridge", () => {
   });
 
   it("answers 503 when every place is busy", async () => {
-    const { dir, binary } = await installFakeClaude("sleep 5");
+    const { dir, binary } = await installFakeClaude("setTimeout(() => {}, 5000);");
     cleanup.push(dir);
     const room = new ClaudeRoom({ most: 1, waitMs: 20 });
     const bridge = new ClaudeBridge({ resolveBinary: async () => binary, room });

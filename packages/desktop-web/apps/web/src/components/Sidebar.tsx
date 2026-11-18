@@ -8,6 +8,9 @@ import {
 } from "../lib/hosts/workspaceFrame";
 import { WorkspaceProjectItem, WorkspaceThreadRow } from "./hosts/WorkspaceProjects";
 import { SidebarProjectRowContent } from "./SidebarProjectRowContent";
+import { SidebarStatusGroupList } from "./SidebarStatusGroupList";
+import { SidebarThreadRowFields } from "./SidebarThreadRowFields";
+import { resolveThreadRowPrChip, type ThreadMetaChip } from "./SidebarThreadRowMeta";
 import {
   readAvailableWorkspaceNavigation,
   useWorkspaceSessions,
@@ -17,6 +20,8 @@ import {
   workspaceActivityRows,
   workspaceThreadKey,
   deriveWorkspaceProjectThreadRows,
+  filterWorkspaceSessionsByHostFilters,
+  isHostVisibleByFilter,
   mergeSidebarProjects,
   mergeSidebarChats,
   remoteSidebarProjects,
@@ -29,7 +34,6 @@ import * as Schema from "effect/Schema";
 import { CATALOG_OPEN_EVENT } from "~/lib/projectCatalog/navigation";
 import { readExecutionContext } from "~/lib/hosts/executionContext";
 import { checkoutKey, type CheckoutRef } from "~/lib/projectCatalog/model";
-import { PR_STATE_LABEL_KEYS } from "./pullRequest/pullRequestStatePresentation";
 import { THREAD_STATUS_LABEL_KEYS } from "./Sidebar.logic";
 import { useProjectImportDialogStore } from "~/projectImport/projectImportDialogStore";
 // FILE: Sidebar.tsx
@@ -51,6 +55,7 @@ import {
   ExternalLinkIcon,
   FolderOpenIcon,
   GiftIcon,
+  HistoryIcon,
   KanbanIcon,
   SettingsIcon,
   KeyboardIcon,
@@ -71,10 +76,6 @@ import {
   XIcon,
 } from "~/lib/icons";
 import { createCentralIconComponent } from "~/lib/central-icons";
-import {
-  PR_STATE_PRESENTATION_ICONS,
-  resolvePrStatePresentation,
-} from "~/components/pullRequest/pullRequestStatePresentation";
 import { PinStatusIcon, pinActionLabel } from "~/lib/pin";
 import { THREAD_CONTEXT_MENU_ICONS } from "~/lib/contextMenuIcons";
 import { useArchivedWorkspaceLedger } from "~/lib/archivedWorkspaces";
@@ -107,7 +108,6 @@ import {
   type ComponentType,
   type MouseEvent,
   type PointerEvent as ReactPointerEvent,
-  type ReactElement,
   type ReactNode,
 } from "react";
 import {
@@ -150,7 +150,10 @@ import {
   type ProviderInstanceOption,
   useAppSettings,
 } from "../appSettings";
-import { PluginSidebarItems } from "~/plugins/PluginSidebarItems";
+import { PluginSidebarEntryItem } from "~/plugins/PluginSidebarItems";
+import { useReplacedPluginPage } from "~/plugins/pageReplacement";
+import { useSidebarNavItems } from "~/hooks/useSidebarNavItems";
+import { OPEN_IMPORT_THREAD_EVENT } from "~/lib/historyActions";
 import {
   isPluginAgentActionItemId,
   pluginAgentActionItems,
@@ -197,7 +200,6 @@ import { useActivityThreads } from "../hooks/useActivityThreads";
 import { useCommittedPathname } from "../hooks/useCommittedPathname";
 import {
   resolveThreadPullRequestFallback,
-  type ThreadPullRequest,
   useThreadPullRequests,
 } from "../hooks/useThreadPullRequests";
 import {
@@ -258,6 +260,7 @@ import {
   sidebarFooterButtonClassName,
 } from "./sidebarFooterStyles";
 import { AppRailUsage } from "./AppRailUsage";
+import { useBuiltinFeatures } from "~/hooks/useBuiltinFeatures";
 import { ProjectDisclosureChevron, ProjectSidebarIcon } from "./ProjectSidebarIcon";
 import { ThreadHoverCardContent } from "./ThreadHoverCardContent";
 import { ProjectHoverCardContent } from "./ProjectHoverCardContent";
@@ -478,9 +481,8 @@ import {
   sortThreadsForSidebar,
   resolveSidebarStatusBucket,
   resolveSidebarThreadDisplayTitle,
+  groupSidebarThreadsByStatus,
   SIDEBAR_STATUS_BUCKET_LABEL_KEYS,
-  SIDEBAR_STATUS_BUCKET_ORDER,
-  type SidebarStatusBucket,
 } from "./Sidebar.logic";
 import type { LastThreadRoute } from "../chatRouteRestore";
 import {
@@ -790,12 +792,6 @@ function groupPickupMessageText(sourceThread: Pick<Thread, "id" | "title">): str
   return `A thread was handed to this hub for you to pick up: "${sourceThread.title ?? "Untitled thread"}" (thread id ${sourceThread.id}). Use synara_read_thread to read it and continue the work it was doing.`;
 }
 
-type ThreadMetaChip = {
-  id: "automation" | "handoff" | "fork" | "worktree" | "pr" | "checks" | "services";
-  tooltip: string;
-  icon: ReactNode;
-};
-
 /**
  * Back-to-front order: first = behind, last = in front.
  * Priority lowest -> highest: handoff -> fork -> worktree.
@@ -873,27 +869,6 @@ function resolveThreadRowMetaChips(input: {
   }
 
   return chips;
-}
-
-// The thread's PR state, as a plain meta chip that closes the row (the hover card's PR
-// row is the clickable way to open it).
-function resolveThreadRowPrChip(pr: NonNullable<ThreadPullRequest>): ThreadMetaChip {
-  const presentation = resolvePrStatePresentation(pr);
-  return {
-    id: "pr",
-    tooltip: t("workspace:symbol4", {
-      value0: pr.number,
-      value1: t(PR_STATE_LABEL_KEYS[presentation.label]),
-      value2: pr.title,
-    }),
-    icon: (
-      <SidebarGlyph
-        icon={PR_STATE_PRESENTATION_ICONS[presentation.iconKind]}
-        variant="meta"
-        className={presentation.colorClass}
-      />
-    ),
-  };
 }
 
 function terminalStatusFromThreadState(input: {
@@ -1438,6 +1413,11 @@ export default function Sidebar() {
     void queryClient.invalidateQueries({ queryKey: pullRequestQueryKeys.all });
   }, [pullRequestRepositoryConfig, queryClient]);
   const { settings: appSettings, serverSettings, updateSettings } = useAppSettings();
+  const builtinFeatures = useBuiltinFeatures();
+  const headerSidebarNav = useSidebarNavItems("header");
+  const footerSidebarNav = useSidebarNavItems("footer");
+  // A plugin footer row can take Usage's place; the built-in rail entry steps aside.
+  const usageReplacement = useReplacedPluginPage("usage");
   // Heartbeat automations grouped by their target thread, so each thread row can show a
   // clock chip indicating an automation is attached (mirrors the Environment panel section).
   const automationsByThreadId = useMemo(
@@ -1747,6 +1727,16 @@ export default function Sidebar() {
   const [searchPaletteOpen, setSearchPaletteOpen] = useState(false);
   const openFeedbackDialog = useFeedbackDialogStore((state) => state.openDialog);
   const [searchPaletteMode, setSearchPaletteMode] = useState<SidebarSearchPaletteMode>("search");
+  // History owns the entry point; the import sheet and its target project stay
+  // in this sidebar, so the page asks for the sheet instead of duplicating it.
+  useEffect(() => {
+    const openImport = () => {
+      setSearchPaletteMode("import");
+      setSearchPaletteOpen(true);
+    };
+    window.addEventListener(OPEN_IMPORT_THREAD_EVENT, openImport);
+    return () => window.removeEventListener(OPEN_IMPORT_THREAD_EVENT, openImport);
+  }, []);
   const projectAdditionLockRef = useRef(false);
   const [renameDialogThreadId, setRenameDialogThreadId] = useState<ThreadId | null>(null);
   const [snoozeDialogThreadId, setSnoozeDialogThreadId] = useState<ThreadId | null>(null);
@@ -1910,6 +1900,12 @@ export default function Sidebar() {
   const activeThreadSummary = activeSidebarThreadId
     ? sidebarThreadSummaryById[activeSidebarThreadId]
     : null;
+  // Worktree setup is addressable only once the daemon has joined a workspace to the thread.
+  const activeThreadHasWorkspace = useStore((store) =>
+    activeSidebarThreadId
+      ? Boolean(store.threadShellById?.[activeSidebarThreadId]?.neolixWorkspaceId)
+      : false,
+  );
   const activeThreadWorkspace = activeThreadSummary
     ? findWorkspaceForDirectory(
         neolixWorkspacesQuery.data?.workspaces ?? [],
@@ -2039,12 +2035,17 @@ export default function Sidebar() {
     },
     [clearDismissedThreadStatus, markThreadUnread],
   );
-  // The daemon has no explicit read RPC (unread is cleared when the workspace is
-  // opened), so this clears the local unread/completion state only.
+  // The local read model clears on visit; the daemon keeps a workspace attention mark until
+  // the user marks the thread read, so clear that mark here too (best effort).
   const handleMarkThreadRead = useCallback(
     (threadId: ThreadId) => {
       clearDismissedThreadStatus(threadId);
       markThreadVisited(threadId);
+      void readNativeApi()
+        ?.neolix?.attention.clearWorkspace({ threadId })
+        .catch((error) => {
+          console.warn("Failed to clear workspace attention", { threadId, error });
+        });
     },
     [clearDismissedThreadStatus, markThreadVisited],
   );
@@ -2356,15 +2357,9 @@ export default function Sidebar() {
   const localHostLabel = readExecutionContext()?.controller.label ?? "This computer";
   const sidebarHostFilters = appSettings.sidebarHostFilters;
   const sidebarProjectFilters = appSettings.sidebarProjectFilters;
-  const localHostVisible =
-    sidebarHostFilters.length === 0 || sidebarHostFilters.includes(localEnvironmentId);
+  const localHostVisible = isHostVisibleByFilter(sidebarHostFilters, localEnvironmentId);
   const visibleWorkspaceSessions = useMemo(
-    () =>
-      sidebarHostFilters.length === 0
-        ? workspaceSessions
-        : workspaceSessions.filter((session) =>
-            sidebarHostFilters.includes(session.host.executionScope.environmentId),
-          ),
+    () => filterWorkspaceSessionsByHostFilters(workspaceSessions, sidebarHostFilters),
     [sidebarHostFilters, workspaceSessions],
   );
   const threadMatchesSidebarProjectFilter = useCallback(
@@ -2492,20 +2487,20 @@ export default function Sidebar() {
         manualOrderRanks: manualThreadOrderRanks,
       },
     );
-    const buckets = new Map<SidebarStatusBucket, SidebarThreadSummary[]>();
-    for (const thread of threads) {
-      const bucket = resolveSidebarStatusBucket({
-        status: resolveThreadStatusForSidebar(thread),
-        sessionStatus: thread.session?.status ?? null,
-      });
-      const rows = buckets.get(bucket) ?? [];
-      rows.push(thread);
-      buckets.set(bucket, rows);
-    }
-    return SIDEBAR_STATUS_BUCKET_ORDER.flatMap((bucket) => {
-      const rows = buckets.get(bucket);
-      if (!rows || rows.length === 0) return [];
-      return [{ key: bucket, label: t(SIDEBAR_STATUS_BUCKET_LABEL_KEYS[bucket]), threads: rows }];
+    return groupSidebarThreadsByStatus({
+      threads,
+      bucketFor: (thread) =>
+        resolveSidebarStatusBucket({
+          status: resolveThreadStatusForSidebar(thread),
+          sessionStatus: thread.session?.status ?? null,
+        }),
+      labels: {
+        needs_input: t(SIDEBAR_STATUS_BUCKET_LABEL_KEYS.needs_input),
+        failed: t(SIDEBAR_STATUS_BUCKET_LABEL_KEYS.failed),
+        attention: t(SIDEBAR_STATUS_BUCKET_LABEL_KEYS.attention),
+        running: t(SIDEBAR_STATUS_BUCKET_LABEL_KEYS.running),
+        done: t(SIDEBAR_STATUS_BUCKET_LABEL_KEYS.done),
+      },
     });
   }, [
     appSettings.sidebarGroupBy,
@@ -5212,6 +5207,18 @@ export default function Sidebar() {
     [handlePrimaryNewThread, prefetchModelsForPrimaryNewThread, t],
   );
 
+  const historyNavDescriptor = useMemo<SidebarNavItemDescriptor>(
+    () => ({
+      icon: HistoryIcon,
+      iconClassName: "size-3.5",
+      label: t("workspace:history"),
+      active: pathname === "/history",
+      badge: null,
+      onClick: () => void navigate({ to: "/history" }),
+    }),
+    [navigate, pathname, t],
+  );
+
   // Rows hold still while the pointer is over the list, so opening an unread
   // chat or a chat starting work never moves the row the user is about to click.
   const [sidebarContentElement, setSidebarContentElement] = useState<HTMLDivElement | null>(null);
@@ -6373,45 +6380,21 @@ export default function Sidebar() {
     workspace: ReturnType<typeof resolveThreadWorkspaceRecord>,
   ): ReactNode {
     const rowItems = appSettings.sidebarRowItems;
-    const items: ReactElement[] = [];
     const branch = thread.branch ?? workspace?.branch ?? null;
-    if (rowItems.branch && branch) {
-      items.push(
-        <span key="branch" className="inline-flex min-w-0 items-center gap-1">
-          <SidebarGlyph icon={GitBranchIcon} variant="meta" className="size-3 shrink-0" />
-          <span className="truncate">{branch}</span>
-        </span>,
-      );
-    }
-    if (rowItems.project) {
-      const projectName = projectById.get(thread.projectId)?.name;
-      if (projectName) {
-        items.push(
-          <span key="project" className="truncate">
-            {projectName}
-          </span>,
-        );
-      }
-    }
-    if (rowItems.services && (workspace?.runningServiceCount ?? 0) > 0) {
-      items.push(
-        <span key="services" className="inline-flex items-center gap-1">
-          <SidebarGlyph icon={GlobeIcon} variant="meta" className="size-3 shrink-0" />
-          {workspace?.runningServiceCount}
-        </span>,
-      );
-    }
-    if (items.length === 0) return null;
-    return items.flatMap((item, index) =>
-      index === 0
-        ? [item]
-        : [
-            // Keyed by the field it precedes so hiding one field never re-keys the others.
-            <span key={`sep-${item.key}`} aria-hidden className="text-muted-foreground/30">
-              ·
-            </span>,
-            item,
-          ],
+    const projectName = projectById.get(thread.projectId)?.name;
+    const runningServiceCount = workspace?.runningServiceCount ?? 0;
+    const hasFields =
+      (rowItems.branch && Boolean(branch)) ||
+      (rowItems.project && Boolean(projectName)) ||
+      (rowItems.services && runningServiceCount > 0);
+    if (!hasFields) return null;
+    return (
+      <SidebarThreadRowFields
+        branch={branch}
+        projectName={projectName}
+        runningServiceCount={runningServiceCount}
+        rowItems={rowItems}
+      />
     );
   }
 
@@ -6661,6 +6644,7 @@ export default function Sidebar() {
         <ProjectHoverCardContent
           name={project.name}
           cwd={project.cwd}
+          projectId={project.id}
           appearance={project.appearance ?? null}
           isPinned={pinnedProjectIdSet.has(project.id)}
           chatCount={chatCount}
@@ -6698,7 +6682,10 @@ export default function Sidebar() {
     const displayTitle = resolveThreadDisplayTitle(thread);
     const threadStatus = resolveThreadStatusForSidebar(thread);
     const pr = prByThreadId.get(thread.id) ?? null;
-    const prChip = !thread.forkSourceThreadId && pr ? resolveThreadRowPrChip(pr) : null;
+    const prChip =
+      appSettings.sidebarRowItems.changeRequest && !thread.forkSourceThreadId && pr
+        ? resolveThreadRowPrChip(pr)
+        : null;
     const threadJumpLabel = visibleThreadJumpLabelByThreadId.get(thread.id) ?? null;
     const hoverAnchorId = createSidebarThreadHoverAnchorId({
       scope: "pinned",
@@ -6853,7 +6840,10 @@ export default function Sidebar() {
       }),
       ...resolveThreadWorkspaceFieldChips(thread),
     ];
-    const prChip = !thread.forkSourceThreadId && pr ? resolveThreadRowPrChip(pr) : null;
+    const prChip =
+      appSettings.sidebarRowItems.changeRequest && !thread.forkSourceThreadId && pr
+        ? resolveThreadRowPrChip(pr)
+        : null;
     const threadJumpLabel = visibleThreadJumpLabelByThreadId.get(thread.id) ?? null;
     const hoverAnchorId = createSidebarThreadHoverAnchorId({
       scope: topLevel ? "chat" : "project",
@@ -7246,6 +7236,7 @@ export default function Sidebar() {
                 icon={
                   <ProjectSidebarIcon
                     cwd={project.cwd}
+                    projectId={project.id}
                     expanded={project.expanded}
                     appearance={project.appearance}
                   />
@@ -7260,6 +7251,7 @@ export default function Sidebar() {
                   ) : (
                     <ProjectDisclosureChevron
                       cwd={project.cwd}
+                      projectId={project.id}
                       expanded={project.expanded}
                       appearance={project.appearance}
                       className={PROJECT_ROW_CHEVRON_CLASS_NAME}
@@ -7396,29 +7388,15 @@ export default function Sidebar() {
 
   // Status-grouped replacement for the project tree, same flat section shape as labels.
   function renderStatusGroupedList() {
-    if (sidebarStatusGroups.length === 0) {
-      return (
-        <p className="px-2 py-3 text-ui text-muted-foreground/58">
-          {t("workspace:display_noThreads")}
-        </p>
-      );
-    }
     return (
-      <SidebarMenu data-testid="workspace-status-group-list" className="gap-3">
-        {sidebarStatusGroups.map((group) => {
-          const threadIds = group.threads.map((thread) => thread.id);
-          return (
-            <SidebarMenuItem key={group.key} className="rounded-md">
-              {renderListSectionHeader(group.label, null)}
-              <SidebarMenuSub className="mx-0 my-0 w-full translate-x-0 border-l-0 px-0 py-0">
-                {group.threads.map((thread) =>
-                  renderThreadRow(thread, threadIds, true, projectById.get(thread.projectId)?.name),
-                )}
-              </SidebarMenuSub>
-            </SidebarMenuItem>
-          );
-        })}
-      </SidebarMenu>
+      <SidebarStatusGroupList
+        groups={sidebarStatusGroups}
+        emptyLabel={t("workspace:display_noThreads")}
+        renderThreadRow={(thread, groupThreads) => {
+          const threadIds = groupThreads.map((entry) => entry.id);
+          return renderThreadRow(thread, threadIds, true, projectById.get(thread.projectId)?.name);
+        }}
+      />
     );
   }
 
@@ -8030,6 +8008,7 @@ export default function Sidebar() {
         activeProjectId: activeRouteProjectId,
         isProjectPinned:
           activeRouteProjectId !== null && pinnedProjectIdSet.has(activeRouteProjectId),
+        hasWorkspaceSetup: activeThreadHasWorkspace,
         openThreadTabIds,
         onTogglePinProject: (projectId) => {
           window.dispatchEvent(
@@ -8057,6 +8036,7 @@ export default function Sidebar() {
     [
       activeRouteProjectId,
       activeSidebarThreadId,
+      activeThreadHasWorkspace,
       activateThreadTab,
       navigate,
       openThreadTabIds,
@@ -8420,24 +8400,57 @@ export default function Sidebar() {
           {!isOnGroups ? (
             <SidebarGroup className="px-1.5 pt-1 pb-1.5">
               <SidebarMenu className="gap-0.5">
-                <SidebarPrimaryAction
-                  icon={newThreadNavDescriptor.icon}
-                  {...(newThreadNavDescriptor.iconClassName
-                    ? { iconClassName: newThreadNavDescriptor.iconClassName }
-                    : {})}
-                  label={newThreadNavDescriptor.label}
-                  active={newThreadNavDescriptor.active}
-                  badge={newThreadNavDescriptor.badge}
-                  onClick={newThreadNavDescriptor.onClick}
-                  {...(newThreadNavDescriptor.onMouseEnter
-                    ? { onMouseEnter: newThreadNavDescriptor.onMouseEnter }
-                    : {})}
-                  {...(newThreadNavDescriptor.onFocus
-                    ? { onFocus: newThreadNavDescriptor.onFocus }
-                    : {})}
-                />
-                <PluginSidebarItems section="header" />
-                <PluginSidebarItems section="footer" />
+                {headerSidebarNav.items
+                  .filter((item) => item.visible)
+                  .map((item) => {
+                    if (item.kind === "plugin") {
+                      return <PluginSidebarEntryItem key={item.key} entry={item.entry} />;
+                    }
+                    if (item.id === "new-thread") {
+                      return (
+                        <SidebarPrimaryAction
+                          key={item.key}
+                          icon={newThreadNavDescriptor.icon}
+                          {...(newThreadNavDescriptor.iconClassName
+                            ? { iconClassName: newThreadNavDescriptor.iconClassName }
+                            : {})}
+                          label={newThreadNavDescriptor.label}
+                          active={newThreadNavDescriptor.active}
+                          badge={newThreadNavDescriptor.badge}
+                          onClick={newThreadNavDescriptor.onClick}
+                          {...(newThreadNavDescriptor.onMouseEnter
+                            ? { onMouseEnter: newThreadNavDescriptor.onMouseEnter }
+                            : {})}
+                          {...(newThreadNavDescriptor.onFocus
+                            ? { onFocus: newThreadNavDescriptor.onFocus }
+                            : {})}
+                        />
+                      );
+                    }
+                    if (item.id === "history") {
+                      return (
+                        <SidebarPrimaryAction
+                          key={item.key}
+                          icon={historyNavDescriptor.icon}
+                          {...(historyNavDescriptor.iconClassName
+                            ? { iconClassName: historyNavDescriptor.iconClassName }
+                            : {})}
+                          label={historyNavDescriptor.label}
+                          active={historyNavDescriptor.active}
+                          badge={historyNavDescriptor.badge}
+                          onClick={historyNavDescriptor.onClick}
+                        />
+                      );
+                    }
+                    return null;
+                  })}
+                {footerSidebarNav.items
+                  .filter((item) => item.kind === "plugin" && item.visible)
+                  .map((item) =>
+                    item.kind === "plugin" ? (
+                      <PluginSidebarEntryItem key={item.key} entry={item.entry} />
+                    ) : null,
+                  )}
               </SidebarMenu>
             </SidebarGroup>
           ) : null}
@@ -8883,7 +8896,9 @@ export default function Sidebar() {
               className={sidebarFooterButtonClassName(false)}
               onClick={() => void navigate({ to: "/settings" })}
             />
-            {appSettings.showRailUsage ? (
+            {appSettings.showRailUsage &&
+            builtinFeatures.isEnabled("usage") &&
+            usageReplacement === null ? (
               <AppRailUsage
                 onOpenUsageSettings={() => {
                   void navigate({ to: "/settings", search: { section: "usage" } });
@@ -9480,6 +9495,7 @@ export default function Sidebar() {
         <EditProjectDialog
           open={editProjectDialog?.open ?? false}
           cwd={editProjectDialogProject.cwd}
+          projectId={editProjectDialogProject.id}
           folderName={editProjectDialogProject.folderName}
           initialValue={{
             name: editProjectDialogProject.localName ?? "",

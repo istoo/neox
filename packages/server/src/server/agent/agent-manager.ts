@@ -911,6 +911,7 @@ export class AgentManager {
   private readonly rescueTimeouts: Required<AgentManagerRescueTimeouts>;
   private readonly beforeSteerUnavailableFallback?: AgentManagerOptions["beforeSteerUnavailableFallback"];
   private acceptingAgentRegistrations = true;
+  private shuttingDown = false;
 
   constructor(options: AgentManagerOptions) {
     this.pluginLifecycle = options.pluginLifecycle;
@@ -1009,6 +1010,14 @@ export class AgentManager {
 
   prepareForShutdown(): void {
     this.acceptingAgentRegistrations = false;
+    // The restart-recovery capture runs just before closing runtimes. A provider that
+    // acknowledges its interrupt emits an idle snapshot first; keep the captured intent
+    // across that snapshot so graceful shutdown can resume the agent next start.
+    this.shuttingDown = true;
+  }
+
+  isShuttingDown(): boolean {
+    return this.shuttingDown;
   }
 
   setNeolixToolsEnabled(enabled: boolean): void {
@@ -4493,7 +4502,10 @@ export class AgentManager {
     if (agent.internal) {
       return;
     }
-    await this.registry.applySnapshot(agent, options);
+    await this.registry.applySnapshot(agent, {
+      ...options,
+      preserveResumeOnStartup: this.shuttingDown,
+    });
   }
 
   private requireRegistry(): AgentStorage {

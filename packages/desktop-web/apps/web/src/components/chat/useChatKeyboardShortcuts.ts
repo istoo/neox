@@ -13,7 +13,7 @@ import { isMacNavigatorPlatform } from "~/lib/utils";
 import { projectScriptIdFromCommand } from "~/projectScripts";
 import { resolveShortcutCommand } from "../../keybindings";
 import { focusedDockTerminalPaneId } from "../../hooks/useTerminalSurfaceController";
-import { isEditableEventTarget } from "../../lib/editableEventTarget";
+import { hasOpenDismissibleOverlay, isEditableEventTarget } from "../../lib/editableEventTarget";
 import { isTerminalFocused } from "../../lib/terminalFocus";
 import type { Project } from "../../types";
 import { type Thread } from "../../types";
@@ -184,6 +184,32 @@ export function useChatKeyboardShortcuts({
 
     const handler = (event: globalThis.KeyboardEvent) => {
       if (!activeThreadId || event.defaultPrevented) return;
+      // Escape interrupts the live turn, matching the stop button. Menus, pickers, dialogs,
+      // the find bar, and modal text fields own Escape first; the composer is the exception
+      // because that is where the old UI let Escape reach the agent.
+      if (
+        hasLiveTurn &&
+        event.key === "Escape" &&
+        !event.repeat &&
+        !event.metaKey &&
+        !event.ctrlKey &&
+        !event.altKey &&
+        !event.shiftKey &&
+        !isVoiceRecording &&
+        !isVoiceTranscribing &&
+        !isTerminalFocused() &&
+        !hasOpenDismissibleOverlay() &&
+        !(
+          event.target instanceof Element &&
+          event.target.closest('[data-testid="thread-find-bar"]') !== null
+        ) &&
+        (eventTargetsComposer(event, composerFormRef.current) || !isEditableEventTarget(event))
+      ) {
+        event.preventDefault();
+        event.stopPropagation();
+        onInterruptFromStopControl();
+        return;
+      }
       // Mirror terminal interrupt semantics without stealing regular copy shortcuts.
       if (
         hasLiveTurn &&

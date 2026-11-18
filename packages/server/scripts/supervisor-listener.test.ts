@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { expect, test } from "vitest";
 
 const serverRoot = fileURLToPath(new URL("..", import.meta.url));
@@ -33,8 +33,8 @@ test("a worker restart never closes the port", async () => {
   const runnerPath = path.join(home, "runner.mjs");
   const addressPath = path.join(home, "address.txt");
   const markerPath = path.join(home, "first-started");
-  const inherited = path.join(serverRoot, "src/server/inherited-listener.ts");
-  const listenAddress = path.join(serverRoot, "src/server/listen-address.ts");
+  const inherited = pathToFileURL(path.join(serverRoot, "src/server/inherited-listener.ts")).href;
+  const listenAddress = pathToFileURL(path.join(serverRoot, "src/server/listen-address.ts")).href;
   const supervisorEntry = new URL("./supervisor.ts", import.meta.url).href;
   const listenerEntry = new URL("./supervisor-listener.ts", import.meta.url).href;
 

@@ -87,6 +87,9 @@ describe("a turn answered through the schema's tool", () => {
       env: {},
       mcpConfig: "{}",
       answer,
+      // The bridge only takes createRun for outputs that stand in for the
+      // interactive mode, so name it here rather than spawning a real binary.
+      tui: { listedFile: "" },
     });
     return { bridge, handle, answer };
   }

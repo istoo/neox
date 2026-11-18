@@ -30,7 +30,7 @@ import type { IncomingMessage, Server as HTTPServer } from "http";
 import { join } from "path";
 import { getHostName } from "./host-name.js";
 import { randomUUID } from "node:crypto";
-import { monitorEventLoopDelay } from "node:perf_hooks";
+import { DaemonRuntimeStatusTracker, type DaemonRuntimeStatusSnapshot } from "./runtime-status.js";
 import type { AgentManager, AgentMetricsSnapshot } from "./agent/agent-manager.js";
 import type { AgentStorage } from "./agent/agent-storage.js";
 import type { DownloadTokenStore } from "./file-download/token-store.js";
@@ -144,7 +144,7 @@ import {
 const WS_CLOSE_DAEMON_AUTH_FAILED = 4401;
 
 export interface ExternalSocketMetadata {
-  transport: "relay" | "hub";
+  transport: "relay" | "hub" | "web-app";
   externalSessionKey?: string;
   relayConnectionId?: string;
   /** Negotiated endpoint security for relay-carried sockets. */
@@ -168,7 +168,7 @@ interface PendingConnection {
 
 interface WebSocketConnectionIdentity {
   connectionId: string;
-  transport: "direct" | "relay" | "hub";
+  transport: "direct" | "relay" | "hub" | "web-app";
   peer: "loopback" | "local_ipc" | "external";
   browserOrigin: boolean;
   host?: string;
@@ -637,7 +637,7 @@ export class VoiceAssistantWebSocketServer {
   /** myna's agent.Detected(): an agent is installed here, whatever its enabled state. */
   private agentsDetected: boolean | null = null;
   private readonly applicationSocketLease = new ApplicationSocketLease<WebSocketLike>();
-  private eventLoopDelayMonitor: ReturnType<typeof monitorEventLoopDelay> | null = null;
+  private runtimeStatus: DaemonRuntimeStatusTracker | null = null;
   private unsubscribeSpeechReadiness: (() => void) | null = null;
   private unsubscribeDaemonConfigChange: (() => void) | null = null;
   private unsubscribeGatewayConfigChange: (() => void) | null = null;
@@ -956,8 +956,7 @@ export class VoiceAssistantWebSocketServer {
   }
 
   private startRuntimeMetricsInterval(): void {
-    this.eventLoopDelayMonitor = monitorEventLoopDelay({ resolution: 10 });
-    this.eventLoopDelayMonitor.enable();
+    this.runtimeStatus = new DaemonRuntimeStatusTracker();
     const runtimeMetricsInterval = setInterval(() => {
       this.flushRuntimeMetrics();
     }, WS_RUNTIME_METRICS_FLUSH_MS);
@@ -1001,19 +1000,9 @@ export class VoiceAssistantWebSocketServer {
 
   // Main-loop stall visibility: terminal frames and agent traffic share one event
   // loop, so delay percentiles here are the ground truth for "the daemon is busy".
-  private snapshotEventLoopDelay(): { p50Ms: number; p99Ms: number; maxMs: number } | null {
-    const monitor = this.eventLoopDelayMonitor;
-    if (!monitor) {
-      return null;
-    }
-    const toMs = (nanoseconds: number): number => Math.round(nanoseconds / 1e5) / 10;
-    const snapshot = {
-      p50Ms: toMs(monitor.percentile(50)),
-      p99Ms: toMs(monitor.percentile(99)),
-      maxMs: toMs(monitor.max),
-    };
-    monitor.reset();
-    return snapshot;
+  // Reading a snapshot leaves the current window intact; only the flush closes it.
+  private getDaemonRuntimeStatus(): DaemonRuntimeStatusSnapshot | null {
+    return this.runtimeStatus?.snapshot() ?? null;
   }
 
   private verifyWsUpgrade(
@@ -1156,6 +1145,21 @@ export class VoiceAssistantWebSocketServer {
     await this.attachSocket(ws, undefined, metadata, false, admission, initialHello);
   }
 
+  public async attachWebAppSocket(ws: WebSocketLike): Promise<void> {
+    if (this.connectionLifecycle === "stopping") {
+      throw new Error("Cannot attach web app session while shutting down");
+    }
+    // The desktop web app is the daemon's own process: no handshake, no password, and the
+    // same owner permissions the local credential grants a loopback client.
+    await this.attachSocket(
+      ws,
+      undefined,
+      { transport: "web-app" },
+      false,
+      OWNER_SESSION_ADMISSION,
+    );
+  }
+
   public async attachPluginSocket(
     pluginId: string,
     ws: WebSocketLike,
@@ -1217,6 +1221,10 @@ export class VoiceAssistantWebSocketServer {
 
   public async close(): Promise<void> {
     this.prepareForShutdown();
+    // The constructor's warm() is fire-and-forget and creates the library
+    // directory; a stopped daemon must not still be writing it once close()
+    // resolves.
+    await this.libraryService.dispose();
     await this.agentMessages.close();
     await this.connectedHosts.close();
     this.unsubscribeSpeechReadiness?.();
@@ -1247,8 +1255,8 @@ export class VoiceAssistantWebSocketServer {
     }
     this.applicationSocketLease.clear();
     this.flushRuntimeMetrics({ final: true });
-    this.eventLoopDelayMonitor?.disable();
-    this.eventLoopDelayMonitor = null;
+    this.runtimeStatus?.dispose();
+    this.runtimeStatus = null;
 
     const uniqueConnections = new Set<SessionConnection>([
       ...this.sessions.values(),
@@ -1825,6 +1833,7 @@ export class VoiceAssistantWebSocketServer {
       daemonVersion: this.daemonVersion,
       daemonRuntimeConfig: this.daemonRuntimeConfig,
       getWebSocketRuntimeMetrics: () => this.lastRuntimeMetricsSnapshot,
+      getDaemonRuntimeStatus: () => this.getDaemonRuntimeStatus(),
     });
   }
 
@@ -2187,6 +2196,10 @@ export class VoiceAssistantWebSocketServer {
         ...(this.advertiseDaemonStatusRpc ? { daemonStatusRpc: true } : {}),
         // COMPAT(daemonPaths): added in v0.16.0, remove gate after 2027-11-06.
         daemonPaths: true,
+        // COMPAT(daemonWorktreesRoot): added in v0.17.0, remove gate after 2027-05-14.
+        ...(this.advertiseDaemonStatusRpc ? { daemonWorktreesRoot: true } : {}),
+        // COMPAT(daemonRuntimeStatus): added in v0.17.0, remove gate after 2027-05-14.
+        daemonRuntimeStatus: true,
         // COMPAT(wslAgents): added in v0.16.0, remove gate after 2027-11-06.
         ...(process.platform === "win32" ? { wslAgents: true } : {}),
         // COMPAT(daemonConfigReload): added in v0.4.0, remove gate after 2027-02-14.
@@ -2261,6 +2274,8 @@ export class VoiceAssistantWebSocketServer {
         speechSettings: true,
         // Sessions → Use → Sessions: reading agent session files and the trash.
         externalSessions: true,
+        // Lists sessions from headers and finishes the files in the background.
+        externalSessionsProgress: true,
         // Opening a resumed session in a Mac terminal, through its own CLI.
         sessionTerminal: true,
         // COMPAT(relayConfig): added in v0.2.6, remove gate after 2027-01-31.
@@ -3112,6 +3127,7 @@ export class VoiceAssistantWebSocketServer {
 
   private flushRuntimeMetrics(options?: { final?: boolean }): void {
     const runtimeMetrics = this.runtimeMetrics.snapshotAndReset();
+    const runtimeStatusWindow = this.runtimeStatus?.closeWindow() ?? null;
     const activeConnections = new Set<SessionConnection>(this.sessions.values()).size;
     const activeSockets = this.sessions.size;
     const pendingConnections = this.pendingConnections.size;
@@ -3143,7 +3159,13 @@ export class VoiceAssistantWebSocketServer {
       outboundAgentStreamAgentsTop: runtimeMetrics.outboundAgentStreamAgentsTop,
       outboundBinaryFrameTypesTop: runtimeMetrics.outboundBinaryFrameTypesTop,
       bufferedAmount: runtimeMetrics.bufferedAmount,
-      eventLoopDelay: this.snapshotEventLoopDelay(),
+      eventLoopDelay: runtimeStatusWindow
+        ? {
+            p50Ms: runtimeStatusWindow.delayP50Ms,
+            p99Ms: runtimeStatusWindow.delayP99Ms,
+            maxMs: runtimeStatusWindow.delayMaxMs,
+          }
+        : null,
       uptimeSeconds: getProcessUptimeSeconds(),
       memory: getProcessMemoryDiagnostics(),
       runtime: sessionMetrics,
@@ -3424,6 +3446,7 @@ function resolveConnectionPeer(
   requestMetadata: SocketRequestMetadata,
   metadata: ExternalSocketMetadata | undefined,
 ): WebSocketConnectionIdentity["peer"] {
+  if (metadata?.transport === "web-app") return "local_ipc";
   if (metadata !== undefined) return "external";
   if (!requestMetadata.remoteAddress) return "local_ipc";
   return isLoopbackAddress(requestMetadata.remoteAddress) ? "loopback" : "external";

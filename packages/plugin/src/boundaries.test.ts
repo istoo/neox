@@ -13,6 +13,9 @@ const entries = {
   "./server/provider": "server",
   "./server/search": "server",
   "./server/usage": "server",
+  "./server/accounts": "server",
+  "./server/subscription": "server",
+  "./server/opencode": "server",
   "./server/acp": "server",
   "./internal/lifecycle": "server",
   "./client": "client",
@@ -95,8 +98,12 @@ function typeErrors(code: string): string[] {
 describe("plugin SDK import boundaries", () => {
   it("publishes process capabilities without their Windows implementation helpers", () => {
     expect(Object.keys(server).sort()).toEqual([
+      "PluginAccountsError",
+      "assertPluginAccountAuth",
+      "assertPluginAccountId",
       "defineAgentTool",
       "execCommand",
+      "openCodeSubscriptionProvider",
       "spawnProcess",
       "terminateProcess",
     ]);

@@ -14,14 +14,19 @@ import { useEffect, useMemo } from "react";
 import { deriveWorkLogEntries, isLatestTurnSettled, type WorkLogEntry } from "../../session-logic";
 import { useStore } from "../../store";
 import { createThreadSelector } from "../../storeSelectors";
+import type { AppState } from "../../storeState";
 import { retainThreadDetailSubscription } from "../../threadDetailSubscriptionRetention";
 import type { Thread } from "../../types";
 import { enrichSubagentWorkEntries, resolveComposerStripWorkLogEntries } from "../ChatView.logic";
 import { createRelevantWorkLogThreadsSelector } from "../ChatView.selectors";
 import {
   deriveEnvironmentSubagentRoster,
+  deriveManagedChildRosterItems,
   EMPTY_ENVIRONMENT_SUBAGENT_ROSTER,
   type EnvironmentSubagentRoster,
+  type EnvironmentSubagentRosterItem,
+  type ManagedChildThread,
+  mergeEnvironmentSubagentRosters,
 } from "./environment/EnvironmentSubagentsSection.logic";
 
 const EMPTY_ACTIVITIES: OrchestrationThreadActivity[] = [];
@@ -250,9 +255,9 @@ export function useSubagentStripSource(input: {
   };
 }
 
-// The full roster (live and settled) over the strip's source, without the strip's
-// live-turn scoping, so settled subagents stay listed after the strip retires.
-export function useSubagentRoster(source: SubagentStripSource): EnvironmentSubagentRoster {
+// The activity-derived roster (live and settled) over the strip's source, without the
+// strip's live-turn scoping, so settled subagents stay listed after the strip retires.
+function useBaseSubagentRoster(source: SubagentStripSource): EnvironmentSubagentRoster {
   const {
     backgroundedSubagentToolUseIds,
     hasStripWorkLogSubagents,
@@ -280,16 +285,118 @@ export function useSubagentRoster(source: SubagentStripSource): EnvironmentSubag
   );
 }
 
+const EMPTY_MANAGED_CHILD_THREADS: ManagedChildThread[] = [];
+
+// Managed children (`create_agent`) are ordinary threads linked by `parentThreadId`; they
+// have no collab activity, so the dock reads them from the same shell/session slices the
+// sidebar uses. Only those slices participate, so a streaming turn does not recompute.
+function createManagedChildThreadsSelector(
+  parentThreadId: ThreadId | null,
+): (state: AppState) => ManagedChildThread[] {
+  let previousThreadIds: AppState["threadIds"] | undefined;
+  let previousShells: AppState["threadShellById"] | undefined;
+  let previousSessions: AppState["threadSessionById"] | undefined;
+  let previousTurns: AppState["threadTurnStateById"] | undefined;
+  let previousResult: ManagedChildThread[] = EMPTY_MANAGED_CHILD_THREADS;
+
+  return (state) => {
+    if (!parentThreadId) {
+      return EMPTY_MANAGED_CHILD_THREADS;
+    }
+    if (
+      previousThreadIds === state.threadIds &&
+      previousShells === state.threadShellById &&
+      previousSessions === state.threadSessionById &&
+      previousTurns === state.threadTurnStateById
+    ) {
+      return previousResult;
+    }
+    previousThreadIds = state.threadIds;
+    previousShells = state.threadShellById;
+    previousSessions = state.threadSessionById;
+    previousTurns = state.threadTurnStateById;
+
+    const children: ManagedChildThread[] = [];
+    for (const threadId of state.threadIds ?? []) {
+      const shell = state.threadShellById?.[threadId];
+      if (!shell || shell.parentThreadId !== parentThreadId || shell.archivedAt) {
+        continue;
+      }
+      children.push({
+        id: shell.id,
+        title: shell.title,
+        parentThreadId: shell.parentThreadId ?? null,
+        createdAt: shell.createdAt,
+        archivedAt: shell.archivedAt ?? null,
+        settledAt: shell.settledAt ?? null,
+        error: shell.error,
+        subagentAgentId: shell.subagentAgentId ?? null,
+        subagentNickname: shell.subagentNickname ?? null,
+        subagentRole: shell.subagentRole ?? null,
+        modelSelection: shell.modelSelection,
+        session: state.threadSessionById?.[threadId] ?? null,
+        latestTurn: state.threadTurnStateById?.[threadId]?.latestTurn ?? null,
+      });
+    }
+    previousResult = children.length > 0 ? children : EMPTY_MANAGED_CHILD_THREADS;
+    return previousResult;
+  };
+}
+
+// Managed children (`create_agent`) are ordinary threads linked by `parentThreadId`, so the
+// roster reads them from the same slices as the sidebar. A subagent view lists the parent's
+// children, matching the activity-derived rows.
+function useManagedChildRoster(source: SubagentStripSource): {
+  items: EnvironmentSubagentRosterItem[];
+  threadIds: ReadonlySet<ThreadId>;
+} {
+  const parentThreadId = source.stripSourceThreadId;
+  const childThreads = useStore(
+    useMemo(() => createManagedChildThreadsSelector(parentThreadId), [parentThreadId]),
+  );
+  const items = useMemo(
+    () =>
+      parentThreadId
+        ? deriveManagedChildRosterItems({
+            threads: childThreads,
+            parentThreadId,
+            viewedThreadId: source.viewedSubagentThreadId,
+          })
+        : [],
+    [childThreads, parentThreadId, source.viewedSubagentThreadId],
+  );
+  const threadIds = useMemo(() => new Set(items.map((item) => item.threadId)), [items]);
+  return { items, threadIds };
+}
+
+// The full roster (live and settled) over the strip's source, without the strip's
+// live-turn scoping, so settled subagents stay listed after the strip retires.
+export function useSubagentRoster(source: SubagentStripSource): EnvironmentSubagentRoster {
+  const baseRoster = useBaseSubagentRoster(source);
+  const managed = useManagedChildRoster(source);
+  return useMemo(
+    () => mergeEnvironmentSubagentRosters(baseRoster, managed.items),
+    [baseRoster, managed.items],
+  );
+}
+
 // Standalone roster for surfaces outside ChatView (the right-dock Subagents pane).
 export function useThreadSubagentRoster(threadId: ThreadId): {
   roster: EnvironmentSubagentRoster;
   source: SubagentStripSource;
+  /** Child agents with a real Neox agent id; only these can be detached. */
+  managedThreadIds: ReadonlySet<ThreadId>;
 } {
   const thread = useStore(useMemo(() => createThreadSelector(threadId), [threadId]));
   const source = useSubagentStripSource({
     activeThread: thread,
     latestTurnSettled: isLatestTurnSettled(thread?.latestTurn ?? null, thread?.session ?? null),
   });
-  const roster = useSubagentRoster(source);
-  return { roster, source };
+  const baseRoster = useBaseSubagentRoster(source);
+  const managed = useManagedChildRoster(source);
+  const roster = useMemo(
+    () => mergeEnvironmentSubagentRosters(baseRoster, managed.items),
+    [baseRoster, managed.items],
+  );
+  return { roster, source, managedThreadIds: managed.threadIds };
 }

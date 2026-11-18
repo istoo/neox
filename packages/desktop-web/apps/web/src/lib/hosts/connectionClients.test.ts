@@ -13,7 +13,7 @@ const mocks = vi.hoisted(() => ({
   instances: [] as Array<{ url: string | undefined }>,
 }));
 vi.mock("../../wsTransport", () => ({
-  rawSocketUrl: () => "ws://127.0.0.1:58001/ws",
+  rawSocketUrl: () => "ws://127.0.0.1:58001/rpc",
   WsTransport: class {
     constructor(readonly url?: string) {
       mocks.instances.push({ url: this.url });
@@ -44,7 +44,7 @@ const scope = {
 const selected = {
   hostId: "mini-host",
   hostName: "Mini",
-  wsPath: "/ws/remote/mini-host",
+  wsPath: "/rpc/remote/mini-host",
   executionScope: scope,
 };
 const descriptor = (environmentId: string) => ({
@@ -151,7 +151,7 @@ describe("initial remote relationship recovery", () => {
         (await import("./executionContext")).readExecutionContext()?.execution.environmentId,
       ).toBe("mini");
       recovery!.resume();
-      expect(mocks.resume).toHaveBeenCalledWith("ws://127.0.0.1:58001/ws/remote/mini-host/ws");
+      expect(mocks.resume).toHaveBeenCalledWith("ws://127.0.0.1:58001/rpc/remote/mini-host/rpc");
     },
   );
 

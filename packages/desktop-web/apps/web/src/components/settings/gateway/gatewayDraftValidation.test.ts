@@ -45,7 +45,7 @@ describe("gatewayDraftValidation", () => {
     const issues = validateGatewayDraft(
       config({
         groups: [{ id: "fast", members: [] }],
-        masking: { enabled: false, rules: [{ kind: " ", pattern: "" }] },
+        masking: { enabled: false, modelScore: 0.99, rules: [{ kind: " ", pattern: "" }] },
         budget: { monthlyUsd: 0 },
         proxy: "ftp://127.0.0.1",
       }),
@@ -53,14 +53,28 @@ describe("gatewayDraftValidation", () => {
     expect(issues).toEqual([
       { kind: "group-members", groupId: "fast", index: 0 },
       { kind: "mask-kind", line: 1 },
+      { kind: "mask-score" },
       { kind: "budget" },
       { kind: "proxy" },
     ]);
     expect(issues.map((issue) => describeGatewayDraftIssue(issue, t))).toEqual([
       'gateway:error_group_members|{"id":"fast"}',
       'gateway:error_mask_kind|{"line":1}',
+      "gateway:error_mask_score",
       "gateway:error_budget",
       "gateway:error_proxy",
+    ]);
+  });
+
+  it("keeps a confidence threshold inside the daemon's range", () => {
+    expect(validateGatewayDraft(config({ masking: { enabled: true, modelScore: 0.5 } }))).toEqual(
+      [],
+    );
+    expect(validateGatewayDraft(config({ masking: { enabled: true, modelScore: 0.95 } }))).toEqual(
+      [],
+    );
+    expect(validateGatewayDraft(config({ masking: { enabled: true, modelScore: 0.49 } }))).toEqual([
+      { kind: "mask-score" },
     ]);
   });
 
@@ -91,6 +105,13 @@ describe("gatewayDraftValidation", () => {
         t,
       ),
     ).toBe('gateway:error_mask_kind|{"line":3}');
+    expect(
+      localizeGatewaySaveError(
+        new Error(zodDump(["masking", "modelScore"], "too_big")),
+        undefined,
+        t,
+      ),
+    ).toBe("gateway:error_mask_score");
     expect(
       localizeGatewaySaveError(
         new Error(zodDump(["budget", "monthlyUsd"], "too_small")),

@@ -14,42 +14,22 @@ Neox 的 daemon 可以自己提供浏览器 Web 应用，地址与它已用于 A
 - 把它放在你自己的反向代理、HTTPS 或隧道之后。
 - 让整套设置完全自托管，不依赖外部服务。
 
-Web 应用随 daemon 软件包一起发布，因此你提供的 UI 总是与 daemon 版本一致。不需要单独构建并保持同步，也不需要处理 UI 与 daemon 的版本偏差。
+桌面应用自带 UI。源码 checkout 可以用 `npm run build:daemon-web-app` 把同一个页面构建进
+daemon；daemon 会从 `packages/server/dist/server/web-app` 或打包后的 `resources/desktop-web`
+目录解析它。用同一份源码构建时，不需要维护 UI 与 daemon 的版本同步。
 
 ## 启用 {#enable-it}
 
-内置的 Web UI 默认关闭。保存设置，然后启动 daemon：
+先把页面构建进 daemon，然后在浏览器中打开 daemon 的地址：
 
 ```bash
-neox daemon config set features.webUi.enabled true
+npm run build:daemon-web-app
 neox daemon start
 ```
-
-或者用环境变量运行一个前台部署：
-
-```bash
-NEOLIX_WEB_UI_ENABLED=true neox daemon run
-```
-
-或者把它持久化到 `config.json` 中，使其在重启后依然生效：
-
-```json
-{
-  "features": {
-    "webUi": {
-      "enabled": true
-    }
-  }
-}
-```
-
-然后在浏览器中打开 daemon 的地址：
 
 ```
 http://localhost:6767/
 ```
-
-如果你的 daemon 不认识 `--web-ui`，请更新它；这个参数是随内置 Web UI 一起加入的。
 
 ## 连接的工作方式 {#how-the-connection-works}
 
@@ -179,7 +159,7 @@ daemon 默认信任来自回环地址代理的转发请求头，上面所有的�
 `NEOLIX_TRUSTED_PROXIES` 接受相同的逗号分隔值：
 
 ```bash
-NEOLIX_TRUSTED_PROXIES=loopback,172.16.0.0/12 NEOLIX_WEB_UI_ENABLED=true neox daemon run
+NEOLIX_TRUSTED_PROXIES=loopback,172.16.0.0/12 neox daemon run
 ```
 
 只有当你最后一层受信任的代理会覆盖客户端提供的 `X-Forwarded-*` 请求头时，才使用 `trustedProxies: true`。否则客户端可以伪造转发请求头的值。

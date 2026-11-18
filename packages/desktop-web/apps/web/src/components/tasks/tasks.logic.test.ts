@@ -390,7 +390,7 @@ it("changes task presentation after a locale switch while preserving provider er
     hasDraftThread: false,
   });
   setLanguagePreference("zh-CN");
-  expect(taskStatusPresentation(approval)).toEqual({ label: "需要您处理", detail: "等待你的审批" });
+  expect(taskStatusPresentation(approval)).toEqual({ label: "需要你处理", detail: "等待你的审批" });
   expect(approval.detail).toBe("Waiting for your approval");
   expect(taskStatusPresentation(failed)).toEqual({ label: "失败", detail: "common:finished" });
   expect(todoPriorityLabel("urgent")).toBe("紧急");

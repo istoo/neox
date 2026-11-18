@@ -41,6 +41,8 @@ describe("sendImages", () => {
     expect(agent.id).toBeTruthy();
     expect(agent.provider).toBe("claude");
 
+    await ctx.client.subscribeAgentTimeline(agent.id, () => {}).ready;
+
     // Send message with image attachment
     await ctx.client.sendMessage(
       agent.id,
@@ -102,6 +104,8 @@ describe("sendImages", () => {
     });
 
     expect(agent.id).toBeTruthy();
+
+    await ctx.client.subscribeAgentTimeline(agent.id, () => {}).ready;
 
     // Send message with two image attachments
     await ctx.client.sendMessage(

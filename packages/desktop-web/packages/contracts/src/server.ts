@@ -319,6 +319,8 @@ export const ServerProviderUsageSnapshot = Schema.Struct({
   usageLines: Schema.Array(ServerProviderUsageLine),
   source: TrimmedNonEmptyString,
   status: Schema.optional(ProviderUsageStatus),
+  /** The Neox account this snapshot belongs to, when the host reports several. */
+  accountLabel: Schema.optional(TrimmedNonEmptyString),
   planName: Schema.optional(TrimmedNonEmptyString),
   detail: Schema.optional(TrimmedNonEmptyString),
   resetCredits: Schema.optional(ServerCodexResetCredits),

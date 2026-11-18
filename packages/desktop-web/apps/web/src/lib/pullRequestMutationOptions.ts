@@ -5,6 +5,7 @@ import type {
   PullRequestAutoFixListResult,
   PullRequestAutoFixSetInput,
   PullRequestCommentInput,
+  PullRequestSetAutoMergeInput,
   PullRequestSetPinnedInput,
   PullRequestState,
 } from "@synara/contracts";
@@ -61,6 +62,7 @@ import { pullRequestQueryKeys } from "./pullRequestQueryOptions";
 
 export const pullRequestMutationKeys = {
   action: ["pull-requests", "action"] as const,
+  setAutoMerge: ["pull-requests", "set-auto-merge"] as const,
   setPinned: ["pull-requests", "set-pinned"] as const,
   comment: ["pull-requests", "comment"] as const,
   forceRefresh: ["pull-requests", "force-refresh"] as const,
@@ -419,6 +421,21 @@ export function pullRequestsForceRefreshMutationOptions(queryClient: QueryClient
     onSettled: (_result, _error, _input, context) => {
       finishPullRequestRefresh(queryClient, context);
     },
+  });
+}
+
+/** Enable/disable the forge's auto-merge; only the detail cache changes, no list fields. */
+export function pullRequestSetAutoMergeMutationOptions(queryClient: QueryClient) {
+  return mutationOptions({
+    mutationKey: pullRequestMutationKeys.setAutoMerge,
+    networkMode: "always",
+    mutationFn: (input: PullRequestSetAutoMergeInput) =>
+      ensureNativeApi().pullRequests.setAutoMerge(input),
+    onSuccess: (_result, input) =>
+      queryClient.invalidateQueries({
+        queryKey: pullRequestQueryKeys.detail(input),
+        exact: true,
+      }),
   });
 }
 

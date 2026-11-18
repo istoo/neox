@@ -13,7 +13,7 @@ const descriptor = {
 const host = (environmentId: string) => ({
   hostId: `host-${environmentId}`,
   hostName: "Same name",
-  wsPath: `/ws/remote/${environmentId}`,
+  wsPath: `/rpc/remote/${environmentId}`,
   executionScope: {
     environmentId,
     accountAuthority: "https://account.example",

@@ -35,9 +35,9 @@ jobs:
       hub: ${{ steps.filter.outputs.hub }}
       server: ${{ steps.filter.outputs.server }}
       desktop: ${{ steps.filter.outputs.desktop }}
-      app: ${{ steps.filter.outputs.app }}
+      desktop_web: ${{ steps.filter.outputs.desktop_web }}
+      desktop_web_real_daemon: ${{ steps.filter.outputs.desktop_web_real_daemon }}
       sdk: ${{ steps.filter.outputs.sdk }}
-      browser: ${{ steps.filter.outputs.browser }}
       relay: ${{ steps.filter.outputs.relay }}
       cli: ${{ steps.filter.outputs.cli }}
     steps:
@@ -56,7 +56,7 @@ jobs:
           filters: .github/ci-paths.yml
 
       - name: Validate CI contracts
-        run: node --test scripts/ci-workflow.test.mjs scripts/daemon-launch-contract.test.mjs scripts/sync-fdroid-changelogs.test.mjs scripts/upload-release-assets.test.mjs
+        run: node --test scripts/ci-workflow.test.mjs scripts/daemon-launch-contract.test.mjs scripts/embed-bundle-guard.test.mjs scripts/generate-third-party-notices.test.mjs scripts/upload-release-assets.test.mjs
 
   quality:
     name: quality
@@ -133,7 +133,6 @@ jobs:
         if: ${{ !cancelled() && steps.install.outcome == 'success' && (needs.changes.outputs.full != 'false' || needs.changes.outputs.sdk != 'false') }}
         run: npm run typecheck:examples --workspace=@neolix/client
 
-  # The locked Playwright installers do not support ubuntu-latest's Ubuntu 26.04.
   typecheck:
     name: typecheck
     needs: changes
@@ -161,15 +160,6 @@ jobs:
 
       - name: Typecheck all packages
         run: npm run typecheck
-
-      - name: Run website tests
-        run: npx vitest run packages/website/src --bail=1
-
-      - name: Install website test browsers
-        run: npx playwright install --with-deps chromium webkit
-
-      - name: Verify website mockups
-        run: npm run test:e2e --workspace=@neolix/website
 
       - name: Verify public package contents
         run: |
@@ -363,25 +353,6 @@ jobs:
         if: ${{ runner.os == 'Windows' }}
         run: npm run test:e2e:lifecycle --workspace=@neolix/desktop
 
-      - name: Run desktop renderer E2E
-        if: ${{ runner.os == 'Linux' }}
-        run: npm run test:e2e:renderer --workspace=@neolix/desktop
-
-      - name: Run desktop browser E2E
-        if: ${{ runner.os == 'Linux' }}
-        run: npm run test:e2e:browser-tabs --workspace=@neolix/desktop
-        env:
-          NEOLIX_DESKTOP_BROWSER_E2E_ARTIFACT_DIR: ${{ runner.temp }}/desktop-browser-e2e
-
-      - name: Upload desktop browser diagnostics
-        uses: actions/upload-artifact@v4
-        if: ${{ failure() && runner.os == 'Linux' }}
-        with:
-          name: desktop-browser-e2e
-          path: ${{ runner.temp }}/desktop-browser-e2e
-          if-no-files-found: ignore
-          retention-days: 7
-
   desktop-tests-windows:
     name: desktop-tests (windows-latest)
     needs: changes
@@ -392,11 +363,16 @@ jobs:
       contents: read
     steps: *desktop_test_steps
 
-  app-tests:
-    name: app-tests
+  # packages/desktop-web is a separate bun workspace. Its bridge imports the
+  # root workspace builds by path, so build those before typechecking or testing.
+  desktop-web-tests:
+    name: desktop-web-tests (typecheck and unit)
     needs: changes
-    if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.app != 'false') }}
+    if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.desktop_web != 'false') }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
 
@@ -405,32 +381,131 @@ jobs:
           node-version: "22"
           cache: "npm"
 
-      - name: Install dependencies with retry
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.3"
+
+      - name: Install dependencies
         run: node scripts/npm-retry.mjs ci
 
-      - name: Install Playwright browsers
-        timeout-minutes: 10
-        run: npx playwright install chromium
+      - name: Build bridge dependencies
+        run: npm run build:server
 
-      - name: Build app dependencies
-        run: npm run build:app-deps
+      - name: Install desktop-web dependencies
+        working-directory: packages/desktop-web
+        run: bun install --frozen-lockfile
 
-      - name: Run app unit tests
-        run: npm run test --workspace=@neolix/app
+      - name: Typecheck contracts
+        working-directory: packages/desktop-web/packages/contracts
+        run: bun run typecheck
 
-  playwright-1:
-    name: playwright (shard 1/8)
+      - name: Typecheck client-runtime
+        working-directory: packages/desktop-web/packages/client-runtime
+        run: bun run typecheck
+
+      - name: Run client-runtime unit tests
+        working-directory: packages/desktop-web/packages/client-runtime
+        run: bun run test
+
+      - name: Typecheck bridge
+        working-directory: packages/desktop-web/apps/bridge
+        run: bun run typecheck
+
+      - name: Typecheck web
+        working-directory: packages/desktop-web/apps/web
+        run: bun run typecheck
+
+      - name: Run bridge tests
+        working-directory: packages/desktop-web/apps/bridge
+        run: bunx vitest run
+
+      - name: Run web unit tests
+        working-directory: packages/desktop-web/apps/web
+        run: bunx vitest run
+
+  # The CI vitest config splits the serial browser suite into measured projects.
+  # One static job per project keeps every shard on the same runner image.
+  desktop-web-browser-1:
+    name: desktop-web-browser (shard 1/4)
     needs: changes
-    if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.browser != 'false') }}
+    if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.desktop_web != 'false') }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
     env:
-      PLAYWRIGHT_SHARD: "1/8"
-      PLAYWRIGHT_ARTIFACT: "1"
-    steps: &playwright_test_steps
-      - name: Log runner capacity
-        run: |
-          node -e "const os = require('node:os'); console.log(JSON.stringify({cpus: os.cpus().length, model: os.cpus()[0].model, ramGiB: os.totalmem() / 2 ** 30}))"
+      DESKTOP_WEB_BROWSER_PROJECT: chat-follow
+    steps: &desktop_web_browser_steps
+      - uses: actions/checkout@v4
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.3"
+
+      - name: Install desktop-web dependencies
+        working-directory: packages/desktop-web
+        run: bun install --frozen-lockfile
+
+      - name: Install Playwright browser
+        working-directory: packages/desktop-web/apps/web
+        run: bun run test:browser:install
+
+      - name: Run web browser tests
+        working-directory: packages/desktop-web/apps/web
+        run: bunx vitest run --config vitest.browser.ci.config.ts --project="$DESKTOP_WEB_BROWSER_PROJECT"
+
+  desktop-web-browser-2:
+    name: desktop-web-browser (shard 2/4)
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.desktop_web != 'false') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    env:
+      DESKTOP_WEB_BROWSER_PROJECT: chat-projects
+    steps: *desktop_web_browser_steps
+
+  desktop-web-browser-3:
+    name: desktop-web-browser (shard 3/4)
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.desktop_web != 'false') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    env:
+      DESKTOP_WEB_BROWSER_PROJECT: chat-workflows
+    steps: *desktop_web_browser_steps
+
+  desktop-web-browser-4:
+    name: desktop-web-browser (shard 4/4)
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.desktop_web != 'false') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    env:
+      DESKTOP_WEB_BROWSER_PROJECT: components
+    steps: *desktop_web_browser_steps
+
+  # The only suite that drives the built desktop-web page with a real browser against
+  # a real daemon: onboarding, projects, a streamed turn, reload, reconnect, settings,
+  # History and Browser access. The in-process test daemon needs the web app build.
+  desktop-web-e2e:
+    name: desktop-web-e2e (real daemon and UI)
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.desktop_web_real_daemon != 'false') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
@@ -438,111 +513,28 @@ jobs:
           node-version: "22"
           cache: "npm"
 
-      - name: Install dependencies with retry
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.3"
+
+      - name: Install dependencies
         run: node scripts/npm-retry.mjs ci
 
-      - name: Install Playwright browsers
-        timeout-minutes: 10
-        run: npx playwright install chromium
-
-      - name: Build server stack
+      - name: Build server
         run: npm run build:server
 
-      - name: Build native app dependency
-        run: npm run build --workspace=@neolix/expo-two-way-audio
+      - name: Install desktop-web dependencies
+        working-directory: packages/desktop-web
+        run: bun install --frozen-lockfile
 
-      - name: Install agent CLIs for provider tests
-        run: node scripts/npm-retry.mjs install -g @anthropic-ai/claude-code @openai/codex@0.105.0 opencode-ai
+      - name: Build the daemon web app
+        run: npm run build:daemon-web-app
 
-      - name: Run Playwright E2E tests
-        run: npm run test:e2e --workspace=@neolix/app -- --shard=${{ env.PLAYWRIGHT_SHARD }}
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          E2E_WORKERS: "2"
-          # File groups are weighted by observed reporter durations.
-          # Share of the test list per shard, rebalanced from the Playwright step
-          # minutes of five eight-shard runs so the slowest and fastest shards meet.
-          PWTEST_SHARD_WEIGHTS: "85:94:117:128:91:103:127:85"
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
 
-      - name: Upload test artifacts
-        uses: actions/upload-artifact@v4
-        if: failure()
-        with:
-          name: playwright-results-${{ env.PLAYWRIGHT_ARTIFACT }}
-          path: |
-            packages/app/test-results/
-            packages/app/playwright-report/
-          retention-days: 7
-
-  playwright-2:
-    name: playwright (shard 2/8)
-    needs: changes
-    if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.browser != 'false') }}
-    runs-on: ubuntu-24.04
-    env:
-      PLAYWRIGHT_SHARD: "2/8"
-      PLAYWRIGHT_ARTIFACT: "2"
-    steps: *playwright_test_steps
-
-  playwright-3:
-    name: playwright (shard 3/8)
-    needs: changes
-    if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.browser != 'false') }}
-    runs-on: ubuntu-24.04
-    env:
-      PLAYWRIGHT_SHARD: "3/8"
-      PLAYWRIGHT_ARTIFACT: "3"
-    steps: *playwright_test_steps
-
-  playwright-4:
-    name: playwright (shard 4/8)
-    needs: changes
-    if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.browser != 'false') }}
-    runs-on: ubuntu-24.04
-    env:
-      PLAYWRIGHT_SHARD: "4/8"
-      PLAYWRIGHT_ARTIFACT: "4"
-    steps: *playwright_test_steps
-
-  playwright-5:
-    name: playwright (shard 5/8)
-    needs: changes
-    if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.browser != 'false') }}
-    runs-on: ubuntu-24.04
-    env:
-      PLAYWRIGHT_SHARD: "5/8"
-      PLAYWRIGHT_ARTIFACT: "5"
-    steps: *playwright_test_steps
-
-  playwright-6:
-    name: playwright (shard 6/8)
-    needs: changes
-    if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.browser != 'false') }}
-    runs-on: ubuntu-24.04
-    env:
-      PLAYWRIGHT_SHARD: "6/8"
-      PLAYWRIGHT_ARTIFACT: "6"
-    steps: *playwright_test_steps
-
-  playwright-7:
-    name: playwright (shard 7/8)
-    needs: changes
-    if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.browser != 'false') }}
-    runs-on: ubuntu-24.04
-    env:
-      PLAYWRIGHT_SHARD: "7/8"
-      PLAYWRIGHT_ARTIFACT: "7"
-    steps: *playwright_test_steps
-
-  playwright-8:
-    name: playwright (shard 8/8)
-    needs: changes
-    if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.browser != 'false') }}
-    runs-on: ubuntu-24.04
-    env:
-      PLAYWRIGHT_SHARD: "8/8"
-      PLAYWRIGHT_ARTIFACT: "8"
-    steps: *playwright_test_steps
+      - name: Run desktop web UI e2e
+        run: npm run test:e2e:desktop-web --workspace=@neolix/server
 
   cli-tests-1:
     name: cli-tests (shard 1/3)

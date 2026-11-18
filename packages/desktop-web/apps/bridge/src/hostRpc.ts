@@ -8,17 +8,24 @@ import {
   WsRpcError,
   type NeolixBackupFile,
   type NeolixExternalSessions,
+  type NeolixHostFeatures,
   type NeolixHostStatus,
+  type NeolixHostUpdateProgress,
   type NeolixSessionReads,
   type NeolixWebPage,
 } from "@synara/contracts";
-import { Effect } from "effect";
+import { Effect, Queue, Stream } from "effect";
+
+// The same generated list `neolix licenses` prints. Settings › About shows it,
+// so it ships with the bridge rather than asking the daemon for a build artifact.
+import { THIRD_PARTY_NOTICES } from "../../../../protocol/src/generated/third-party-notices.js";
 
 import type { BridgeModel } from "./model.ts";
 import type { DaemonClient } from "./neolix.ts";
 import { ProviderDirectory } from "./providers.ts";
 import { bridgeError, rpcError } from "./rpcErrors.ts";
 import type { AnyHandler } from "./stubs.ts";
+import { getSyncUsage } from "./syncUsageRpc.ts";
 
 function fromPromise<A>(_method: string, run: () => Promise<A>): Effect.Effect<A, WsRpcError> {
   return Effect.tryPromise({
@@ -65,6 +72,40 @@ async function listWorktrees(client: DaemonClient): Promise<{
   return { worktrees };
 }
 
+/**
+ * The daemon's own `server_info.features` as last read on this connection. The client refreshes
+ * `server_info` on every connect, so the answer tracks a reconnected host; the web side refetches
+ * on each transport `open` for the same reason.
+ */
+function hostFeatures(client: DaemonClient): NeolixHostFeatures {
+  const info = client.getLastServerInfoMessage();
+  const features: Record<string, boolean> = {};
+  for (const [key, value] of Object.entries(info?.features ?? {})) {
+    if (typeof value === "boolean") features[key] = value;
+  }
+  return { serverVersion: info?.version ?? null, features };
+}
+
+/**
+ * Opens with the flags last read, then re-announces them on every `server_info`. A bridged
+ * host can restart and reconnect under the bridge without the renderer's socket closing, so
+ * the push is what makes the front end refetch instead of waiting for a focus event.
+ */
+function featuresStream(client: DaemonClient): Stream.Stream<NeolixHostFeatures> {
+  return Stream.callback<NeolixHostFeatures>((queue) =>
+    Effect.acquireRelease(
+      Effect.sync(() => {
+        const emit = () => Queue.offerUnsafe(queue, hostFeatures(client));
+        emit();
+        return client.subscribeRawMessages((message) => {
+          if (message.type === "status" && message.payload.status === "server_info") emit();
+        });
+      }),
+      (unsubscribe) => Effect.sync(unsubscribe),
+    ),
+  );
+}
+
 async function daemonStatus(client: DaemonClient): Promise<NeolixHostStatus> {
   try {
     const status = await client.getDaemonStatus();
@@ -77,6 +118,7 @@ async function daemonStatus(client: DaemonClient): Promise<NeolixHostStatus> {
       startedAt: status.startedAt ?? null,
       listen: status.listen ?? null,
       ...(status.container === undefined ? {} : { container: status.container }),
+      ...(status.publicUrl === undefined ? {} : { publicUrl: status.publicUrl }),
       ...(home === null ? {} : { home }),
       ...(logPath === null ? {} : { logPath }),
     };
@@ -93,6 +135,26 @@ async function daemonStatus(client: DaemonClient): Promise<NeolixHostStatus> {
       listen: null,
     };
   }
+}
+
+/**
+ * Forwards the daemon's `daemon.update.progress` events while the update RPC is in flight.
+ * The bridge's session survives the daemon replacing itself, so the stream outlives the
+ * request that started it.
+ */
+function updateProgressStream(client: DaemonClient): Stream.Stream<NeolixHostUpdateProgress> {
+  return Stream.callback<NeolixHostUpdateProgress>((queue) =>
+    Effect.acquireRelease(
+      Effect.sync(() =>
+        client.subscribeRawMessages((message) => {
+          if (message.type === "daemon.update.progress") {
+            Queue.offerUnsafe(queue, { phase: message.payload.phase });
+          }
+        }),
+      ),
+      (unsubscribe) => Effect.sync(unsubscribe),
+    ),
+  );
 }
 
 /** The shape every sync action answers with: the new status when the host has one. */
@@ -145,6 +207,10 @@ export function makeHostHandlers(
     [WS_METHODS.serverListLocalServers]: () =>
       Effect.succeed({ generatedAt: new Date().toISOString(), servers: [] }),
 
+    [NEOLIX_HOST_WS_METHODS.getFeatures]: () => Effect.sync(() => hostFeatures(client)),
+
+    [NEOLIX_HOST_WS_METHODS.subscribeFeatures]: () => featuresStream(client),
+
     [NEOLIX_HOST_WS_METHODS.getConfig]: () =>
       fromPromise("neolix.host.getConfig", async () => ({
         config: (await client.getDaemonConfig()).config as unknown,
@@ -191,6 +257,8 @@ export function makeHostHandlers(
           newVersion: result.newVersion,
         };
       }),
+
+    [NEOLIX_HOST_WS_METHODS.subscribeUpdateProgress]: () => updateProgressStream(client),
 
     [NEOLIX_HOST_WS_METHODS.getDiagnostics]: () =>
       fromPromise("neolix.host.getDiagnostics", async () => {
@@ -262,7 +330,16 @@ export function makeHostHandlers(
 
     [NEOLIX_HOST_WS_METHODS.listExternalSessions]: (payload) =>
       fromPromise("neolix.host.listExternalSessions", async () => {
-        const result = await client.listExternalSessions((payload as { agent?: string }).agent);
+        const input = payload as { agent?: string; fast?: boolean };
+        // The request is the same on every host; only a daemon that advertises
+        // the header-first answer is asked for it.
+        const fast =
+          input.fast === true &&
+          client.getLastServerInfoMessage()?.features?.externalSessionsProgress === true;
+        const result = await client.listExternalSessions(
+          input.agent,
+          fast ? { fast: true } : undefined,
+        );
         return {
           agents: result.agents,
           agent: result.agent,
@@ -272,6 +349,7 @@ export function makeHostHandlers(
           home: result.home,
           recording: result.recording,
           recorded: result.recorded,
+          ...(result.partial === undefined ? {} : { partial: result.partial }),
           error: result.error,
         } as NeolixExternalSessions;
       }),
@@ -423,6 +501,9 @@ export function makeHostHandlers(
       fromPromise("neolix.host.getSyncStatus", async () => ({
         status: (await client.getSyncStatus()).status,
       })),
+
+    [NEOLIX_HOST_WS_METHODS.getSyncUsage]: () =>
+      fromPromise("neolix.host.getSyncUsage", () => getSyncUsage(client)),
 
     [NEOLIX_HOST_WS_METHODS.listSyncRemote]: () =>
       fromPromise("neolix.host.listSyncRemote", async () => {
@@ -629,6 +710,11 @@ export function makeHostHandlers(
           ...(result.error === undefined ? {} : { error: result.error }),
         };
       }),
+
+    // Settings › About › Open-source licenses: the build's generated list, the same one
+    // `neolix licenses` prints. Static, so it needs no daemon request.
+    [NEOLIX_HOST_WS_METHODS.getThirdPartyNotices]: () =>
+      Effect.succeed({ notices: THIRD_PARTY_NOTICES }),
 
     // The token stays on the host; the settings row only learns whether one is set.
     [NEOLIX_HOST_WS_METHODS.getLibraryGithubToken]: () =>

@@ -102,6 +102,7 @@ import {
   describePullRequestAutoFix,
   describePullRequestComment,
   findPullRequestAutoFixState,
+  formatPullRequestCheckDuration,
   PULL_REQUEST_CHECK_STATUS_LABEL_KEYS,
   PULL_REQUEST_CHECKS_TONE_TEXT_CLASS,
   summarizePullRequestChecks,
@@ -271,6 +272,8 @@ function ChecksMenuRow({
   check: GitPullRequestCheck;
   onOpenUrl: (url: string) => void;
 }) {
+  const { t } = useTranslation();
+  const duration = formatPullRequestCheckDuration(check, t);
   return (
     <MenuRow
       url={check.url}
@@ -279,8 +282,9 @@ function ChecksMenuRow({
     >
       <PullRequestCheckStatusIcon status={check.status} />
       <span className="min-w-0 truncate text-[var(--color-text-foreground)]">{check.name}</span>
-      <span className="shrink-0 text-ui-xs text-muted-foreground">
-        {t(PULL_REQUEST_CHECK_STATUS_LABEL_KEYS[check.status])}
+      <span className="flex shrink-0 items-center gap-1.5 text-ui-xs text-muted-foreground">
+        {duration ? <span className="tabular-nums">{duration}</span> : null}
+        <span>{t(PULL_REQUEST_CHECK_STATUS_LABEL_KEYS[check.status])}</span>
       </span>
     </MenuRow>
   );

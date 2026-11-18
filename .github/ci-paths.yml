@@ -23,11 +23,9 @@ format:
   - ".agents/**/*.{cjs,css,html,js,json,jsonc,jsx,md,mjs,ts,tsx,yaml,yml}"
   - ".github/**/*.{cjs,css,html,js,json,jsonc,jsx,md,mjs,ts,tsx,yaml,yml}"
   - "**/*.{cjs,css,html,js,json,jsonc,jsx,md,mjs,ts,tsx,yaml,yml}"
-  - "packages/expo-two-way-audio/**"
 
 quality:
   - "**/*.{cjs,js,json,jsx,mjs,ts,tsx}"
-  - "packages/expo-two-way-audio/**"
 
 hub:
   - "packages/cli/src/commands/hub/**"
@@ -36,20 +34,32 @@ hub:
 server:
   - "plugins/**"
   - "packages/server/**"
-  - "packages/app/e2e/support/fixtures/recording.*"
 
 desktop:
   - "packages/desktop/**"
-  - "packages/app/src/desktop/**"
-  - "packages/app/src/**/*.electron.{ts,tsx}"
   - "packages/server/src/server/browser-tools/**"
-  - "packages/app/e2e/support/**"
-  - "packages/app/*config.{cjs,js,ts}"
-  - "packages/app/package.json"
 
-app:
-  - "packages/app/**"
-  - "packages/expo-two-way-audio/**"
+# The bun workspace's bridge imports the workspace builds of client, protocol,
+# and server's local-credential module by path, so their sources change its
+# typecheck and tests. apps/web also imports the repo CHANGELOG at build time.
+desktop_web:
+  - "packages/desktop-web/**"
+  - "packages/client/**"
+  - "packages/protocol/**"
+  - "packages/relay/**"
+  - "packages/server/src/server/local-credential.ts"
+  - "CHANGELOG*.md"
+
+# The browser suite in packages/server drives the built desktop-web page, so a change
+# to either side (or the workspace builds that page consumes) invalidates it.
+desktop_web_real_daemon:
+  - "packages/desktop-web/**"
+  - "packages/server/**"
+  - "packages/client/**"
+  - "packages/protocol/**"
+  - "packages/relay/**"
+  - "scripts/build-daemon-web-app.mjs"
+  - "CHANGELOG*.md"
 
 sdk:
   - "packages/plugin/**"
@@ -58,28 +68,6 @@ sdk:
   - "packages/client/**"
   - "packages/highlight/**"
   - "packages/protocol/**"
-
-browser:
-  - "packages/server/src/server/agent/provider-snapshot-manager.ts"
-  - "packages/server/src/server/session/provider/provider-catalog-session.ts"
-  - "packages/client/src/compat/normalize-provider-models.ts"
-  - "packages/protocol/src/client-capabilities.ts"
-  - "packages/server/src/server/agent/provider-registry.ts"
-  - "packages/server/src/server/agent/agent-sdk-types.ts"
-  - "packages/server/src/server/agent/providers/codex-app-server-agent.ts"
-  - "packages/server/src/server/agent/providers/claude/agent.ts"
-  - "packages/server/src/server/agent/plugin-provider.ts"
-  - "packages/server/src/server/plugins/{index,plugin-process,plugin-process-protocol,runtime}.ts"
-  - "packages/server/src/executable-resolution/**"
-  - "packages/plugin/src/server/provider.ts"
-  - "packages/app/src/!(desktop)/**"
-  - "packages/app/e2e/browser/**"
-  - "packages/app/e2e/support/**"
-  - "packages/app/assets/**"
-  - "packages/app/public/**"
-  - "packages/app/index.ts"
-  - "packages/app/*config.{cjs,js,ts}"
-  - "packages/app/package.json"
 
 relay:
   - "packages/relay/**"

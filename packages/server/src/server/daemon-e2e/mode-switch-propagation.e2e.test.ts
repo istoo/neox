@@ -1,3 +1,4 @@
+import os from "node:os";
 import { describe, test, expect, beforeAll, afterAll } from "vitest";
 import { createDaemonTestContext, type DaemonTestContext } from "../test-utils/index.js";
 import { DaemonClient } from "../test-utils/daemon-client.js";
@@ -49,7 +50,7 @@ describe("mode-switch update propagation", () => {
 
     const agent = await ctx.client.createAgent({
       provider: "claude",
-      cwd: "/tmp",
+      cwd: os.tmpdir(),
       modeId: "default",
     });
     expect(agent.currentModeId).toBe("default");
@@ -78,7 +79,7 @@ describe("mode-switch update propagation", () => {
 
     const agent = await ctx.client.createAgent({
       provider: "claude",
-      cwd: "/tmp",
+      cwd: os.tmpdir(),
       modeId: "default",
     });
 
@@ -101,7 +102,7 @@ describe("mode-switch update propagation", () => {
   test("mode switch is visible in second client bootstrap snapshot", async () => {
     const agent = await ctx.client.createAgent({
       provider: "claude",
-      cwd: "/tmp",
+      cwd: os.tmpdir(),
       modeId: "default",
     });
     await sleep(200);
@@ -141,7 +142,7 @@ describe("mode-switch update propagation", () => {
 
     const agent = await ctx.client.createAgent({
       provider: "claude",
-      cwd: "/tmp",
+      cwd: os.tmpdir(),
       modeId: "default",
     });
 
@@ -161,7 +162,7 @@ describe("mode-switch update propagation", () => {
 
     const agent = await ctx.client.createAgent({
       provider: "claude",
-      cwd: "/tmp",
+      cwd: os.tmpdir(),
       modeId: "default",
     });
     await ctx.client.setAgentMode(agent.id, "bypassPermissions");

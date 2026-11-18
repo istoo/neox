@@ -22,6 +22,7 @@ export const SETTINGS_SECTION_IDS = [
   "models",
   "gateway",
   "providers",
+  "agent-connect",
   "agent-profiles",
   "skills",
   "plugins",
@@ -311,6 +312,14 @@ const ALL_SETTINGS_NAV_ITEMS: readonly SettingsNavItem[] = [
     eyebrow: "Coding agents",
   },
   {
+    id: "agent-connect",
+    group: "coding",
+    label: "settings:navTab_agentConnect",
+    description: "settings:agentConnect_intro",
+    icon: "puzzle",
+    eyebrow: "Coding agents",
+  },
+  {
     id: "agent-profiles",
     group: "coding",
     label: "settings:agentProfiles_nav",
@@ -485,6 +494,7 @@ const ALL_SETTINGS_PAGES: readonly SettingsPage[] = [
     icon: "puzzle",
     tabs: [
       { section: "providers", label: "settings:navTab_providers" },
+      { section: "agent-connect", label: "settings:navTab_agentConnect" },
       { section: "agent-profiles", label: "settings:navTab_profiles" },
     ],
   },
@@ -594,6 +604,32 @@ export const SETTINGS_PAGES: readonly SettingsPage[] = ALL_SETTINGS_PAGES.flatMa
 export function settingsPageForSection(section: SettingsSectionId): SettingsPage {
   return (
     SETTINGS_PAGES.find((page) => page.tabs.some((tab) => tab.section === section)) ??
+    SETTINGS_PAGES[0]!
+  );
+}
+
+/**
+ * The same pages with sections a built-in feature switched off removed. A page
+ * whose every tab is hidden disappears, so its nav row goes with it.
+ */
+export function settingsPagesWithoutSections(
+  hiddenSections: ReadonlySet<string>,
+): readonly SettingsPage[] {
+  if (hiddenSections.size === 0) return SETTINGS_PAGES;
+  return SETTINGS_PAGES.flatMap((page) => {
+    const tabs = page.tabs.filter((tab) => !hiddenSections.has(tab.section));
+    return tabs.length > 0 ? [{ ...page, tabs }] : [];
+  });
+}
+
+/** The page that shows `section` in a pages list produced by `settingsPagesWithoutSections`. */
+export function settingsPageForSectionIn(
+  pages: readonly SettingsPage[],
+  section: SettingsSectionId,
+): SettingsPage {
+  return (
+    pages.find((page) => page.tabs.some((tab) => tab.section === section)) ??
+    pages[0] ??
     SETTINGS_PAGES[0]!
   );
 }

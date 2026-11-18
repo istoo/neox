@@ -85,5 +85,12 @@ export function makeSubagentHandlers(model: BridgeModel): Record<string, AnyHand
           hasNewer: timeline.hasNewer,
         };
       }),
+
+    [WS_METHODS.neolixSubagentsDetach]: (payload) =>
+      fromPromise("neolix.subagents.detach", async () => {
+        const { agentId } = payload as { agentId: string };
+        await client.detachAgent(agentId);
+        return {};
+      }),
   };
 }

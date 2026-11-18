@@ -1,3 +1,4 @@
+import os from "node:os";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { createTestNeolixDaemon, type TestNeolixDaemon } from "./test-utils/neolix-daemon.js";
 import { DaemonClient } from "./test-utils/daemon-client.js";
@@ -34,7 +35,7 @@ class RecordingPushNotificationSender implements PushNotificationSender {
 describe("client activity tracking", () => {
   const TEST_PROVIDER = "claude";
   const TEST_MODEL = "haiku";
-  const TEST_CWD = "/tmp";
+  const TEST_CWD = os.tmpdir();
   let daemon: TestNeolixDaemon;
   let client1: DaemonClient;
   let client2: DaemonClient;
@@ -57,6 +58,8 @@ describe("client activity tracking", () => {
       messageQueueLimit: null,
     });
     await client.connect();
+    // Modern clients receive attention only for events they requested explicitly.
+    await client.observeEvents(["agent_attention_required"], { notifications: true }).ready;
     return client;
   }
 

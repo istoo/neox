@@ -230,7 +230,7 @@ One token per signal, shared by every surface: success (#3e704a), danger (#9d433
 
 **The Selection Is Not Hover Rule.** Selection is `surface-sidebar-selected`; hover is `surface-sidebar-hover`. A hovered row never borrows the selected fill, and a selected row suppresses its hover fill. The two states answer different questions — "where am I" and "what will this click".
 
-**The 4.5 Floor Rule.** Primary, secondary, and tertiary text all hold 4.5:1 against every text surface in every theme. `packages/app/src/styles/theme-contrast.test.ts` fails the build when a token drops below it, and also asserts tertiary stays a visible step below secondary.
+**The 4.5 Floor Rule.** Primary, secondary, and tertiary text all hold 4.5:1 against every text surface in every theme, and tertiary stays a visible step below secondary.
 
 **The Named Theme Rule.** Dark themes are named and keep their hue: neolix (neutral ink chrome with a burnt-orange accent, the default), zinc (monochrome), midnight (blue), claude (warm orange), ghostty (blue-gray), pureBlack (zero-luminance with a green accent). A named theme changes hue and surface values, never the token structure. Dark surfaces are recorded in `.impeccable/design.json`.
 

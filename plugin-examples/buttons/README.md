@@ -32,11 +32,4 @@ From the repository root, `npm run typecheck --workspace=@neolix/plugin` checks 
 against the SDK. Existing plugin projects must update `@neolix/plugin` before running their own
 `npm run typecheck` to detect the old `Component`/`onPress` pill shape and callable cleanup handle.
 
-The browser regression installs this exact directory in an isolated daemon and exercises both
-layouts, updates, and cleanup:
-
-```sh
-npm run test:e2e --workspace=@neolix/app -- e2e/browser/plugin-button-example.spec.ts
-```
-
-The captures use Chromium at desktop and phone widths; native iOS and Android were not exercised.
+The captures use Chromium at desktop and narrow widths.

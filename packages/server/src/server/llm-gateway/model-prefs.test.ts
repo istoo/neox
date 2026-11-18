@@ -57,7 +57,7 @@ describe("disabled models", () => {
   it("refuses with myna's 403 and wording", () => {
     const refusal = disabledRefusal("relay-a/claude-opus-5-5", "*fable*");
     expect(refusal.status).toBe(403);
-    expect(refusal.message).toContain("is disabled in neolix");
+    expect(refusal.message).toContain("is disabled in Neox");
     expect(refusal.message).toContain('matches "*fable*"');
   });
 

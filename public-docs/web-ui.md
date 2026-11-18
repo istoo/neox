@@ -16,42 +16,23 @@ This is useful when you want to:
 - Put it behind your own reverse proxy, HTTPS, or tunnel.
 - Keep the setup self-hosted end to end, with no dependency on an external service.
 
-The web app ships inside the daemon package, so the UI you serve always matches your daemon version. There's no separate build to keep in sync and no UI-vs-daemon version skew to manage.
+The desktop app ships the UI. A source checkout can build the same page into the daemon with
+`npm run build:daemon-web-app`; the daemon resolves it from `packages/server/dist/server/web-app`
+or from a packaged `resources/desktop-web` directory. There is no separate version to keep in sync
+when the page is built from the same checkout.
 
 ## Enable it
 
-The bundled web UI is off by default. Save the setting, then start the daemon:
+Build the page into the daemon, then open the daemon's address in a browser:
 
 ```bash
-neox daemon config set features.webUi.enabled true
+npm run build:daemon-web-app
 neox daemon start
 ```
-
-Or run a foreground deployment with an environment variable:
-
-```bash
-NEOLIX_WEB_UI_ENABLED=true neox daemon run
-```
-
-Or persist it in `config.json` so it survives restarts:
-
-```json
-{
-  "features": {
-    "webUi": {
-      "enabled": true
-    }
-  }
-}
-```
-
-Then open the daemon's address in a browser:
 
 ```
 http://localhost:6767/
 ```
-
-If your daemon doesn't recognize `--web-ui`, update it, the flag was added with the bundled web UI.
 
 ## How the connection works
 
@@ -181,7 +162,7 @@ If your proxy reaches the daemon from another address, as in some Docker, LAN, o
 `NEOLIX_TRUSTED_PROXIES` accepts the same comma-separated values:
 
 ```bash
-NEOLIX_TRUSTED_PROXIES=loopback,172.16.0.0/12 NEOLIX_WEB_UI_ENABLED=true neox daemon run
+NEOLIX_TRUSTED_PROXIES=loopback,172.16.0.0/12 neox daemon run
 ```
 
 Only use `trustedProxies: true` when your final trusted proxy overwrites client-supplied `X-Forwarded-*` headers. Otherwise a client could spoof forwarded header values.

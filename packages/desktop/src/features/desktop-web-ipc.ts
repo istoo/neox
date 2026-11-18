@@ -17,12 +17,7 @@ import {
 } from "electron";
 import log from "electron-log/main";
 
-import { coerceDesktopUiMode, desktopUiModeState } from "../desktop-web/ui-mode.js";
-import {
-  DESKTOP_APP_ICON_NAMES,
-  type DesktopAppIconName,
-  type DesktopUiMode,
-} from "../settings/desktop-settings.js";
+import { DESKTOP_APP_ICON_NAMES, type DesktopAppIconName } from "../settings/desktop-settings.js";
 import { isRunningUnderARM64Translation } from "../system/arm64-translation.js";
 import {
   checkForAppUpdate,
@@ -76,11 +71,6 @@ interface DesktopKeepAwakeState {
   enabled: boolean;
   active: boolean;
   onBattery: boolean;
-}
-
-interface DesktopUiModeState {
-  mode: DesktopUiMode;
-  selectable: boolean;
 }
 
 interface DesktopContextMenuItem {
@@ -430,30 +420,6 @@ export function registerDesktopWebIpc(options: DesktopWebIpcOptions): void {
   });
   powerMonitor.on("on-ac", () => setKeepAwakeBlocker(keepAwakeState().active));
   powerMonitor.on("on-battery", () => setKeepAwakeBlocker(false));
-
-  // -------------------------------------------------------------------------
-  // Renderer selection: the same switch as File → Desktop UI, offered in
-  // Settings. The environment pin wins, so the control reports itself locked.
-  // -------------------------------------------------------------------------
-  const readUiModeState = async (): Promise<DesktopUiModeState> => {
-    const settings = await getDesktopSettingsStore().get();
-    return desktopUiModeState({
-      envValue: process.env.NEOLIX_DESKTOP_UI,
-      savedMode: settings.uiMode,
-    });
-  };
-
-  ipcMain.handle("neolix:desktop:ui-mode-state", () => readUiModeState());
-  ipcMain.handle("neolix:desktop:set-ui-mode", async (_event, rawMode: unknown) => {
-    const mode = coerceDesktopUiMode(rawMode);
-    if (mode === null) {
-      throw new Error("Desktop UI mode must be native or web.");
-    }
-    await getDesktopSettingsStore().patch({ uiMode: mode });
-    app.relaunch();
-    app.exit(0);
-    return null;
-  });
 
   // -------------------------------------------------------------------------
   // Native dialogs, folder reveal, external links and menus.

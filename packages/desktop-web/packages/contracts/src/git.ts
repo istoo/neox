@@ -75,6 +75,29 @@ export const GitRecentCommit = Schema.Struct({
 });
 export type GitRecentCommit = typeof GitRecentCommit.Type;
 
+export const GitCommitFileStatus = Schema.Literals(["added", "modified", "deleted", "renamed"]);
+export type GitCommitFileStatus = typeof GitCommitFileStatus.Type;
+
+export const GitCommitFile = Schema.Struct({
+  path: TrimmedNonEmptyStringSchema,
+  additions: NonNegativeInt,
+  deletions: NonNegativeInt,
+  status: Schema.optional(GitCommitFileStatus),
+});
+export type GitCommitFile = typeof GitCommitFile.Type;
+
+export const GitCommit = Schema.Struct({
+  sha: TrimmedNonEmptyStringSchema,
+  shortSha: TrimmedNonEmptyStringSchema,
+  subject: Schema.String,
+  authorName: Schema.String,
+  authorDate: Schema.String,
+  isOnRemote: Schema.Boolean,
+  isOnBase: Schema.optional(Schema.Boolean),
+  files: Schema.Array(GitCommitFile),
+});
+export type GitCommit = typeof GitCommit.Type;
+
 const GitWorktree = Schema.Struct({
   path: TrimmedNonEmptyStringSchema,
   branch: TrimmedNonEmptyStringSchema,
@@ -116,6 +139,8 @@ export const GitPullRequestCheck = Schema.Struct({
   name: TrimmedNonEmptyStringSchema,
   status: GitPullRequestCheckStatus,
   url: Schema.NullOr(Schema.String),
+  /** Forge-formatted elapsed time, e.g. "2m" while running or "1m 4s" once finished. */
+  duration: Schema.optional(Schema.String),
 });
 export type GitPullRequestCheck = typeof GitPullRequestCheck.Type;
 
@@ -266,6 +291,17 @@ export const GitListRecentCommitsInput = Schema.Struct({
   ).pipe(Schema.withConstructorDefault(() => Option.some(DEFAULT_GIT_RECENT_COMMIT_LIMIT))),
 });
 export type GitListRecentCommitsInput = typeof GitListRecentCommitsInput.Type;
+
+export const GitListCommitsInput = Schema.Struct({
+  cwd: TrimmedNonEmptyStringSchema,
+});
+export type GitListCommitsInput = typeof GitListCommitsInput.Type;
+
+export const GitCommitDiffInput = Schema.Struct({
+  cwd: TrimmedNonEmptyStringSchema,
+  sha: GitRevisionArgumentSchema,
+});
+export type GitCommitDiffInput = typeof GitCommitDiffInput.Type;
 
 export const GitCreateWorktreeInput = Schema.Struct({
   cwd: TrimmedNonEmptyStringSchema,
@@ -563,6 +599,18 @@ export const GitListRecentCommitsResult = Schema.Struct({
   commits: Schema.Array(GitRecentCommit),
 });
 export type GitListRecentCommitsResult = typeof GitListRecentCommitsResult.Type;
+
+export const GitListCommitsResult = Schema.Struct({
+  baseRef: TrimmedNonEmptyStringSchema.pipe(Schema.NullOr),
+  commits: Schema.Array(GitCommit),
+});
+export type GitListCommitsResult = typeof GitListCommitsResult.Type;
+
+export const GitCommitDiffResult = Schema.Struct({
+  patch: Schema.String,
+  truncated: Schema.Boolean,
+});
+export type GitCommitDiffResult = typeof GitCommitDiffResult.Type;
 
 export const GitCreateWorktreeResult = Schema.Struct({
   worktree: GitWorktree,

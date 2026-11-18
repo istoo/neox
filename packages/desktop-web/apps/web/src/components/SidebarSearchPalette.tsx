@@ -1181,6 +1181,7 @@ export function SidebarSearchPalette(props: SidebarSearchPaletteProps) {
                         <span className="relative inline-flex size-3.5 shrink-0 items-center justify-center text-muted-foreground">
                           <ProjectSidebarIcon
                             cwd={project.cwd}
+                            projectId={project.host ? undefined : project.id}
                             expanded
                             appearance={project.appearance}
                             glyphClassName="size-3.5"

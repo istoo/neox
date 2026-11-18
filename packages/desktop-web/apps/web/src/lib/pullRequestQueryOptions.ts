@@ -2,6 +2,7 @@ import type { PullRequestDetailInput, ThreadId } from "@synara/contracts";
 import { queryOptions } from "@tanstack/react-query";
 
 import { ensureNativeApi } from "~/nativeApi";
+import { isPipelineActiveStatus } from "./gitlabPipeline.logic";
 import {
   GITHUB_ITEM_DETAIL_POLL_INTERVAL_MS,
   GITHUB_ITEM_DETAIL_STALE_TIME_MS,
@@ -19,6 +20,8 @@ export const pullRequestQueryKeys = {
       input?.repository ?? null,
       input?.number ?? null,
     ] as const,
+  pipeline: (cwd: string | null, pipelineId: number | null, changeRequestNumber: number | null) =>
+    ["pull-requests", "pipeline", cwd, pipelineId, changeRequestNumber] as const,
   diff: (input: PullRequestDetailInput | null) =>
     [
       "pull-requests",
@@ -58,6 +61,52 @@ export function pullRequestDetailQueryOptions(
     refetchIntervalInBackground: false,
     refetchOnWindowFocus: pollingEnabled,
     refetchOnReconnect: pollingEnabled,
+  });
+}
+
+/**
+ * The PR's pipeline drill-down (GitLab jobs). Finished pipelines never change, so polling
+ * stops once both the summary and every job have left the active statuses.
+ */
+export function pullRequestPipelineQueryOptions(input: {
+  cwd: string | null;
+  pipelineId: number | null;
+  changeRequestNumber: number | null;
+  /** The PR status's raw pipeline status; drives polling before jobs arrive. */
+  summaryStatus: string | null;
+  enabled?: boolean;
+}) {
+  return queryOptions({
+    queryKey: pullRequestQueryKeys.pipeline(input.cwd, input.pipelineId, input.changeRequestNumber),
+    queryFn: () => {
+      if (!input.cwd || input.pipelineId === null || input.changeRequestNumber === null) {
+        throw new Error("Pull request pipeline is unavailable.");
+      }
+      return ensureNativeApi().pullRequests.pipeline({
+        cwd: input.cwd,
+        pipelineId: input.pipelineId,
+        changeRequestNumber: input.changeRequestNumber,
+      });
+    },
+    enabled:
+      (input.enabled ?? true) &&
+      input.cwd !== null &&
+      input.pipelineId !== null &&
+      input.changeRequestNumber !== null,
+    staleTime: 15_000,
+    refetchInterval: (query) => {
+      if (isPipelineActiveStatus(input.summaryStatus)) {
+        return 15_000;
+      }
+      const jobsActive =
+        query.state.data?.pipeline?.stages.some((stage) =>
+          stage.jobs.some((job) => isPipelineActiveStatus(job.status)),
+        ) === true;
+      return jobsActive ? 15_000 : false;
+    },
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
   });
 }
 

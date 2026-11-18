@@ -27,9 +27,27 @@ try {
   ]);
   assert.strictEqual(configured.exitCode, 0, configured.stderr);
 
+  // The product ships no default relay service or app address, and a pairing
+  // offer needs both, so give the fixture a relay to offer.
+  for (const [key, value] of [
+    ["daemon.relay.endpoint", "relay.example.com:443"],
+    ["app.baseUrl", "https://app.example.com"],
+  ] as const) {
+    const result = await runLocalNeolix([
+      "daemon",
+      "config",
+      "set",
+      key,
+      value,
+      "--home",
+      neolixHome,
+    ]);
+    assert.strictEqual(result.exitCode, 0, result.stderr);
+  }
+
   console.log("Test 1: bare `Neox` falls back to onboarding when the app is not installed");
   const onboard =
-    await $`NEOLIX_HOME=${neolixHome} NEOLIX_PAIRING_QR=0 NEOLIX_NO_DESKTOP=1 npx Neox`.nothrow();
+    await $`NEOLIX_HOME=${neolixHome} NEOLIX_PAIRING_QR=0 NEOLIX_NO_DESKTOP=1 npx neox`.nothrow();
 
   assert.strictEqual(
     onboard.exitCode,
@@ -66,7 +84,7 @@ try {
 
   console.log("Test 2: bare `Neox` falls back to onboarding without a graphical session");
   const headless =
-    await $`SSH_CONNECTION="10.0.0.1 22 10.0.0.2 22" NEOLIX_HOME=${neolixHome} NEOLIX_PAIRING_QR=0 npx Neox`.nothrow();
+    await $`SSH_CONNECTION="10.0.0.1 22 10.0.0.2 22" NEOLIX_HOME=${neolixHome} NEOLIX_PAIRING_QR=0 npx neox`.nothrow();
   assert.strictEqual(
     headless.exitCode,
     0,

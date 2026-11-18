@@ -29,7 +29,12 @@ export default function contribute(server: PluginServerContext) {
             refreshedBy: "claude",
           },
         };
-      if (account === "throws") throw new Error("fixture failure");
+      if (account === "throws")
+        throw new TypeError("fetch failed", {
+          cause: Object.assign(new Error("getaddrinfo ENOTFOUND api.x.ai"), {
+            code: "ENOTFOUND",
+          }),
+        });
       fetches++;
       return {
         status: "available",

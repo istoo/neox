@@ -2,9 +2,16 @@ import { expect, test } from "vitest";
 import { WebSocket, type RawData } from "ws";
 import { createTestNeolixDaemon, type TestNeolixDaemon } from "./test-utils/index.js";
 import { WSOutboundMessageSchema, type WSOutboundMessage } from "./messages.js";
+import { MAX_PHYSICAL_SOCKET_BUFFERED_BYTES } from "./websocket/physical-socket.js";
 
 const LARGE_REQUEST_BYTES = 512 * 1024;
-const BURST_MESSAGE_COUNT = 32;
+// A pong frame is the padded request id plus a small envelope. Assume up to
+// 1 KiB of overhead so the burst on its own stays below the bound.
+const PONG_FRAME_BYTES_UPPER_BOUND = LARGE_REQUEST_BYTES + 1024;
+const PING_BURST_COUNT =
+  Math.ceil(MAX_PHYSICAL_SOCKET_BUFFERED_BYTES / PONG_FRAME_BYTES_UPPER_BOUND) - 1;
+// The config-change broadcast must push the queue past the bound in one frame.
+const CONFIG_PADDING_BYTES = 2 * 1024 * 1024;
 const TEST_TIMEOUT_MS = 30_000;
 
 interface SocketClose {
@@ -34,20 +41,12 @@ class ResumedPhysicalSocketSession {
     this.replacement = await connectSocket(this.daemon.port, "stale-physical-socket");
   }
 
-  async broadcastUntilOriginalCloses(): Promise<SocketClose> {
+  async overflowOriginalUntilClosed(): Promise<SocketClose> {
     const replacement = this.requireReplacement();
     const originalClose = waitForClose(this.original);
-    const finalRequestId = largeRequestId(BURST_MESSAGE_COUNT - 1);
-    const finalResponse = waitForMessage(replacement, (message) => {
-      return (
-        message.type === "session" &&
-        message.message.type === "pong" &&
-        message.message.payload.requestId === finalRequestId
-      );
-    });
 
-    for (let index = 0; index < BURST_MESSAGE_COUNT; index += 1) {
-      replacement.send(
+    for (let index = 0; index < PING_BURST_COUNT; index += 1) {
+      this.original.send(
         JSON.stringify({
           type: "session",
           message: {
@@ -59,7 +58,30 @@ class ResumedPhysicalSocketSession {
       );
     }
 
-    await finalResponse;
+    // Session replies stay on the socket that requested them, so the abandoned
+    // socket fills its own queue. A config change broadcasts to every socket;
+    // the replacement receiving it proves the daemon already evaluated the
+    // stale socket's queue and terminated it at the high-water mark.
+    const configBroadcast = waitForMessage(
+      replacement,
+      (message) =>
+        message.type === "session" &&
+        message.message.type === "status" &&
+        message.message.payload.status === "daemon_config_changed",
+    );
+    this.original.send(
+      JSON.stringify({
+        type: "session",
+        message: {
+          type: "set_daemon_config_request",
+          requestId: "bound-stale-socket",
+          config: { appendSystemPrompt: "x".repeat(CONFIG_PADDING_BYTES) },
+        },
+      }),
+    );
+    await configBroadcast;
+
+    // The close is only readable once the socket drains again.
     this.original.resume();
     return originalClose;
   }
@@ -100,7 +122,7 @@ test(
       await session.abandonOriginal();
       await session.resumeSameClient();
 
-      const originalClose = await session.broadcastUntilOriginalCloses();
+      const originalClose = await session.overflowOriginalUntilClosed();
 
       expect(originalClose).toEqual({ code: 1006, reason: "" });
       await session.replacementRoundTrip();

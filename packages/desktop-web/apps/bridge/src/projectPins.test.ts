@@ -51,6 +51,41 @@ describe("projectPins", () => {
     expect(second.isPinned("prj_b")).toBe(true);
   });
 
+  it("moves pins from the address-derived scope to the stable one", async () => {
+    const { file } = await makePins("unused");
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(
+      file,
+      JSON.stringify({ "neolix-127-0-0-1-6768": ["prj_old"], other: ["prj_other"] }),
+    );
+
+    const pins = new ProjectPins({
+      file,
+      scope: "srv-1",
+      legacyScopes: ["neolix-127-0-0-1-6768"],
+      log: () => {},
+    });
+    await pins.load();
+    expect(pins.isPinned("prj_old")).toBe(true);
+    expect(pins.isPinned("prj_other")).toBe(false);
+
+    const stored = JSON.parse(await fs.readFile(file, "utf8")) as Record<string, string[]>;
+    expect(stored["srv-1"]).toEqual(["prj_old"]);
+    // The legacy key stays readable so a downgraded bridge still sees the pin.
+    expect(stored["neolix-127-0-0-1-6768"]).toEqual(["prj_old"]);
+
+    // Unpinning a migrated pin must stick; the legacy copy cannot pin it again.
+    await pins.setPinned("prj_old", false);
+    const restarted = new ProjectPins({
+      file,
+      scope: "srv-1",
+      legacyScopes: ["neolix-127-0-0-1-6768"],
+      log: () => {},
+    });
+    await restarted.load();
+    expect(restarted.isPinned("prj_old")).toBe(false);
+  });
+
   it("starts empty when the file is missing or malformed", async () => {
     const { file, pins } = await makePins("host-a");
     await pins.load();

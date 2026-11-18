@@ -62,6 +62,7 @@ export interface TelemetryServiceOptions {
   fetchImpl?: typeof fetch;
   now?: () => Date;
   intervalMs?: number;
+  platform?: NodeJS.Platform;
 }
 
 interface TelemetryLogger {
@@ -191,8 +192,11 @@ export class TelemetryService {
   private readonly fetchImpl: typeof fetch;
   private readonly now: () => Date;
   private readonly intervalMs: number;
+  private readonly platform: NodeJS.Platform;
   private readonly logger: TelemetryLogger | undefined;
   private timer: NodeJS.Timeout | null = null;
+  /** Set by stopAndDrain: a daemon that stopped does no more sends. */
+  private disposed = false;
   private inFlight: Promise<void> | null = null;
   private requestAbort: AbortController | null = null;
 
@@ -206,6 +210,7 @@ export class TelemetryService {
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.now = options.now ?? (() => new Date());
     this.intervalMs = options.intervalMs ?? HOUR_MS;
+    this.platform = options.platform ?? process.platform;
     this.logger = options.logger
       ? {
           debug: (...args) => options.logger?.debug(...args),
@@ -216,7 +221,7 @@ export class TelemetryService {
 
   /** Starts the hourly check. Never blocks the daemon: the first send is asynchronous. */
   start(): void {
-    if (this.timer !== null || !this.enabled()) {
+    if (this.disposed || this.timer !== null || !this.enabled()) {
       return;
     }
     this.timer = setInterval(() => void this.tick(), this.intervalMs);
@@ -244,12 +249,18 @@ export class TelemetryService {
     this.requestAbort = null;
   }
 
-  /** Stops the timer and waits for the request in flight, if any. */
+  /**
+   * Stops the timer, aborts the request in flight, and waits for its cleanup.
+   * Aborting first keeps shutdown from waiting out the request timeout.
+   */
   async stopAndDrain(): Promise<void> {
+    this.disposed = true;
     if (this.timer !== null) {
       clearInterval(this.timer);
       this.timer = null;
     }
+    this.requestAbort?.abort();
+    this.requestAbort = null;
     await this.inFlight?.catch(() => undefined);
   }
 
@@ -258,6 +269,9 @@ export class TelemetryService {
   }
 
   private tick(): Promise<void> {
+    if (this.disposed) {
+      return Promise.resolve();
+    }
     if (this.inFlight !== null) {
       return this.inFlight;
     }
@@ -279,78 +293,90 @@ export class TelemetryService {
    * off. Returns whether a request was made and answered 2xx.
    */
   async sendIfDue(): Promise<boolean> {
-    if (!this.enabled()) {
+    if (this.disposed || !this.enabled()) {
       return false;
     }
-    const now = this.now();
-    const day = utcDay(now);
-    if ((await this.readSentDay()) === day) {
-      return false;
-    }
-
-    const id = await this.getOrCreateId();
-    const config = this.readConfig();
-    const usage = config.shareUsage === true ? normalizeUsage(this.readUsage()) : null;
-    const timestamp = now.toISOString();
-
-    const event = (name: string, properties: Record<string, unknown>) => ({
-      event: name,
-      distinct_id: id,
-      timestamp,
-      properties: {
-        ...properties,
-        $process_person_profile: false,
-        distinct_id: id,
-      },
-    });
-
-    const active: Record<string, unknown> = {
-      version: this.version,
-      kind: "daemon",
-      $os: osName(),
-      arch: process.arch,
-    };
-    const batch: ReturnType<typeof event>[] = [];
-    if (usage !== null) {
-      active.agents = usage.agents.length;
-      active.providers = usage.providers.length;
-      active.models = usage.models.length;
-      active.groups = usage.groups;
-      for (const [kind, ids] of [
-        ["agent", usage.agents],
-        ["provider", usage.providers],
-        ["model", usage.models],
-      ] as const) {
-        for (const value of ids) {
-          batch.push(event("neolix uses", { kind, id: value }));
-        }
-      }
-    }
-    batch.unshift(event("neolix active", active));
-
+    // Registered before the first await so stopAndDrain can abort this send
+    // even if it has not reached the request yet.
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-    timeout.unref?.();
     this.requestAbort = controller;
+    const aborted = (): boolean => this.disposed || controller.signal.aborted;
     try {
-      const response = await this.fetchImpl(this.endpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ api_key: POSTHOG_KEY, batch }),
-        signal: controller.signal,
-      });
-      if (!response.ok) {
-        this.logger?.debug({ status: response.status }, "Telemetry endpoint refused the ping");
+      const now = this.now();
+      const day = utcDay(now);
+      if ((await this.readSentDay()) === day || aborted()) {
         return false;
       }
+
+      const id = await this.getOrCreateId();
+      if (aborted()) {
+        return false;
+      }
+      const config = this.readConfig();
+      const usage = config.shareUsage === true ? normalizeUsage(this.readUsage()) : null;
+      const timestamp = now.toISOString();
+
+      const event = (name: string, properties: Record<string, unknown>) => ({
+        event: name,
+        distinct_id: id,
+        timestamp,
+        properties: {
+          ...properties,
+          $process_person_profile: false,
+          distinct_id: id,
+        },
+      });
+
+      const active: Record<string, unknown> = {
+        version: this.version,
+        kind: "daemon",
+        $os: osName(this.platform),
+        arch: process.arch,
+      };
+      const batch: ReturnType<typeof event>[] = [];
+      if (usage !== null) {
+        active.agents = usage.agents.length;
+        active.providers = usage.providers.length;
+        active.models = usage.models.length;
+        active.groups = usage.groups;
+        for (const [kind, ids] of [
+          ["agent", usage.agents],
+          ["provider", usage.providers],
+          ["model", usage.models],
+        ] as const) {
+          for (const value of ids) {
+            batch.push(event("neolix uses", { kind, id: value }));
+          }
+        }
+      }
+      batch.unshift(event("neolix active", active));
+
+      const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+      timeout.unref?.();
+      try {
+        const response = await this.fetchImpl(this.endpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ api_key: POSTHOG_KEY, batch }),
+          signal: controller.signal,
+        });
+        if (!response.ok) {
+          this.logger?.debug({ status: response.status }, "Telemetry endpoint refused the ping");
+          return false;
+        }
+      } finally {
+        clearTimeout(timeout);
+      }
+      if (aborted()) {
+        return false;
+      }
+      await writePrivateFileAtomic(path.join(this.neolixHome, SENT_FILENAME), `${day}\n`);
+      return true;
     } finally {
-      clearTimeout(timeout);
       if (this.requestAbort === controller) {
         this.requestAbort = null;
       }
     }
-    await writePrivateFileAtomic(path.join(this.neolixHome, SENT_FILENAME), `${day}\n`);
-    return true;
   }
 
   private async readSentDay(): Promise<string | null> {

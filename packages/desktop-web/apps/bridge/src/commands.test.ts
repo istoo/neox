@@ -179,6 +179,17 @@ describe("commands", () => {
     expect(modeIdFor("auto", "default", CODEX_MODES)).toBe("auto-review");
     expect(modeIdFor("full-access", "default", CODEX_MODES)).toBe("full-access");
     expect(modeIdFor("accept-edits", "default", CODEX_MODES)).toBeUndefined();
+    // Without the reviewer tier Codex still asks in `auto`; the reverse mapping must find it
+    // so the composer can return from Full access to Ask for approval.
+    const codexWithoutReview = [{ id: "auto" }, { id: "full-access" }];
+    expect(modeIdFor("approval-required", "default", codexWithoutReview)).toBe("auto");
+    expect(
+      toRuntimeMode(
+        modeIdFor("approval-required", "default", codexWithoutReview),
+        codexWithoutReview,
+        "codex",
+      ),
+    ).toBe("approval-required");
     const copilot = [
       { id: "https://agentclientprotocol.com/protocol/session-modes#agent" },
       { id: "https://agentclientprotocol.com/protocol/session-modes#plan" },

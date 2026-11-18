@@ -83,10 +83,10 @@ describe("worktree setup commit status", () => {
 
   test("resolves neox.json relative to a nested project root", async () => {
     const repoRoot = makeGitRepo();
-    const projectRoot = join(repoRoot, "packages", "app");
+    const projectRoot = join(repoRoot, "packages", "server");
     mkdirSync(projectRoot, { recursive: true });
     writeConfig(projectRoot, { worktree: { setup: "npm ci" } });
-    execFileSync("git", ["add", "packages/app/neox.json"], { cwd: repoRoot });
+    execFileSync("git", ["add", "packages/server/neox.json"], { cwd: repoRoot });
     execFileSync("git", ["commit", "-m", "add nested config"], { cwd: repoRoot });
     const currentConfig = { worktree: { setup: "npm install" } };
     writeConfig(projectRoot, currentConfig);

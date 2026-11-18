@@ -1,6 +1,7 @@
 {
   lib,
   stdenv,
+  pkgs,
   buildNpmPackage,
   nodejs_22,
   python3,
@@ -16,6 +17,9 @@
   # (`neolix-desktop-<v>-npm-deps`) and refetches the entire registry. Override
   # the upstream hash via `neolix.override { npmDepsHash = "..."; }`.
   neolix,
+  # desktop-web is a separate Bun workspace; see nix/package.nix.
+  bun ? pkgs.callPackage ./bun-bin.nix { },
+  desktopWebDeps ? pkgs.callPackage ./desktop-web-deps.nix { inherit bun; },
 }:
 buildNpmPackage {
   pname = "neolix-desktop";
@@ -27,11 +31,8 @@ buildNpmPackage {
       baseName = builtins.baseNameOf path;
       relPath = lib.removePrefix (toString ./..) path;
     in
-      # Exclude mobile-only platform code (we only need the web/electron build)
-      !(lib.hasPrefix "/packages/app/android" relPath)
-      && !(lib.hasPrefix "/packages/app/ios" relPath)
       # Website is unrelated to the desktop app
-      && !(lib.hasPrefix "/packages/website" relPath)
+      !(lib.hasPrefix "/packages/website" relPath)
       # Documentation, CI definitions and agent/editor configuration. None of
       # these reach the build, but every one of them is part of `src`, so a
       # docs-only or workflow-only commit currently invalidates the whole
@@ -45,8 +46,13 @@ buildNpmPackage {
       && !(lib.hasPrefix "/docker" relPath)
       # Top-level prose only (README, CHANGELOG, AGENTS...). Deeper markdown is
       # not necessarily documentation: skills/*/SKILL.md is a runtime file the
-      # installPhase copies into the output.
-      && builtins.match "/[^/]+\\.md" relPath == null
+      # installPhase copies into the output. The changelog is prose too, but
+      # apps/web imports it at build time for the what's-new screen.
+      && (
+        builtins.match "/[^/]+\\.md" relPath == null
+        || relPath == "/CHANGELOG.md"
+        || relPath == "/CHANGELOG.zh-CN.md"
+      )
       # Test fixtures and build artifacts
       && !(lib.hasSuffix ".test.ts" baseName)
       && !(lib.hasSuffix ".e2e.test.ts" baseName)
@@ -67,6 +73,7 @@ buildNpmPackage {
   nativeBuildInputs =
     [
       python3 # for node-gyp (node-pty)
+      bun # builds the desktop web app
     ]
     ++ lib.optionals stdenv.hostPlatform.isLinux [
       autoPatchelfHook
@@ -79,19 +86,16 @@ buildNpmPackage {
     stdenv.cc.cc.lib # libstdc++ for sherpa-onnx prebuilt binaries
   ];
 
+  # sharp installs its musl variants next to the glibc ones. They are never
+  # loaded on glibc, and their libc has no Nix equivalent to point at.
+  autoPatchelfIgnoreMissingDeps = [ "libc.musl-*" ];
+
   dontNpmBuild = true;
 
   env = {
-    EXPO_NO_TELEMETRY = "1";
-    # Expo's web build pulls in some pre-bundled assets; ensure it doesn't try
-    # to phone home during the build.
-    CI = "1";
-    # Metro's worker runs out of heap transforming the generated
-    # ws-outbound.aot.js validator (about 12 MB). Node's default heap limit is
-    # 2 GB on machines with less than 15 GB of memory, such as GitHub's 7 GB
-    # macOS runners, and 4 GB above that. 4096 MB is that 4 GB ceiling, so this
-    # only raises the limit on smaller builders, like desktop-release.yml does.
-    NODE_OPTIONS = "--max-old-space-size=4096";
+    # The server tsc build and the web app's Vite build fit in the same limit
+    # docker/base/Dockerfile uses.
+    NODE_OPTIONS = "--max-old-space-size=2560";
   };
 
   buildPhase = ''
@@ -100,17 +104,22 @@ buildNpmPackage {
     # Native deps (terminal emulation; libuv-linked on Linux)
     npm rebuild node-pty
 
+    # Bun workspace dependencies are not part of npmDeps. The fixed-output
+    # derivation provides the hoisted node_modules tree in one copy.
+    cp -a ${desktopWebDeps}/. packages/desktop-web/
+    # Store-path copies are read-only; npm/Bun build scripts write caches and
+    # generated files under node_modules.
+    chmod -R u+w packages/desktop-web/node_modules packages/desktop-web/apps
+
     # Server workspaces (highlight + relay + protocol + client + server + cli)
     npm run build:server
 
-    # App workspace deps not covered by build:server
-    npm run build --workspace=@neolix/expo-two-way-audio
-
-    # Expo web export for the Electron renderer
-    ( cd packages/app && NEOLIX_WEB_PLATFORM=electron npx expo export --platform web )
-
     # Desktop main process
     npm run build:main --workspace=@neolix/desktop
+
+    # Web client: apps/bridge/dist/embed.js + apps/web/dist, also copied into
+    # packages/server/dist/server/web-app for the unpackaged Linux layout.
+    node scripts/build-daemon-web-app.mjs
 
     ${lib.optionalString stdenv.hostPlatform.isDarwin ''
       # Let electron-builder create the native bundle layout (including helper
@@ -168,8 +177,6 @@ buildNpmPackage {
 
       # Keep the same unpackaged monorepo layout expected by main.js.
       cp package.json $out/share/neolix-desktop/
-      mkdir -p $out/share/neolix-desktop/packages/app
-      cp -a packages/app/dist $out/share/neolix-desktop/packages/app/
 
       for runtime_path in \
         packages/desktop/dist/main.js \
@@ -186,6 +193,22 @@ buildNpmPackage {
         echo "desktop runtime trace included npm Electron" >&2
         exit 1
       fi
+
+      # The web client ships once, beside the server package, which is what
+      # webAppCandidates resolves for an unpackaged app. nft cannot see it
+      # (dynamic import plus filesystem paths), so copy it explicitly. The
+      # macOS bundle instead carries it once as electron-builder extraResources
+      # and excludes this server copy from the asar.
+      web_app=packages/server/dist/server/web-app
+      if [ ! -f "$web_app/embed.js" ] || [ ! -f "$web_app/web/index.html" ]; then
+        echo "desktop web client was not built ($web_app)" >&2
+        exit 1
+      fi
+      mkdir -p "$out/share/neolix-desktop/packages/server/dist/server"
+      rm -rf "$out/share/neolix-desktop/packages/server/dist/server/web-app"
+      cp -a "$web_app" "$out/share/neolix-desktop/packages/server/dist/server/"
+      test -f $out/share/neolix-desktop/packages/server/dist/server/web-app/embed.js
+      test -f $out/share/neolix-desktop/packages/server/dist/server/web-app/web/index.html
 
       # Hicolor icon for desktop environments
       install -Dm644 packages/desktop/assets/icon.png \
@@ -219,6 +242,11 @@ buildNpmPackage {
       mkdir -p "$out/Applications"
       cp -R "$app" "$out/Applications/Neox.app"
       ln -s ../Applications/Neox.app/Contents/MacOS/Neox "$out/bin/neolix-desktop"
+
+      # electron-builder's extraResources carry the web client once; make a
+      # missing artifact fail here instead of at first launch.
+      test -f "$out/Applications/Neox.app/Contents/Resources/desktop-web/bridge/embed.js"
+      test -f "$out/Applications/Neox.app/Contents/Resources/desktop-web/web/index.html"
     ''}
 
     runHook postInstall

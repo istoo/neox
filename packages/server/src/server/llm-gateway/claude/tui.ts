@@ -1,5 +1,7 @@
 import { access } from "node:fs/promises";
 import * as pty from "node-pty";
+import { resolveTerminalSpawnCommand } from "../../../terminal/terminal.js";
+import { signalProcessTree } from "../../../utils/tree-kill.js";
 import { ScreenGrid } from "./screen.js";
 import type { ClaudeTap } from "./tap.js";
 
@@ -68,9 +70,16 @@ export class TuiSession {
     this.grid = new ScreenGrid(options.cols ?? 120, options.rows ?? 40);
   }
 
-  public start(): void {
+  public async start(): Promise<void> {
     const spawn = this.options.spawn ?? pty.spawn;
-    this.terminal = spawn(this.options.binary, [...this.options.args], {
+    // An npm-installed Claude Code is a `.cmd` on Windows, which ConPTY cannot
+    // launch by itself; the binary's path is already resolved, so it is passed
+    // through the terminal launcher unchanged and routed through cmd.exe there.
+    const launch = await resolveTerminalSpawnCommand(this.options.binary, [...this.options.args], {
+      resolveExecutable: async (name) => name,
+      env: { ...process.env, ...this.options.env },
+    });
+    this.terminal = spawn(launch.command, launch.args, {
       name: "xterm-256color",
       cols: this.options.cols ?? 120,
       rows: this.options.rows ?? 40,
@@ -304,9 +313,41 @@ export class TuiSession {
   }
 
   public kill(): void {
-    this.terminal?.kill();
+    const terminal = this.terminal;
+    if (terminal === null) {
+      return;
+    }
     this.terminal = null;
     this.listeners = [];
+    if (process.platform !== "win32") {
+      terminal.kill();
+      return;
+    }
+    // ConPTY launched this run through cmd.exe: node-pty's own kill only
+    // reaches the console's processes asynchronously (and is deferred until
+    // the pty is ready), so a `claude.cmd` script's node child can outlive
+    // the session. End the tree first; waitForExit then reports its exit.
+    void (async () => {
+      await signalProcessTree(
+        {
+          pid: terminal.pid,
+          kill: (): boolean => {
+            try {
+              terminal.kill();
+            } catch {
+              // the process is already gone
+            }
+            return true;
+          },
+        },
+        "SIGKILL",
+      );
+      try {
+        terminal.kill();
+      } catch {
+        // the tree has already ended
+      }
+    })();
   }
 }
 

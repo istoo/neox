@@ -20,6 +20,12 @@ import { useTranslation } from "~/i18n";
 
 import { Button } from "../../ui/button";
 import { Input } from "../../ui/input";
+import {
+  canonicalHeaderName,
+  cleanHeaderList,
+  headerNameProblem,
+  type HeaderListKind,
+} from "./gatewayHeaderPassthrough.logic";
 import { GatewayField, GatewayNumberField, GatewayPill, GatewayToggle } from "./GatewayPrimitives";
 
 type Edit = (mutate: (draft: GatewayConfig) => void) => void;
@@ -122,6 +128,144 @@ export function ProviderHeaders({ provider, edit }: { provider: GatewayProvider;
           {t("gateway:provider_add_header")}
         </Button>
       </div>
+    </div>
+  );
+}
+
+function HeaderNameList({
+  kind,
+  providerId,
+  title,
+  hint,
+  empty,
+  add,
+  names,
+  onChange,
+}: {
+  kind: HeaderListKind;
+  providerId: string;
+  title: string;
+  hint: string;
+  empty: string;
+  add: string;
+  names: readonly string[] | undefined;
+  onChange: (names: string[]) => void;
+}) {
+  const { t } = useTranslation();
+  // A name being typed is shown as typed while only the names the daemon can
+  // pass are written, so an invalid entry never reaches the config.
+  const [rows, setRows] = useState<string[]>(() => [...(names ?? [])]);
+
+  useEffect(() => {
+    setRows([...(names ?? [])]);
+    // Only when the editor moves to another provider: our own keystrokes
+    // already wrote `names`, and re-reading them would move the caret.
+    // oxlint-disable-next-line react-hooks/exhaustive-deps
+  }, [providerId, kind]);
+
+  const write = (next: string[]) => {
+    setRows(next);
+    onChange(cleanHeaderList(next, kind));
+  };
+
+  return (
+    <div className="flex flex-col gap-1.5">
+      <span className="text-ui-sm text-muted-foreground">{title}</span>
+      {rows.length === 0 ? (
+        <span className="text-ui-xs text-muted-foreground">{empty}</span>
+      ) : (
+        rows.map((name, index) => {
+          const problem = headerNameProblem(name, kind);
+          return (
+            // The rows are positional: keying by a name being typed would
+            // remount the input and drop focus on every keystroke.
+            // oxlint-disable-next-line react/no-array-index-key
+            <div key={index} className="flex flex-col gap-1">
+              <div className="flex items-center gap-1.5">
+                <Input
+                  value={name}
+                  aria-label={`${title} ${index + 1}`}
+                  aria-invalid={problem !== null}
+                  placeholder="X-Header-Name"
+                  size="sm"
+                  variant="soft"
+                  className="min-w-0 flex-1"
+                  onChange={(event) => {
+                    const value = event.currentTarget.value;
+                    write(rows.map((row, at) => (at === index ? value : row)));
+                  }}
+                />
+                <Button
+                  size="xs"
+                  variant="ghost"
+                  onClick={() => write(rows.filter((_, at) => at !== index))}
+                >
+                  {t("gateway:remove")}
+                </Button>
+              </div>
+              {problem === null ? null : (
+                <span className="text-ui-xs text-destructive">
+                  {problem === "invalid"
+                    ? t("gateway:header_name_invalid", { name: name.trim() })
+                    : t("gateway:header_name_reserved", { name: canonicalHeaderName(name) })}
+                </span>
+              )}
+            </div>
+          );
+        })
+      )}
+      <div>
+        <Button size="xs" variant="ghost" onClick={() => write([...rows, ""])}>
+          {add}
+        </Button>
+      </div>
+      <span className="text-ui-xs text-muted-foreground">{hint}</span>
+    </div>
+  );
+}
+
+/**
+ * The two lists the daemon passes through either way: headers of the vendor's
+ * reply on to the agent, and headers of the agent's request on to the vendor.
+ */
+export function ProviderHeaderPassThrough({
+  provider,
+  edit,
+}: {
+  provider: GatewayProvider;
+  edit: Edit;
+}) {
+  const { t } = useTranslation();
+  return (
+    <div className="flex flex-col gap-3">
+      <HeaderNameList
+        kind="reply"
+        providerId={provider.id}
+        names={provider.replyHeaders}
+        title={t("gateway:reply_headers")}
+        hint={t("gateway:reply_headers_hint")}
+        empty={t("gateway:reply_headers_empty")}
+        add={t("gateway:add_reply_header")}
+        onChange={(names) =>
+          updateProvider(edit, provider.id, (draft) => {
+            draft.replyHeaders = names.length === 0 ? undefined : names;
+          })
+        }
+      />
+      <HeaderNameList
+        kind="request"
+        providerId={provider.id}
+        names={provider.passHeaders}
+        title={t("gateway:pass_headers")}
+        hint={t("gateway:pass_headers_hint")}
+        empty={t("gateway:pass_headers_empty")}
+        add={t("gateway:add_pass_header")}
+        onChange={(names) =>
+          updateProvider(edit, provider.id, (draft) => {
+            draft.passHeaders = names.length === 0 ? undefined : names;
+          })
+        }
+      />
     </div>
   );
 }

@@ -12,6 +12,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 
 import {
+  formatPullRequestCheckDuration,
   PULL_REQUEST_CHECK_STATUS_LABEL_KEYS,
   summarizePullRequestChecks,
   summarizePullRequestComments,
@@ -24,6 +25,7 @@ import { ensureNativeApi } from "~/nativeApi";
 import { NEOLIX_PULL_REQUEST_COMMENT_COMPOSER_UI_ENABLED } from "~/neolixFeatures";
 import { describePullRequestState } from "./pullRequestDetail.logic";
 import { PullRequestActorLabel } from "./PullRequestActorLabel";
+import { PullRequestApprovalsBadge } from "./PullRequestApprovalsBadge";
 import { PullRequestCheckStatusIcon } from "./PullRequestCheckStatusIcon";
 import { PullRequestConflictIcon } from "./pullRequestStatePresentation";
 import { PullRequestMetaLine } from "./PullRequestMetaLine";
@@ -38,6 +40,7 @@ import {
 import { PullRequestMarkdown } from "./PullRequestMarkdown";
 import { PullRequestDiffStat } from "./PullRequestDiffStat";
 import { PullRequestDisclosureSection } from "./PullRequestDisclosureSection";
+import { PullRequestPipelineSection } from "./PullRequestPipelineSection";
 import { PullRequestWarningNote } from "./PullRequestWarningNote";
 import {
   PR_BODY_TEXT_CLASS_NAME,
@@ -202,6 +205,7 @@ export function PullRequestSummaryTab({
               />
               <span>{formatRelativeTime(detail.updatedAt, undefined, formatLocale)}</span>
               <span>{describePullRequestState(detail.state, detail.isDraft)}</span>
+              {detail.approvals ? <PullRequestApprovalsBadge approvals={detail.approvals} /> : null}
             </PullRequestMetaLine>
           </div>
         ) : null}
@@ -299,6 +303,11 @@ export function PullRequestSummaryTab({
               >
                 <PullRequestCheckStatusIcon status={check.status} />
                 <span className="min-w-0 flex-1 truncate">{check.name}</span>
+                {formatPullRequestCheckDuration(check, t) ? (
+                  <span className="shrink-0 text-ui-xs text-muted-foreground tabular-nums">
+                    {formatPullRequestCheckDuration(check, t)}
+                  </span>
+                ) : null}
                 <span className="text-muted-foreground">
                   {t(PULL_REQUEST_CHECK_STATUS_LABEL_KEYS[check.status])}
                 </span>
@@ -307,6 +316,11 @@ export function PullRequestSummaryTab({
           )}
         </div>
       </PullRequestDisclosureSection>
+      <PullRequestPipelineSection
+        cwd={detail.workspaceRoot}
+        changeRequestNumber={detail.number}
+        summary={detail.pipeline ?? null}
+      />
       {/* Open by default so the comment composer is immediately reachable. */}
       <PullRequestDisclosureSection label={t("git:comments")} count={detail.comments.length}>
         <PullRequestComments detail={detail} />

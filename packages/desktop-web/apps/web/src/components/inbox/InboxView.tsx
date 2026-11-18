@@ -406,7 +406,9 @@ function useQuotaSummaries(snapshots: readonly ServerProviderUsageSnapshot[]): I
         });
         return deriveProviderUsageDisplayRows(summary.rateLimits, t).map((row) => ({
           provider: snapshot.provider,
-          name: providerUsageDisplayName(snapshot.provider),
+          name: snapshot.accountLabel
+            ? `${providerUsageDisplayName(snapshot.provider)} · ${snapshot.accountLabel}`
+            : providerUsageDisplayName(snapshot.provider),
           window: rateLimitWindowDisplayLabel(row.label, t),
           remainingPercent: row.remainingPercent,
           resetText: row.resetText,

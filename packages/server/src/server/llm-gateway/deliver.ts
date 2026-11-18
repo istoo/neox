@@ -38,6 +38,7 @@ import {
 import { CrDropper, CrLineTidy, crInResponseJson, dropCR, glmFlash } from "./tool-args-cr.js";
 import type { ToolUseIds } from "./tool-use-ids.js";
 import type { GatewayProtocol } from "./upstream.js";
+import { ZenReply, type ZenTools } from "./vendor-shaping.js";
 
 /**
  * A reply on its way to the client: relayed as it came when the protocols
@@ -45,6 +46,8 @@ import type { GatewayProtocol } from "./upstream.js";
  * reached through (`routes.ts`), which decides what to send and to whom.
  */
 export interface DeliverInput {
+  /** The client call, for a plugin event hook's request-scoped state. */
+  requestKey?: string;
   res: ExpressResponse;
   upstream: globalThis.Response;
   /** Whose reply this is: the provider whose `replyHeaders` are passed on. */
@@ -69,6 +72,12 @@ export interface DeliverInput {
   search: { query: string; pages: IrSearchPage[] } | null;
   /** The tools the request offered, by the names a written call would say. */
   offeredTools: Set<string> | null;
+  /**
+   * How the request's tools were offered to Zen's free tier: the reply's
+   * calls go back under the client's names and a stub's call is left out
+   * (myna's zenReply). Null for every other request.
+   */
+  zen: ZenTools | null;
   /** Whether a reply stuck in a loop is left to run on. */
   noLoopGuard: boolean;
   /** The name the reply's model should say, null for the vendor's own. */
@@ -148,17 +157,21 @@ function carriesReasoning(input: DeliverInput): boolean {
   );
 }
 
-/** Whether a client's protocol has a block for a search the gateway ran. */
+/**
+ * Whether a client's protocol has a place for a search the gateway ran as
+ * an item of its own. Chat Completions has no such item (myna's chat encoder
+ * drops KSearch), so its clients get the citations alone.
+ */
 function hearsSearch(protocol: GatewayProtocol): boolean {
-  return protocol === "anthropic" || protocol === "openai-responses";
+  return protocol === "anthropic" || protocol === "openai-responses" || protocol === "gemini";
 }
 
-/** The pages a reply's claims cite, for an Anthropic client (myna's search_cite.go). */
+/** The pages a reply's claims cite, told as each protocol's own citations (myna's search_cite.go). */
 function citePagesOf(input: DeliverInput): IrSearchPage[] | null {
-  return input.clientProtocol === "anthropic" && input.search !== null ? input.search.pages : null;
+  return input.search === null ? null : input.search.pages;
 }
 
-/** A whole reply's text cut into the lines that cite a page. */
+/** A whole reply's text cut into the lines that cite a page, as every client protocol reads them. */
 function withCitations<T extends { parts: IrPart[] }>(input: DeliverInput, response: T): T {
   const pages = citePagesOf(input);
   if (pages === null) {
@@ -568,9 +581,12 @@ async function deliverCollectedStream(
   clientCodec: ProtocolCodec,
 ): Promise<DeliverOutcome> {
   const events: IrEvent[] = [];
+  const zenReply = input.zen === null ? null : new ZenReply(input.zen);
   for (const event of await readStreamEvents(input.upstream, upstreamCodec)) {
-    const hooked = await input.hooks.runEvent(event, eventHookContext(input));
-    if (hooked !== null) events.push(hooked);
+    for (const shaped of zenReply?.see(event) ?? [event]) {
+      const hooked = await input.hooks.runEvent(shaped, eventHookContext(input));
+      if (hooked !== null) events.push(hooked);
+    }
   }
   const collected = responseFromEvents(events);
   const crFixed = glmFlash(input.servedModel) ? crResponse(collected) : collected;
@@ -602,7 +618,8 @@ async function deliverJson(
   const restored =
     input.masker === null ? payload : input.masker.restoreValue(payload, input.restoreCounts);
   const parsed = upstreamCodec.parseResponse(assertRecord(restored, "upstream response"));
-  const crFixed = glmFlash(input.servedModel) ? crResponse(parsed) : parsed;
+  const zenFixed = input.zen === null ? parsed : new ZenReply(input.zen).whole(parsed);
+  const crFixed = glmFlash(input.servedModel) ? crResponse(zenFixed) : zenFixed;
   const reasoned = carriesReasoning(input) ? packResponseReasoning(crFixed) : crFixed;
   const searched = withCitations(input, withSearchPart(input, reasoned));
   const salted = input.toolIds === null ? searched : input.toolIds.response(searched);
@@ -727,8 +744,9 @@ async function deliverEventStream(
     }
     await writeText(input.res, text);
   };
-  // An Anthropic client is told which found page each line cites (myna's
-  // search_cite.go); other protocols hear no citations.
+  // A client is told which found page each line cites, as its protocol
+  // reports citations (myna's search_cite.go; Chat's url_citation, Gemini's
+  // groundingMetadata and Responses' output_text annotations).
   const citePages = citePagesOf(input);
   const cite = citePages === null ? null : new CiteStream(citePages);
   const emitOut = async (event: IrEvent): Promise<void> => {
@@ -773,7 +791,7 @@ async function deliverEventStream(
   // debt: one event's way to the client holds masking, fences, timing and
   // the CR cure; split it by stage when the next stream fault lands here.
   // eslint-disable-next-line complexity
-  const emit = async (raw: IrEvent): Promise<void> => {
+  const emitOne = async (raw: IrEvent): Promise<void> => {
     const carried = carry === null ? raw : carry.event(raw);
     let source = input.toolIds === null ? carried : input.toolIds.event(carried);
     if (crDrop !== null) {
@@ -866,6 +884,19 @@ async function deliverEventStream(
     }
     feedContinuation(cont, restored);
     await emitOut(restored);
+  };
+
+  // Zen's free tier's reply goes back under the client's tool names, and a
+  // stub's call is left out (myna's zenReply).
+  const zenReply = input.zen === null ? null : new ZenReply(input.zen);
+  const emit = async (raw: IrEvent): Promise<void> => {
+    if (zenReply === null) {
+      await emitOne(raw);
+      return;
+    }
+    for (const event of zenReply.see(raw)) {
+      await emitOne(event);
+    }
   };
 
   const pump = async (from: globalThis.Response): Promise<void> => {
@@ -1287,6 +1318,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 /** What an event hook is told about this reply. */
 function eventHookContext(input: DeliverInput): EventHookContext {
   return {
+    ...(input.requestKey === undefined ? {} : { requestKey: input.requestKey }),
     providerId: input.provider.id,
     model: input.requestedModel,
     accountId: input.accountId ?? "",

@@ -171,12 +171,18 @@ export class ClaudeTuiRun implements ClaudeRunLike {
   }
 
   public waitForExit(): Promise<void> {
-    if (this.exited) {
-      return Promise.resolve();
+    const finished = this.exited
+      ? Promise.resolve()
+      : new Promise<void>((resolve) => {
+          this.exitWaiters.push(resolve);
+        });
+    const session = this.session;
+    if (session === null) {
+      return finished;
     }
-    return new Promise((resolve) => {
-      this.exitWaiters.push(resolve);
-    });
+    // A run that failed before Claude Code ended is finished on this side
+    // while its pty is still alive; callers waiting on the run need both.
+    return Promise.all([finished, session.waitForExit()]).then(() => undefined);
   }
 
   private async bringUp(): Promise<void> {
@@ -242,7 +248,7 @@ export class ClaudeTuiRun implements ClaudeRunLike {
       ...(this.tap === null ? {} : { tap: this.tap }),
     });
     this.session = session;
-    session.start();
+    await session.start();
     this.started = true;
     await session.ready();
     this.tail = this.readTranscript();
@@ -253,6 +259,15 @@ export class ClaudeTuiRun implements ClaudeRunLike {
       this.finish();
       return undefined;
     });
+  }
+
+  /**
+   * Whether Claude Code has ended. `exited` only turns true once this run has
+   * finished reading its transcript, so the reader has to watch the session
+   * itself; otherwise it would wait for its own finish.
+   */
+  private get ended(): boolean {
+    return this.exited || this.session === null || !this.session.running;
   }
 
   /** Reads the session's transcript as Claude Code writes it, from where it started. */
@@ -282,7 +297,7 @@ export class ClaudeTuiRun implements ClaudeRunLike {
           }
           continue;
         }
-        if (this.exited) {
+        if (this.ended) {
           if (part !== "") {
             await this.translator?.row(part);
           }
@@ -316,7 +331,7 @@ export class ClaudeTuiRun implements ClaudeRunLike {
           return file;
         }
       }
-      if (this.exited) {
+      if (this.ended) {
         return null;
       }
       await sleep(100);
@@ -432,6 +447,11 @@ export class ClaudeTuiRun implements ClaudeRunLike {
     this.pending.clear();
     for (const waiter of this.rowWaiters.splice(0)) {
       waiter();
+    }
+    // A run that fails before Claude Code ends still owns its pty: leaving it
+    // running would keep the caller's MCP configuration and cwd alive.
+    if (this.session?.running === true) {
+      this.session.kill();
     }
     for (const resolve of this.exitWaiters.splice(0)) {
       resolve();

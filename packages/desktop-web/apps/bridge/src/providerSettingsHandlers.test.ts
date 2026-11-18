@@ -46,6 +46,7 @@ describe("server.updateSettings provider wiring", () => {
     const handlers = makeHandlers(model, {
       environmentId: "env-test",
       home,
+      paths: { cwd: home, homeDir: home, worktreesDir: path.join(home, "worktrees") },
       log: () => {},
       projectPins,
     });

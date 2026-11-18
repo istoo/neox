@@ -26,6 +26,8 @@ export const NEOLIX_GATEWAY_WS_METHODS = {
   getRoutingHistory: "neolix.gateway.getRoutingHistory",
   getTrace: "neolix.gateway.getTrace",
   getArchive: "neolix.gateway.getArchive",
+  promptText: "neolix.gateway.promptText",
+  promptReply: "neolix.gateway.promptReply",
   getRouteEvents: "neolix.gateway.getRouteEvents",
   getPricing: "neolix.gateway.getPricing",
   providerModels: "neolix.gateway.provider.models",
@@ -171,6 +173,16 @@ export const GatewayArchiveInput = Schema.Struct({
   id: Schema.String,
 });
 export type GatewayArchiveInput = typeof GatewayArchiveInput.Type;
+
+export const GatewayPromptTextInput = Schema.Struct({ id: Schema.String });
+export type GatewayPromptTextInput = typeof GatewayPromptTextInput.Type;
+
+/** The reply of one archived call, by `<date>/<id>`. */
+export const GatewayReplyInput = Schema.Struct({
+  date: Schema.String,
+  id: Schema.String,
+});
+export type GatewayReplyInput = typeof GatewayReplyInput.Type;
 
 export const GatewayAfterInput = Schema.Struct({ after: Schema.optional(Schema.Number) });
 export type GatewayAfterInput = typeof GatewayAfterInput.Type;

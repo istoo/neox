@@ -82,19 +82,19 @@ describe("deriveProjectKey", () => {
     ).toBe("remote:github.com/istoo/neox");
     expect(
       deriveProjectKey({
-        rootPath: path.join(worktreeRoot, "packages", "app"),
+        rootPath: path.join(worktreeRoot, "packages", "server"),
         remoteUrl,
         worktreeRoot,
         mainRepoRoot: null,
       }),
-    ).toBe("remote:github.com/istoo/neox#subdir:packages/app");
+    ).toBe("remote:github.com/istoo/neox#subdir:packages/server");
   });
 
   test("groups the same subproject across different absolute checkout roots", () => {
     const remoteUrl = "git@github.com:istoo/neox.git";
     const deriveSubproject = (worktreeRoot: string) =>
       deriveProjectKey({
-        rootPath: path.join(worktreeRoot, "packages", "app"),
+        rootPath: path.join(worktreeRoot, "packages", "server"),
         remoteUrl,
         worktreeRoot,
         mainRepoRoot: null,

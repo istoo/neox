@@ -34,7 +34,9 @@ describe("bootstrap provider availability", () => {
     })
       .split(/\r?\n/)[0]
       .trim();
-    process.env.PATH = path.dirname(gitPath);
+    // Keep the standard system directories so the terminal worker can still run
+    // `ps`; the Codex binary lives elsewhere and stays absent from this PATH.
+    process.env.PATH = [path.dirname(gitPath), "/usr/bin", "/bin"].join(path.delimiter);
     expect(execFileSync("git", ["--version"], { encoding: "utf8" })).toMatch(/git version/i);
     const neolixHome = path.join(root, ".neox");
     const staticDir = path.join(root, "static");

@@ -49,7 +49,9 @@ import type {
   GatewayProviderModelsResult,
   GatewayProviderPreset,
   GatewayProviderTestResult,
+  GatewayPromptText,
   GatewayQuota,
+  GatewayReply,
   GatewayRouteHistoryRow,
   GatewaySearchQuotaResult,
   GatewaySignInState,
@@ -142,6 +144,15 @@ export const neolixGatewayApi = {
       NEOLIX_GATEWAY_WS_METHODS.getArchive,
       input,
     ).then((result) => result.archive),
+  getPromptText: (id: string) =>
+    request<{ text: GatewayPromptText | null }>(NEOLIX_GATEWAY_WS_METHODS.promptText, {
+      id,
+    }).then((result) => result.text),
+  getPromptReply: (date: string, id: string) =>
+    request<{ reply: GatewayReply | null }>(NEOLIX_GATEWAY_WS_METHODS.promptReply, {
+      date,
+      id,
+    }).then((result) => result.reply),
   getRouteEvents: (after?: number) =>
     request<Record<string, unknown>>(
       NEOLIX_GATEWAY_WS_METHODS.getRouteEvents,
@@ -226,9 +237,9 @@ export const neolixGatewayApi = {
 
   heldList: () => request<{ names: string[] }>(NEOLIX_GATEWAY_WS_METHODS.heldList),
   heldRead: (name: string) =>
-    request<Record<string, unknown>>(NEOLIX_GATEWAY_WS_METHODS.heldRead, { name }),
+    request<{ text: string | null }>(NEOLIX_GATEWAY_WS_METHODS.heldRead, { name }),
   heldReveal: (name?: string) =>
-    request<Record<string, unknown>>(
+    request<{ ok: boolean; error?: string | null }>(
       NEOLIX_GATEWAY_WS_METHODS.heldReveal,
       name === undefined ? {} : { name },
     ),

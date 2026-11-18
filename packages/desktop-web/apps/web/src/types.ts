@@ -198,6 +198,10 @@ export interface Project {
   createdAt?: string | undefined;
   updatedAt?: string | undefined;
   scripts: ProjectScript[];
+  /** `neox.json` worktree setup command, projected so project settings can edit it. */
+  worktreeSetup?: string | null;
+  /** `neox.json` worktree teardown command. */
+  worktreeTeardown?: string | null;
   /** Extra source folders of a multi-folder project; `cwd` is the primary one. */
   additionalFolders?: ReadonlyArray<string>;
   /** The host could not find `cwd` on its last check (the folder was moved or deleted). */

@@ -63,6 +63,11 @@ export interface SettingsSearchContext {
    * is known.
    */
   readonly computerBackendIsVisibleDesktop: boolean;
+  /**
+   * Sections a built-in feature switch has hidden. Their rows must not be
+   * offered: selecting one would land on a section that no longer exists.
+   */
+  readonly hiddenSettingsSections?: ReadonlySet<string>;
 }
 
 const DEFAULT_SETTINGS_SEARCH_CONTEXT: SettingsSearchContext = {
@@ -148,6 +153,14 @@ export const SETTINGS_SEARCH_ENTRIES: readonly SettingsSearchEntry[] = [
     section: "general",
     title: "workspace:workingAndUnreadOnTop",
     keywords: "settings:withRecentlyActiveOrderMoveWorkingAndUnreadThreads",
+  },
+  {
+    target: null,
+    id: "general:sidebar-navigation",
+    section: "general",
+    title: "settings:sidebarNav_header",
+    keywords:
+      "settings:sidebarNav_headerHint settings:sidebarNav_footer settings:sidebarNav_footerHint",
   },
   {
     target: "setting-chats",
@@ -288,13 +301,6 @@ export const SETTINGS_SEARCH_ENTRIES: readonly SettingsSearchEntry[] = [
   },
 
   // ── Desktop (Electron only) ──────────────────────────────────────────────────
-  {
-    target: "setting-desktop-ui-mode",
-    id: "desktop:ui-mode",
-    section: "desktop",
-    title: "settings:desktop_uiMode",
-    keywords: "standard classic legacy renderer interface switch restart",
-  },
   {
     target: "setting-prevent-sleep",
     id: "desktop:prevent-sleep",
@@ -1037,6 +1043,13 @@ export const SETTINGS_SEARCH_ENTRIES: readonly SettingsSearchEntry[] = [
     keywords: "settings:host_appendSystemPromptDescription",
   },
   {
+    target: "setting-host-agent-skills",
+    id: "host:agent-skills",
+    section: "host",
+    title: "settings:agentSkills_sectionTitle",
+    keywords: "orchestration skills bundled agents neox install update uninstall choose selection",
+  },
+  {
     id: "network:sharing",
     section: "network",
     title: "settings:hostNav_network",
@@ -1369,10 +1382,13 @@ export function rankSettingsSearchEntries(
     return [];
   }
   const resolvedContext = context ?? DEFAULT_SETTINGS_SEARCH_CONTEXT;
+  const hiddenSections = resolvedContext.hiddenSettingsSections;
   const available = SETTINGS_SEARCH_ENTRIES.filter(
     // Neox 隐藏了没有后端的设置分区，其搜索行也必须一起消失。
     (entry) =>
-      isSettingsSectionAvailable(entry.section) && (entry.applies?.(resolvedContext) ?? true),
+      isSettingsSectionAvailable(entry.section) &&
+      hiddenSections?.has(entry.section) !== true &&
+      (entry.applies?.(resolvedContext) ?? true),
   );
   const ranked = rankProviderDiscoveryItems(
     available,

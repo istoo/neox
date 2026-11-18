@@ -7,54 +7,22 @@ import { test } from "node:test";
 
 const script = path.resolve("scripts", "postinstall-patches.mjs");
 const bin = path.resolve("node_modules", ".bin");
-const packageName = "react-native-draggable-flatlist";
-const patchFile = `${packageName}+4.0.3.patch`;
-
-for (const platform of ["ios", "android"]) {
-  test(`patched Markdown ships ${platform} props generated from its native specs`, () => {
-    const packageDir = path.resolve("packages/app/node_modules/react-native-enriched-markdown");
-    const output = mkdtempSync(path.join(tmpdir(), `markdown-${platform}-codegen-`));
-    try {
-      // includesGeneratedCode makes native builds use the shipped headers instead of
-      // regenerating them after patch-package changes the TypeScript specs.
-      const result = spawnSync(
-        process.execPath,
-        [
-          path.resolve("node_modules/react-native/scripts/generate-codegen-artifacts.js"),
-          "-p",
-          packageDir,
-          "-t",
-          platform,
-          "-o",
-          output,
-          "-s",
-          "library",
-        ],
-        { encoding: "utf8" },
-      );
-      assert.equal(result.status, 0, result.stdout + result.stderr);
-      const header =
-        platform === "ios"
-          ? "ReactCodegen/EnrichedMarkdownTextSpec/Props.h"
-          : "jni/react/renderer/components/EnrichedMarkdownTextSpec/Props.h";
-      assert.equal(
-        readFileSync(path.join(packageDir, platform, "generated", header), "utf8"),
-        readFileSync(path.join(output, header), "utf8"),
-      );
-    } finally {
-      rmSync(output, { recursive: true, force: true });
-    }
-  });
-}
+const packageName = "@opencode-ai/sdk";
+const patchFile = "@opencode-ai+sdk+1.14.46.patch";
 
 function createCheckout() {
   const root = mkdtempSync(path.join(tmpdir(), "postinstall-patches-"));
   writeFileSync(path.join(root, "package.json"), JSON.stringify({ name: "checkout" }));
-  const packageDir = path.join(root, "node_modules", packageName);
+  mkdirSync(path.join(root, "packages", "server"), { recursive: true });
+  writeFileSync(
+    path.join(root, "packages", "server", "package.json"),
+    JSON.stringify({ name: "fixture-server" }),
+  );
+  const packageDir = path.join(root, "packages", "server", "node_modules", packageName);
   mkdirSync(packageDir, { recursive: true });
   writeFileSync(
     path.join(packageDir, "package.json"),
-    JSON.stringify({ name: packageName, version: "4.0.3" }),
+    JSON.stringify({ name: packageName, version: "1.14.46" }),
   );
   writeFileSync(path.join(packageDir, "index.js"), "export const value = 1;\n");
   mkdirSync(path.join(root, "patches"));

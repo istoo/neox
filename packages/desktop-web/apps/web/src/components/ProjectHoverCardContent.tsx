@@ -22,6 +22,7 @@ import { useTranslation } from "~/i18n";
 export type ProjectHoverCardContentProps = {
   name: string;
   cwd: string;
+  projectId?: string | undefined;
   appearance: ProjectAppearance | null;
   isPinned: boolean;
   chatCount: number;
@@ -45,6 +46,7 @@ const ICON_CLASS_NAME = "size-3.5 shrink-0 text-muted-foreground";
 export function ProjectHoverCardContent({
   name,
   cwd,
+  projectId,
   appearance,
   isPinned,
   chatCount,
@@ -63,6 +65,7 @@ export function ProjectHoverCardContent({
         <span className="relative inline-flex size-3.5 shrink-0 items-center justify-center text-muted-foreground">
           <ProjectSidebarIcon
             cwd={cwd}
+            projectId={projectId}
             expanded
             appearance={appearance}
             glyphClassName="size-3.5"

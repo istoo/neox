@@ -5,7 +5,7 @@ import {
   createProviderEnvSpec,
   type ProviderRuntimeSettings,
 } from "../../provider-launch-config.js";
-import { buildSelfNodeCommand, createExternalProcessEnv } from "../../../neolix-env.js";
+import { buildSelfNodeCommand } from "../../../neolix-env.js";
 import { spawnProcess } from "../../../../utils/spawn.js";
 
 // Keep the raw SDK query import in this module only. Claude process launch behavior
@@ -76,9 +76,11 @@ function applyRuntimeSettingsToClaudeOptions(
       // Session-open hooks may explicitly supply a client identity. Keep inherited
       // SDK/parent identities cleared while honoring this launch-only contribution.
       providerEnvSpec.envOverlay.CLAUDE_CODE_ENTRYPOINT = launchEnv?.CLAUDE_CODE_ENTRYPOINT;
-      const providerEnv = createExternalProcessEnv(spawnOptions.env, providerEnvSpec.envOverlay);
+      // Build from the SDK's env, not the daemon's process.env: the overlay marks
+      // inherited session vars for deletion, and merging a sanitized copy could
+      // re-introduce them from this process.
       const selfNodeCommand = isDefaultRuntime
-        ? buildSelfNodeCommand(resolved.args, providerEnv)
+        ? buildSelfNodeCommand(resolved.args, providerEnvSpec.envOverlay, spawnOptions.env)
         : null;
       const command = selfNodeCommand?.command ?? resolved.command;
       const args = selfNodeCommand?.args ?? resolved.args;

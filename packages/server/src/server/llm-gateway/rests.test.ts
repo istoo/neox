@@ -61,9 +61,8 @@ describe("RestStore", () => {
         ["p/b", { key: "p/b", until: now - REST_KEEP_MS - 60_000, level: 2 }],
       ]),
     );
-    store.dispose();
+    await store.dispose();
     const file = path.join(dir, "gateway-rests.json");
-    await waitForFile(file);
     const parsed = JSON.parse(readFileSync(file, "utf8")) as {
       rests: Array<{ key: string; level: number }>;
     };
@@ -74,24 +73,26 @@ describe("RestStore", () => {
     const dir = home();
     const store = new RestStore({ neolixHome: dir, logger });
     store.scheduleSave(new Map([["p/a", { key: "p/a", until: Date.now() + 60_000, level: 3 }]]));
-    store.dispose();
+    await store.dispose();
     const file = path.join(dir, "gateway-rests.json");
-    await waitForFile(file);
     const parsed = JSON.parse(readFileSync(file, "utf8")) as {
       rests: Array<{ key: string; level: number }>;
     };
     expect(parsed.rests).toContainEqual(expect.objectContaining({ key: "p/a", level: 3 }));
   });
-});
 
-async function waitForFile(file: string): Promise<void> {
-  for (let attempt = 0; attempt < 40; attempt += 1) {
-    try {
-      readFileSync(file);
-      return;
-    } catch {
-      await new Promise((resolve) => setTimeout(resolve, 25));
-    }
-  }
-  throw new Error(`Timed out waiting for ${file}`);
-}
+  it("writes nothing once disposed, and dispose waits for the save in flight", async () => {
+    const dir = home();
+    const file = path.join(dir, "gateway-rests.json");
+    const store = new RestStore({ neolixHome: dir, logger });
+
+    store.scheduleSave(new Map([["p/a", { key: "p/a", until: Date.now() + 60_000, level: 2 }]]));
+    await store.dispose();
+    // The save started by dispose() finished before it resolved.
+    const written = readFileSync(file, "utf8");
+
+    store.scheduleSave(new Map([["p/b", { key: "p/b", until: Date.now() + 60_000, level: 3 }]]));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(readFileSync(file, "utf8")).toBe(written);
+  });
+});

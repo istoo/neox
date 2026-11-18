@@ -144,4 +144,30 @@ describe("makeGatewayHandlers", () => {
     );
     warn.mockRestore();
   });
+
+  it("reads the prompt text and reply of one archived call", async () => {
+    const { handlers, calls } = harness({
+      getGatewayPromptText: async (id: string) => {
+        calls.push(["getGatewayPromptText", id]);
+        return { text: { id, protocol: "anthropic", body: "{}" } };
+      },
+      getGatewayPromptReply: async (date: string, id: string) => {
+        calls.push(["getGatewayPromptReply", `${date}/${id}`]);
+        return { reply: { pieces: [] } };
+      },
+    });
+    expect(await run(handlers[NEOLIX_GATEWAY_WS_METHODS.promptText], { id: "call-1" })).toEqual({
+      text: { id: "call-1", protocol: "anthropic", body: "{}" },
+    });
+    expect(
+      await run(handlers[NEOLIX_GATEWAY_WS_METHODS.promptReply], {
+        date: "2026-11-14",
+        id: "call-1",
+      }),
+    ).toEqual({ reply: { pieces: [] } });
+    expect(calls).toEqual([
+      ["getGatewayPromptText", "call-1"],
+      ["getGatewayPromptReply", "2026-11-14/call-1"],
+    ]);
+  });
 });

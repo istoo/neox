@@ -1,9 +1,9 @@
 import { test, expect, beforeAll, afterAll } from "vitest";
-import { mkdirSync, mkdtempSync, writeFileSync, rmSync, existsSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, writeFileSync, rmSync, existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { tmpdir, homedir } from "node:os";
 import path from "node:path";
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
@@ -402,7 +402,7 @@ class RejectingMcpResumeClient implements AgentClient {
   }
 }
 
-test("createAgent fails when the initial turn cannot start", async () => {
+test("createAgent keeps the agent when the initial turn cannot start", async () => {
   const testAgent = new StubAgentClient({
     sessionId: "start-turn-failure-session",
     supportsStreaming: false,
@@ -421,16 +421,21 @@ test("createAgent fails when the initial turn cannot start", async () => {
     await client.connect();
     await client.fetchAgents({ subscribe: {} });
 
-    await expect(
-      client.createAgent({
-        provider: "codex",
-        cwd: tmpCwd(),
-        title: "Start failure agent",
-        modeId: "full-access",
-        model: "gpt-5.4-mini",
-        initialPrompt: "Run exactly: sleep 30",
-      }),
-    ).rejects.toThrow("Initial turn failed to start");
+    // A rejected first prompt must leave the created agent (and its timeline
+    // error) intact; returning the user to a draft would lose the creation.
+    const agent = await client.createAgent({
+      provider: "codex",
+      cwd: tmpCwd(),
+      title: "Start failure agent",
+      modeId: "full-access",
+      model: "gpt-5.4-mini",
+      initialPrompt: "Run exactly: sleep 30",
+    });
+    expect(agent).toMatchObject({
+      status: "error",
+      lastError: "Initial turn failed to start",
+      attentionReason: "error",
+    });
   } finally {
     await client.close();
     await daemon.close();
@@ -726,12 +731,19 @@ test("handles session actions", async () => {
     },
   });
 
-  await expect(ctx.client.setVoiceMode(true, created.id)).resolves.toMatchObject({
-    enabled: true,
-    agentId: created.id,
-    accepted: true,
-    error: null,
-  });
+  if (hasAnySpeech) {
+    await expect(ctx.client.setVoiceMode(true, created.id)).resolves.toMatchObject({
+      enabled: true,
+      agentId: created.id,
+      accepted: true,
+      error: null,
+    });
+  } else {
+    // Realtime voice needs a speech provider; without one the daemon refuses.
+    await expect(ctx.client.setVoiceMode(true, created.id)).rejects.toThrow(
+      /Realtime voice is unavailable/,
+    );
+  }
   await expect(ctx.client.setVoiceMode(false)).resolves.toMatchObject({
     enabled: false,
     agentId: null,
@@ -1220,7 +1232,7 @@ test("opens an exact gitignored workspace path without offering it as a suggesti
   const target = path.join(cwd, "generated", "notes.md");
 
   try {
-    execSync("git init -q", { cwd });
+    execFileSync("git", ["init", "-q"], { cwd });
     writeFileSync(path.join(cwd, ".gitignore"), "generated/\n");
     mkdirSync(path.dirname(target), { recursive: true });
     writeFileSync(target, "generated notes\n");
@@ -1368,21 +1380,14 @@ test("creates agent and exercises lifecycle", async () => {
     return unsubscribe;
   });
 
-  const createRequestId = `create-${Date.now()}`;
   const createdStatusPromise = waitForSignal(15000, (resolve) => {
-    const unsubscribe = ctx.client.on("status", (message) => {
-      if (message.type !== "status") {
+    // Modern creation reports lifecycle through agent.create.update, not the
+    // legacy `status agent_created` broadcast.
+    const unsubscribe = ctx.client.on("agent.create.update", (message) => {
+      if (message.type !== "agent.create.update") {
         return;
       }
-      const payload = message.payload as {
-        status?: string;
-        agentId?: string;
-        requestId?: string;
-      };
-      if (payload.status !== "agent_created") {
-        return;
-      }
-      if (payload.requestId !== createRequestId) {
+      if (message.payload.kind !== "agent" || message.payload.phase !== "completed") {
         return;
       }
       resolve(message);
@@ -1394,7 +1399,6 @@ test("creates agent and exercises lifecycle", async () => {
     ...getFullAccessConfig("codex"),
     cwd,
     title: "Daemon Client V2",
-    requestId: createRequestId,
   });
 
   expect(agent.id).toBeTruthy();
@@ -1405,22 +1409,14 @@ test("creates agent and exercises lifecycle", async () => {
   const agentUpdate = await agentUpdatePromise;
   expect(agentUpdate.payload.agent.id).toBe(agent.id);
   const createdStatus = await createdStatusPromise;
-  expect((createdStatus.payload as { agentId?: string }).agentId).toBe(agent.id);
+  expect(createdStatus.payload.agentId).toBe(agent.id);
 
-  const failRequestId = `fail-${Date.now()}`;
   const failedStatusPromise = waitForSignal(15000, (resolve) => {
-    const unsubscribe = ctx.client.on("status", (message) => {
-      if (message.type !== "status") {
+    const unsubscribe = ctx.client.on("agent.create.update", (message) => {
+      if (message.type !== "agent.create.update") {
         return;
       }
-      const payload = message.payload as {
-        status?: string;
-        requestId?: string;
-      };
-      if (payload.status !== "agent_create_failed") {
-        return;
-      }
-      if (payload.requestId !== failRequestId) {
+      if (message.payload.kind !== "agent" || message.payload.phase !== "failed") {
         return;
       }
       resolve(message);
@@ -1433,10 +1429,10 @@ test("creates agent and exercises lifecycle", async () => {
       ...getFullAccessConfig("codex"),
       cwd: "/this/path/does/not/exist/12345",
       title: "Should Fail",
-      requestId: failRequestId,
     }),
   ).rejects.toThrow("Working directory does not exist");
-  await failedStatusPromise;
+  const failedStatus = await failedStatusPromise;
+  expect(failedStatus.payload.error).toBeTruthy();
 
   let sawRefresh = false;
   const unsubscribe = ctx.client.subscribe((event) => {
@@ -1623,6 +1619,9 @@ test("handles permission flow", async () => {
     cwd,
     title: "Permission Test",
   });
+
+  // Modern clients receive permission events only for subscriptions they own.
+  await ctx.client.observeEvents(["agent_permission_request", "agent_permission_resolved"]).ready;
 
   const permissionRequestPromise = waitForSignal(60000, (resolve) => {
     const unsubscribe = ctx.client.on("agent_permission_request", (message) => {
@@ -1940,17 +1939,19 @@ speechTest(
 test("supports git and file operations", async () => {
   const cwd = tmpCwd();
 
-  execSync("git init -b main", { cwd, stdio: "pipe" });
-  execSync("git config user.email 'test@test.com'", {
+  // execFileSync passes argv directly instead of through a shell: cmd.exe on
+  // Windows does not honor the single quotes these commands used to carry.
+  execFileSync("git", ["init", "-b", "main"], { cwd, stdio: "pipe" });
+  execFileSync("git", ["config", "user.email", "test@test.com"], {
     cwd,
     stdio: "pipe",
   });
-  execSync("git config user.name 'Test'", { cwd, stdio: "pipe" });
+  execFileSync("git", ["config", "user.name", "Test"], { cwd, stdio: "pipe" });
 
   const testFile = path.join(cwd, "test.txt");
   writeFileSync(testFile, "original content\n");
-  execSync("git add test.txt", { cwd, stdio: "pipe" });
-  execSync("git -c commit.gpgSign=false commit -m 'Initial commit'", {
+  execFileSync("git", ["add", "test.txt"], { cwd, stdio: "pipe" });
+  execFileSync("git", ["-c", "commit.gpgSign=false", "commit", "-m", "Initial commit"], {
     cwd,
     stdio: "pipe",
   });
@@ -1971,7 +1972,15 @@ test("supports git and file operations", async () => {
   const checkoutStatus = await ctx.client.getCheckoutStatus(cwd);
   expect(checkoutStatus.error).toBeNull();
   expect(checkoutStatus.isGit).toBe(true);
-  expect(checkoutStatus.repoRoot).toContain(cwd);
+  // Git reports --show-toplevel with forward slashes, and on Windows the temp
+  // directory can be a junction to a different profile path. Compare the
+  // canonical paths rather than the raw strings.
+  //
+  // Use the native resolver: the JS realpathSync keeps the spelling it was
+  // given, so a temp dir reached through an 8.3 short name (RUNNER~1 style)
+  // stays short while Git reports the long form. realpathSync.native goes
+  // through GetFinalPathNameByHandle and expands short names on both sides.
+  expect(realpathSync.native(checkoutStatus.repoRoot!)).toBe(realpathSync.native(cwd));
 
   const diffResult = await ctx.client.getCheckoutDiff(cwd, { mode: "uncommitted" });
   expect(diffResult.error).toBeNull();

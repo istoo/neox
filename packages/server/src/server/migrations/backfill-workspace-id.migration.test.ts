@@ -94,8 +94,8 @@ describe("backfillWorkspaceIdForLegacyAgents", () => {
 
   test("attributes to the deepest enclosing workspace when there is no exact match", async () => {
     await workspaceRegistry.upsert(workspaceRecord("/tmp/repo", "ws-root"));
-    await workspaceRegistry.upsert(workspaceRecord("/tmp/repo/packages/app", "ws-app"));
-    await seedLegacyAgent("/tmp/repo/packages/app/src", "legacy-agent");
+    await workspaceRegistry.upsert(workspaceRecord("/tmp/repo/packages/server", "ws-app"));
+    await seedLegacyAgent("/tmp/repo/packages/server/src", "legacy-agent");
 
     await backfillWorkspaceIdForLegacyAgents({
       agentStorage,

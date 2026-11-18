@@ -2592,6 +2592,51 @@ describe("deriveMessagesTimelineRows", () => {
         "couldn't reach the model service — check your network or proxy",
       );
     });
+
+    it("names the provider failure categories that have a fixed cause", () => {
+      expect(
+        summarizeTurnFailureReason({
+          message: "invalid_request_error: The model `gpt-9` does not exist",
+        }),
+      ).toBe("model isn't available — check the model name");
+      expect(
+        summarizeTurnFailureReason({
+          message: "prompt is too long: 250000 tokens > 200000 maximum",
+        }),
+      ).toBe("the conversation is too long for this model — start a new chat");
+      expect(
+        summarizeTurnFailureReason({
+          message: "403 Forbidden: insufficient permissions for model claude",
+        }),
+      ).toBe("access denied — check this key's model permissions");
+      expect(
+        summarizeTurnFailureReason({
+          message: "Codex app-server request timed out for turn/start",
+        }),
+      ).toBe("the model service stopped responding — try again");
+      expect(
+        summarizeTurnFailureReason({ message: "Claude Code process exited with code 1" }),
+      ).toBe("the agent process crashed — try again");
+      expect(
+        summarizeTurnFailureReason({
+          message: "ACP agent process exited before initialization completed (exit code 1)",
+        }),
+      ).toBe("the agent process crashed — try again");
+      expect(
+        summarizeTurnFailureReason({ message: "insufficient_quota: your credit balance is empty" }),
+      ).toBe("usage limit reached");
+    });
+
+    it("keeps a model's other refusals and unrelated text as they came", () => {
+      expect(
+        summarizeTurnFailureReason({
+          message: "this model does not support image input on the messages API",
+        }),
+      ).toBe("this model does not support image input on the messages API");
+      expect(summarizeTurnFailureReason({ message: "the model wrote a long answer" })).toBe(
+        "the model wrote a long answer",
+      );
+    });
   });
 
   it("keeps the live turn expanded instead of collapsing while it streams", () => {

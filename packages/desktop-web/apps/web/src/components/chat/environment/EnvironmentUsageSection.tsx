@@ -23,6 +23,7 @@ import {
   serverAllProviderUsageQueryOptions,
   serverSettingsQueryOptions,
 } from "~/lib/serverReactQuery";
+import { usageSnapshotKey, usageSnapshotsForInstance } from "~/lib/providerUsageAccounts.logic";
 
 import { resolveEnvironmentProviderUsageSummary } from "./EnvironmentUsageSection.logic";
 import {
@@ -118,41 +119,47 @@ export function EnvironmentUsageSection({ provider }: { provider: ProviderKind }
     settingsQuery.data ?? DEFAULT_SERVER_SETTINGS_VIEW,
   ).filter((instance) => instance.enabled && instance.driver === provider);
   const accounts = providerInstances.flatMap((instance) => {
-    const snapshot = usageQuery.data?.find(
-      (entry) =>
-        entry.provider === provider && (entry.instanceId ?? entry.provider) === instance.instanceId,
+    const snapshots = usageSnapshotsForInstance(
+      usageQuery.data ?? [],
+      provider,
+      instance.instanceId,
     );
-    if (!snapshot) return [];
-    const hasUsage =
-      snapshot.limits.length > 0 ||
-      snapshot.usageLines.length > 0 ||
-      (snapshot.resetCredits?.availableCount ?? 0) > 0;
-    // Unused default providers should not crowd the panel. Configured extra
-    // accounts stay visible so an expired login or failed usage check is clear.
-    if (
-      instance.isDefault &&
-      providerInstances.length === 1 &&
-      !instance.raw.displayName &&
-      !hasUsage &&
-      (snapshot.status === "needs-auth" || (snapshot.status ?? "ok") === "ok")
-    )
-      return [];
-    const providerName = providerUsageDisplayName(provider);
-    const showAccountName =
-      !instance.isDefault || providerInstances.length > 1 || instance.displayName !== providerName;
-    const accountName =
-      instance.isDefault && instance.displayName === providerName
-        ? "Default"
-        : instance.displayName;
-    return [
-      {
-        instance,
-        snapshot,
-        label: showAccountName
-          ? t("common:symbol9", { value0: providerName, value1: accountName })
-          : providerName,
-      },
-    ];
+    return snapshots.flatMap((snapshot) => {
+      const hasUsage =
+        snapshot.limits.length > 0 ||
+        snapshot.usageLines.length > 0 ||
+        (snapshot.resetCredits?.availableCount ?? 0) > 0;
+      // Unused default providers should not crowd the panel. Configured extra
+      // accounts stay visible so an expired login or failed usage check is clear.
+      if (
+        instance.isDefault &&
+        providerInstances.length === 1 &&
+        !instance.raw.displayName &&
+        !hasUsage &&
+        (snapshot.status === "needs-auth" || (snapshot.status ?? "ok") === "ok")
+      )
+        return [];
+      const providerName = providerUsageDisplayName(provider);
+      const showAccountName =
+        !instance.isDefault ||
+        providerInstances.length > 1 ||
+        instance.displayName !== providerName;
+      const accountName =
+        snapshot.accountLabel ??
+        (instance.isDefault && instance.displayName === providerName
+          ? "Default"
+          : instance.displayName);
+      return [
+        {
+          instance,
+          snapshot,
+          label:
+            showAccountName || snapshot.accountLabel
+              ? t("common:symbol9", { value0: providerName, value1: accountName })
+              : providerName,
+        },
+      ];
+    });
   });
 
   if (accounts.length === 0) return null;
@@ -161,7 +168,7 @@ export function EnvironmentUsageSection({ provider }: { provider: ProviderKind }
     <EnvironmentLabeledSection label={t("chat:general_usage")}>
       {accounts.map(({ instance, snapshot, label }) => (
         <EnvironmentUsageAccountRow
-          key={instance.instanceId}
+          key={`${instance.instanceId}:${usageSnapshotKey(snapshot)}`}
           instance={instance}
           snapshot={snapshot}
           label={label}

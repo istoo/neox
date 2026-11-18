@@ -1,3 +1,4 @@
+import type { GitHubRepositorySummary } from "@synara/contracts";
 import type { KeyboardEvent, ReactNode } from "react";
 
 import { GitHubIcon, FolderIcon } from "~/lib/icons";
@@ -24,7 +25,12 @@ export function CreateGitHubProjectFields(props: {
   readonly isElectron: boolean;
   readonly isPickingFolder: boolean;
   readonly submitting: boolean;
+  /** Host search results for a partial repository name; empty when there is nothing to show. */
+  readonly repositorySuggestions: ReadonlyArray<GitHubRepositorySummary>;
+  readonly repositorySearchStatus: "idle" | "loading" | "error";
+  readonly repositorySearchError: string | null;
   readonly onRepositoryChange: (value: string) => void;
+  readonly onSelectRepositorySuggestion: (repository: GitHubRepositorySummary) => void;
   readonly onDestinationParentChange: (value: string) => void;
   readonly onDirectoryNameChange: (value: string) => void;
   readonly onBrowse: () => void;
@@ -76,6 +82,37 @@ export function CreateGitHubProjectFields(props: {
             onKeyDown={props.onSubmitKeyDown}
           />
         </InputGroup>
+        {props.repositorySearchStatus === "loading" ? (
+          <p role="status" className="text-ui-xs text-muted-foreground">
+            {t("git:searchingGitHubRepositories")}
+          </p>
+        ) : props.repositorySearchStatus === "error" ? (
+          <p role="status" className="text-ui-xs text-destructive">
+            {props.repositorySearchError ?? t("git:githubRepositorySearchUnavailable")}
+          </p>
+        ) : props.repositorySuggestions.length > 0 ? (
+          <ul
+            className="max-h-44 overflow-y-auto rounded-xl border border-foreground/10 py-1"
+            data-testid="github-repository-suggestions"
+          >
+            {props.repositorySuggestions.map((repository) => (
+              <li key={repository.id}>
+                <button
+                  type="button"
+                  className="flex w-full flex-col gap-0.5 px-3 py-1.5 text-start outline-none hover:bg-foreground/4 focus-visible:bg-foreground/6"
+                  onClick={() => props.onSelectRepositorySuggestion(repository)}
+                >
+                  <span className="truncate text-ui text-foreground">
+                    {repository.nameWithOwner}
+                  </span>
+                  <span className="truncate text-ui-xs text-muted-foreground">
+                    {repository.description ?? repository.visibility}
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        ) : null}
       </div>
 
       <div className="space-y-2">

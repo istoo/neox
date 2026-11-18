@@ -12,8 +12,7 @@ log.initialize({ spyRendererConsole: true });
 import { inheritLoginShellEnv } from "./login-shell-env.js";
 
 import path from "node:path";
-import { pathToFileURL } from "node:url";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { execFile, execFileSync } from "node:child_process";
 import {
   app,
@@ -25,8 +24,6 @@ import {
   Menu,
   ipcMain,
   nativeImage,
-  net,
-  protocol,
   screen,
   session,
   shell,
@@ -85,6 +82,7 @@ import {
   getNeolixBrowserProfileSessions,
   listNeolixBrowserProfileGuests,
   readLegacyNeolixBrowserIds,
+  readLegacyNeolixBrowserIdsFromPartitionDirectory,
 } from "./features/browser-profile.js";
 import { parseOpenProjectPathFromArgv } from "./open-project-routing.js";
 import {
@@ -159,29 +157,27 @@ import {
 } from "@neolix/protocol/agent-deep-link";
 import { AgentNavigationInbox, parseAgentDeepLinkFromArgv } from "./agent-navigation.js";
 import { resolveUserDataDir } from "./user-data.js";
-import { isDesktopUiModeLockedByEnv, resolveDesktopUiMode } from "./desktop-web/ui-mode.js";
 import {
-  resolveBridgeLaunchPaths,
-  startBridgeSidecar,
-  type BridgeSidecar,
-} from "./desktop-web/bridge-sidecar.js";
+  buildDesktopWebStartingUrl,
+  buildDesktopWebStartupErrorUrl,
+  DESKTOP_WEB_STARTUP_RETRY_URL,
+  normalizeDesktopWebDevUrl,
+  type DesktopWebStartupLocale,
+  resolveDesktopWebBaseUrl,
+  resolveDesktopWebStartupLocale,
+  waitForDesktopWebReady,
+} from "./desktop-web/startup.js";
 import { registerDesktopWebIpc } from "./features/desktop-web-ipc.js";
 import { registerOsPermissionsIpc } from "./features/os-permissions.js";
 import {
   forwardBrowserGuestEvents,
   registerDesktopWebBrowserGuestIpc,
 } from "./features/browser-webviews/desktop-web-guest.js";
-import type {
-  DesktopAppIconName,
-  DesktopSettings,
-  DesktopUiMode,
-} from "./settings/desktop-settings.js";
+import type { DesktopAppIconName } from "./settings/desktop-settings.js";
 import { resolveChosenAppIconPath } from "./features/app-icon-choice.js";
-import { resolveDesktopDaemonStatus, resolveDesktopNeolixHome } from "./daemon/daemon-manager.js";
+import { resolveDesktopDaemonStatus } from "./daemon/daemon-manager.js";
 
 traceStartup("main: imports done");
-const DEV_SERVER_URL = process.env.EXPO_DEV_URL ?? "http://localhost:8081";
-const APP_SCHEME = "neolix";
 const NEOLIX_DEBUG = process.env.NEOLIX_DEBUG === "1";
 const DISABLE_SINGLE_INSTANCE_LOCK = process.env.NEOLIX_DISABLE_SINGLE_INSTANCE_LOCK === "1";
 const APP_NAME = process.env.NEOLIX_TEST_APP_NAME?.trim() || "Neox";
@@ -194,11 +190,15 @@ const UPDATE_QUIT_DEADLINE_MS = 5_000;
 const pendingBrowserWindowOpenRequests = new PendingBrowserWindowOpenRequests();
 const agentNavigationInbox = new AgentNavigationInbox();
 
-// The renderer switch lives at module scope because window creation, the tray
-// and the quit lifecycle all consult it.
-let desktopUiMode: DesktopUiMode = "native";
-let desktopWebBridge: BridgeSidecar | null = null;
+// Where the daemon serves the web UI. Windows consult it at creation time, and
+// the startup error page keeps the failure reason for Retry and log reporting.
 let desktopWebBaseUrl: string | null = null;
+let desktopWebStartupFailure: string | null = null;
+let desktopWebStartupInFlight = false;
+/** True until the first probe settles; windows show the waiting page meanwhile. */
+let desktopWebStartupPending = true;
+// The route each shell window should return to when Retry reloads it.
+const shellWindowRoutes = new Map<number, string>();
 
 // A second-instance launch can arrive before the packaged protocol handler,
 // IPC handlers, and first window exist. Wait for full bootstrap, not just
@@ -650,10 +650,28 @@ ipcMain.handle("neolix:browser:open-devtools", (event, browserId: unknown) => {
   return result;
 });
 
+/**
+ * Retired native-app tabs each had their own `persist:neolix-browser-<id>`
+ * partition; nothing names them any more, so read the directories Chromium left
+ * under `Partitions/`. Missing or unreadable means no legacy profile to clear.
+ */
+function legacyBrowserIdsOnDisk(): string[] {
+  try {
+    return readLegacyNeolixBrowserIdsFromPartitionDirectory(
+      readdirSync(path.join(app.getPath("userData"), "Partitions")),
+    );
+  } catch {
+    return [];
+  }
+}
+
 ipcMain.handle("neolix:browser:clear-profile", async (_event, rawLegacyBrowserIds: unknown) => {
   const profileSessions = getNeolixBrowserProfileSessions(
     session,
-    readLegacyNeolixBrowserIds(rawLegacyBrowserIds),
+    readLegacyNeolixBrowserIds([
+      ...readLegacyNeolixBrowserIds(rawLegacyBrowserIds),
+      ...legacyBrowserIdsOnDisk(),
+    ]),
   );
   const profileSession = profileSessions[0];
   await clearNeolixBrowserProfile({
@@ -696,14 +714,6 @@ ipcMain.handle("neolix:browser:copy-element", (_event, payload: unknown) =>
   browserCapture.copy(payload),
 );
 
-traceStartup("main: registering privileged schemes");
-protocol.registerSchemesAsPrivileged([
-  {
-    scheme: APP_SCHEME,
-    privileges: { standard: true, secure: true, supportFetchAPI: true },
-  },
-]);
-
 // ---------------------------------------------------------------------------
 // Window creation
 // ---------------------------------------------------------------------------
@@ -714,14 +724,6 @@ function getPreloadPath(): string {
 
 function getBrowserKeyboardPreloadPath(): string {
   return path.join(__dirname, "features", "browser-keyboard", "guest-preload.js");
-}
-
-function getAppDistDir(): string {
-  if (app.isPackaged) {
-    return path.join(process.resourcesPath, "app-dist");
-  }
-
-  return path.resolve(__dirname, "../../app/dist");
 }
 
 function getWindowIconCandidates(): string[] {
@@ -840,38 +842,53 @@ function getWorkAreasPrimaryFirst(): Electron.Rectangle[] {
   return [primary, ...others].map((display) => display.workArea);
 }
 
-/**
- * Start the forked web renderer when selected. The native renderer remains the
- * default and the fallback: a missing bridge build, missing Bun runtime, or a
- * failed handshake leaves the window on the RN app instead of a blank page.
- */
-async function startDesktopWebRenderer(settings: DesktopSettings): Promise<void> {
-  desktopUiMode = resolveDesktopUiMode({
-    envValue: process.env.NEOLIX_DESKTOP_UI,
-    savedMode: settings.uiMode,
-  });
-  if (desktopUiMode !== "web") {
-    return;
-  }
+/** The Settings language when one is picked, else the system locale, for the shell pages. */
+async function desktopWebLocale(): Promise<DesktopWebStartupLocale> {
+  const preference = await getDesktopSettingsStore()
+    .get()
+    .then((settings) => settings.language)
+    .catch(() => "");
+  return resolveDesktopWebStartupLocale(preference, app.getLocale());
+}
 
-  const paths = resolveBridgeLaunchPaths({
-    isPackaged: app.isPackaged,
-    resourcesPath: process.resourcesPath,
-    desktopDistDir: __dirname,
-    env: process.env,
+async function desktopWebStartupErrorPageUrl(): Promise<string> {
+  return buildDesktopWebStartupErrorUrl({
+    reason: desktopWebStartupFailure ?? "The local server is not available.",
+    logPath: log.transports.file.getFile().path,
+    locale: await desktopWebLocale(),
   });
-  if (!paths) {
-    log.warn(
-      "[desktop-web] bridge entry or web build missing; keeping the native renderer. " +
-        "Run `bun run --cwd packages/desktop-web/apps/web build` and rebuild the bridge.",
-    );
-    desktopUiMode = "native";
+}
+
+function failDesktopWebStartup(reason: string): void {
+  desktopWebStartupPending = false;
+  desktopWebBaseUrl = null;
+  desktopWebStartupFailure = reason;
+  log.warn("[desktop-web] startup failed", reason);
+}
+
+/**
+ * Start the daemon that serves the web UI and wait for it to answer. The
+ * NEOLIX_DESKTOP_WEB_URL override skips both, for a vite dev server.
+ */
+async function startDesktopWebRenderer(): Promise<void> {
+  desktopWebStartupPending = true;
+  desktopWebBaseUrl = null;
+  desktopWebStartupFailure = null;
+
+  const devUrl = process.env.NEOLIX_DESKTOP_WEB_URL?.trim();
+  if (devUrl) {
+    const normalized = normalizeDesktopWebDevUrl(devUrl);
+    if (normalized === null) {
+      failDesktopWebStartup(`NEOLIX_DESKTOP_WEB_URL is not an http(s) URL: ${devUrl}`);
+      return;
+    }
+    desktopWebBaseUrl = normalized;
+    desktopWebStartupPending = false;
+    log.info("[desktop-web] using the development server", normalized);
     return;
   }
 
   try {
-    // The bridge is a daemon client, not a supervisor: make sure the daemon it
-    // will connect to is running first, exactly as the native renderer expects.
     // An explicit address means the caller owns that daemon (dev/tests), so do
     // not start or restart the managed one.
     let daemonAddress = process.env.NEOLIX_DESKTOP_DAEMON?.trim() || null;
@@ -879,27 +896,103 @@ async function startDesktopWebRenderer(settings: DesktopSettings): Promise<void>
       await startDesktopDaemonFromTray().catch((error) => {
         log.warn("[desktop-web] desktop daemon start failed", error);
       });
+      // A daemon that is still starting already knows where it will listen;
+      // the readiness poll below waits for it.
       const status = await resolveDesktopDaemonStatus();
-      daemonAddress = status.status === "running" ? status.listen : null;
+      daemonAddress =
+        status.status === "running" || status.status === "starting" ? status.listen : null;
     }
     if (!daemonAddress) {
-      throw new Error(
+      failDesktopWebStartup(
         "No local daemon address is available. Start the daemon or set NEOLIX_DESKTOP_DAEMON.",
       );
+      return;
     }
-    desktopWebBridge = await startBridgeSidecar({
-      paths,
-      daemonAddress,
-      neolixHome: resolveDesktopNeolixHome(),
+
+    const baseUrl = resolveDesktopWebBaseUrl(daemonAddress);
+    if (baseUrl === null) {
+      failDesktopWebStartup(
+        `The daemon listens on "${daemonAddress}", which a desktop window cannot load. ` +
+          "Point NEOLIX_DESKTOP_DAEMON at a host:port address.",
+      );
+      return;
+    }
+
+    const ready = await waitForDesktopWebReady({
+      baseUrl,
       log: (line) => log.info("[desktop-web]", line),
     });
-    desktopWebBaseUrl = desktopWebBridge.baseUrl;
+    if (!ready.ok) {
+      failDesktopWebStartup(ready.reason);
+      return;
+    }
+    desktopWebBaseUrl = baseUrl;
+    desktopWebStartupPending = false;
+    log.info("[desktop-web] web interface ready", baseUrl);
   } catch (error) {
-    log.error("[desktop-web] failed to start the web renderer bridge", error);
-    desktopUiMode = "native";
-    desktopWebBaseUrl = null;
-    desktopWebBridge = null;
+    failDesktopWebStartup(error instanceof Error ? error.message : String(error));
   }
+}
+
+/** Loads the app, the waiting page, or the startup error page. */
+async function loadShellContent(win: BrowserWindow, route: string): Promise<void> {
+  shellWindowRoutes.set(win.webContents.id, route);
+  if (desktopWebStartupPending) {
+    await win.loadURL(buildDesktopWebStartingUrl({ locale: await desktopWebLocale() }));
+    return;
+  }
+  if (desktopWebBaseUrl === null) {
+    await win.loadURL(await desktopWebStartupErrorPageUrl());
+    return;
+  }
+  try {
+    await win.loadURL(new URL(`#${route}`, desktopWebBaseUrl).toString());
+  } catch (error) {
+    log.error("[desktop-web] failed to load the web interface", error);
+    desktopWebStartupFailure = error instanceof Error ? error.message : String(error);
+    await win.loadURL(await desktopWebStartupErrorPageUrl());
+  }
+}
+
+/** Reloads every shell window at its recorded route after a startup transition. */
+async function reloadShellWindows(): Promise<void> {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (win.isDestroyed()) continue;
+    // Quick-panel and other renderers never register a shell route; leave them alone.
+    const route = shellWindowRoutes.get(win.webContents.id);
+    if (route === undefined) continue;
+    await loadShellContent(win, route).catch((error) => {
+      log.warn("[desktop-web] could not reload a window", error);
+    });
+  }
+}
+
+/** Retry runs the daemon probe again, then reloads every shell window. */
+async function retryDesktopWebStartup(): Promise<void> {
+  if (desktopWebStartupInFlight) {
+    return;
+  }
+  desktopWebStartupInFlight = true;
+  try {
+    log.info("[desktop-web] retrying startup");
+    const startup = startDesktopWebRenderer();
+    // The windows still show the error page; put them back on the waiting page
+    // while the probe runs. A fast probe supersedes this load.
+    await reloadShellWindows();
+    await startup;
+    await reloadShellWindows();
+  } finally {
+    desktopWebStartupInFlight = false;
+  }
+}
+
+/** The error page's Retry link is a normal anchor; cancel it and retry here. */
+function installStartupRecoveryNavigation(win: BrowserWindow): void {
+  win.webContents.on("will-navigate", (event, url) => {
+    if (url !== DESKTOP_WEB_STARTUP_RETRY_URL) return;
+    event.preventDefault();
+    void retryDesktopWebStartup();
+  });
 }
 
 async function createWindow(
@@ -945,6 +1038,7 @@ async function createWindow(
     },
   });
   applyDesktopWindowChromeMode({ win: mainWindow, mode: DESKTOP_WINDOW_CHROME_MODE });
+  installStartupRecoveryNavigation(mainWindow);
 
   const webContentsId = mainWindow.webContents.id;
   options.onCreated?.(webContentsId);
@@ -955,6 +1049,7 @@ async function createWindow(
   });
   mainWindow.on("closed", () => {
     options.onClosed?.(webContentsId);
+    shellWindowRoutes.delete(webContentsId);
     agentNavigationInbox.removeWindow(webContentsId);
     unregisterNeolixBrowserHost(webContentsId);
     browserKeyboard.detachHost(webContentsId);
@@ -1025,23 +1120,7 @@ async function createWindow(
     showOnLoad: process.platform === "linux",
   });
 
-  if (desktopWebBaseUrl) {
-    const initialUrl = new URL(`#${options.initialRoute ?? "/"}`, desktopWebBaseUrl).toString();
-    await mainWindow.loadURL(initialUrl);
-    return mainWindow;
-  }
-
-  if (!app.isPackaged) {
-    const { loadReactDevTools } = await import("./features/react-devtools.js");
-    await loadReactDevTools();
-    const initialUrl = options.initialRoute
-      ? new URL(options.initialRoute, `${DEV_SERVER_URL}/`).toString()
-      : DEV_SERVER_URL;
-    await mainWindow.loadURL(initialUrl);
-    return mainWindow;
-  }
-
-  await mainWindow.loadURL(`${APP_SCHEME}://app${options.initialRoute ?? "/"}`);
+  await loadShellContent(mainWindow, options.initialRoute ?? "/");
   return mainWindow;
 }
 
@@ -1434,6 +1513,7 @@ function ensureQuickPanelWindow(): BrowserWindow {
     },
   });
   win.setAlwaysOnTop(true, "floating");
+  installStartupRecoveryNavigation(win);
   win.on("blur", () => {
     // Omarchy has focus follow the mouse, so the pointer merely passing over
     // another window would close the panel; its click watcher closes it.
@@ -1459,23 +1539,16 @@ function ensureQuickPanelWindow(): BrowserWindow {
     }
   });
   win.on("closed", () => {
+    shellWindowRoutes.delete(win.webContents.id);
     if (quickPanelWindow === win) {
       quickPanelWindow = null;
     }
   });
-  let panelUrl = desktopWebBaseUrl;
-  if (panelUrl) {
-    // The Electron shell uses TanStack's hash history, so the route lives in
-    // the fragment; `/panel` alone would resolve to the app's root route.
-    panelUrl = new URL("#/panel", panelUrl).toString();
-  } else {
-    panelUrl = app.isPackaged
-      ? `${APP_SCHEME}://app/panel`
-      : new URL("/panel", `${DEV_SERVER_URL}/`).toString();
-  }
-  void win
-    .loadURL(panelUrl)
-    .catch((error) => log.error("[panel] failed to load the quick panel", error));
+  // The Electron shell uses TanStack's hash history, so the route lives in the
+  // fragment; `/panel` alone would resolve to the app's root route.
+  void loadShellContent(win, "/panel").catch((error) =>
+    log.error("[panel] failed to load the quick panel", error),
+  );
   quickPanelWindow = win;
   return win;
 }
@@ -1694,15 +1767,19 @@ async function bootstrap(): Promise<void> {
     log.error("[autostart] failed to reconcile the login record", error);
   }
 
+  let desktopWebStartup: Promise<void> | null = null;
   try {
     const settings = await getDesktopSettingsStore().get();
     applySystemPreferences(settings);
     applyTraySettings(settings);
     traceStartup("bootstrap: starting desktop web renderer");
-    await startDesktopWebRenderer(settings);
-    traceStartup("bootstrap: desktop web renderer started");
+    // Do not wait for the probe: the first window shows its waiting page now and
+    // reloads when the daemon answers.
+    desktopWebStartup = startDesktopWebRenderer();
   } catch (error) {
     log.error("[desktop settings] failed to apply system preferences", error);
+    // Without a probe the waiting page would never resolve; show the error page.
+    failDesktopWebStartup(error instanceof Error ? error.message : String(error));
   }
 
   if (isHyprland(process.env, process.platform)) {
@@ -1710,33 +1787,6 @@ async function bootstrap(): Promise<void> {
     // Hyprland; remove it before this run reports clicks of its own.
     void clearPanelClicks(runHyprctl);
   }
-
-  const appDistDir = getAppDistDir();
-  protocol.handle(APP_SCHEME, (request) => {
-    const { pathname, search, hash } = new URL(request.url);
-    const decodedPath = decodeURIComponent(pathname);
-
-    // Chromium can occasionally request the exported entrypoint directly.
-    // Canonicalize it back to the route URL so Expo Router sees `/`, not `/index.html`.
-    if (decodedPath.endsWith("/index.html")) {
-      const normalizedPath = decodedPath.slice(0, -"/index.html".length) || "/";
-      return Response.redirect(`${APP_SCHEME}://app${normalizedPath}${search}${hash}`, 307);
-    }
-
-    const filePath = path.join(appDistDir, decodedPath);
-    const relativePath = path.relative(appDistDir, filePath);
-
-    if (relativePath.startsWith("..") || path.isAbsolute(relativePath)) {
-      return new Response("Not found", { status: 404 });
-    }
-
-    // SPA fallback: serve index.html for routes without a file extension
-    if (!relativePath || !path.extname(relativePath)) {
-      return net.fetch(pathToFileURL(path.join(appDistDir, "index.html")).toString());
-    }
-
-    return net.fetch(pathToFileURL(filePath).toString());
-  });
 
   await applyAppIcon();
   // The About panel otherwise reads the host bundle's Info.plist: in a dev checkout that is the
@@ -1754,21 +1804,6 @@ async function bootstrap(): Promise<void> {
       void desktopWindowOwner.openAdditional().catch((error) => {
         log.error("[window] failed to create window from menu", error);
       });
-    },
-    uiMode: desktopUiMode,
-    uiModeSelectable: !isDesktopUiModeLockedByEnv(process.env.NEOLIX_DESKTOP_UI),
-    onSelectUiMode: (mode) => {
-      if (mode === desktopUiMode) {
-        return;
-      }
-      void getDesktopSettingsStore()
-        .patch({ uiMode: mode })
-        .then(() => {
-          app.relaunch();
-          app.exit(0);
-          return undefined;
-        })
-        .catch((error) => log.error("[desktop-web] failed to switch renderers", error));
     },
   });
   ensureNotificationCenterRegistration();
@@ -1904,6 +1939,19 @@ async function bootstrap(): Promise<void> {
   }
   pendingOpenProjectPath = null;
 
+  if (desktopWebStartup) {
+    void desktopWebStartup.then(
+      () => {
+        traceStartup("bootstrap: desktop web renderer settled");
+        return reloadShellWindows();
+      },
+      (error: unknown) => {
+        log.error("[desktop-web] startup probe failed", error);
+        failDesktopWebStartup(error instanceof Error ? error.message : String(error));
+        return reloadShellWindows();
+      },
+    );
+  }
   // Protocol + IPC handlers and the first window now exist: release any
   // second-instance launches that arrived during cold start.
   bootstrapIsComplete = true;
@@ -1997,13 +2045,6 @@ electronAutoUpdater.on("before-quit-for-update", () => {
 });
 app.on("before-quit", quitLifecycle.handleBeforeQuit);
 registerExternalQuitSignals({ signals: process, quit: () => app.quit() });
-app.on("will-quit", () => {
-  // The sidecar is a child of this process; stopping it on the normal quit path
-  // keeps no bridge holding the loopback port after Electron exits.
-  void desktopWebBridge?.stop().catch((error) => {
-    log.warn("[desktop-web] failed to stop the bridge", error);
-  });
-});
 
 app.on("window-all-closed", () => {
   // With a tray the app stays in it, as myna does; without one (a failed

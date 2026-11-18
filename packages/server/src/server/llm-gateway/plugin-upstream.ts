@@ -46,6 +46,8 @@ export interface PluginUpstreamResolver {
 
 /** Gateway traffic hooks a plugin registers (myna's middleware). */
 export interface GatewayMiddlewareRequestInput {
+  /** The client call, shared by every hook of its attempts (myna's ctx.state). */
+  requestKey?: string;
   providerId: string;
   protocol: string;
   model: string;
@@ -53,7 +55,14 @@ export interface GatewayMiddlewareRequestInput {
   body: Record<string, unknown>;
 }
 
+export interface GatewayMiddlewareRequestResult {
+  body: Record<string, unknown>;
+  /** A middleware turned the request away (myna's ctx.reject). */
+  reject?: { status: number; message: string };
+}
+
 export interface GatewayMiddlewareResponseInput {
+  requestKey?: string;
   providerId: string;
   model: string;
   accountId: string;
@@ -63,6 +72,7 @@ export interface GatewayMiddlewareResponseInput {
 }
 
 export interface GatewayMiddlewareProviderInput {
+  requestKey?: string;
   providerId: string;
   protocol: string;
   model: string;
@@ -71,6 +81,7 @@ export interface GatewayMiddlewareProviderInput {
 }
 
 export interface GatewayMiddlewareAccountInput {
+  requestKey?: string;
   providerId: string;
   protocol: string;
   model: string;
@@ -78,10 +89,19 @@ export interface GatewayMiddlewareAccountInput {
 }
 
 export interface GatewayMiddlewareEventInput {
+  requestKey?: string;
   providerId: string;
   model: string;
   accountId: string;
   event: unknown;
+}
+
+export interface GatewayMiddlewareHeadersInput {
+  requestKey?: string;
+  providerId: string;
+  protocol: string;
+  model: string;
+  accountId: string | null;
 }
 
 export interface GatewayMiddlewareRunner {
@@ -89,11 +109,15 @@ export interface GatewayMiddlewareRunner {
   active(): boolean;
   /** Whether any running middleware implements `hook` (myna's hook names). */
   hasHook(hook: string): boolean;
-  request(input: GatewayMiddlewareRequestInput): Promise<GatewayMiddlewareRequestInput | null>;
+  request(input: GatewayMiddlewareRequestInput): Promise<GatewayMiddlewareRequestResult | null>;
   response(input: GatewayMiddlewareResponseInput): Promise<GatewayMiddlewareResponseInput | null>;
   provider(input: GatewayMiddlewareProviderInput): Promise<GatewayMiddlewareProviderInput | null>;
   account(input: GatewayMiddlewareAccountInput): Promise<boolean>;
   event(input: GatewayMiddlewareEventInput): Promise<{ event: unknown } | "drop" | null>;
+  /** Headers to add to one outgoing request (myna's chat.headers). */
+  headers?(
+    input: GatewayMiddlewareHeadersInput,
+  ): Promise<{ headers: Record<string, string> } | null>;
 }
 
 let resolver: PluginUpstreamResolver | null = null;
@@ -183,12 +207,27 @@ export function hasGatewayMiddlewareHook(hook: string): boolean {
 /** The request after every plugin middleware, or null when none changed it. */
 export async function runGatewayMiddlewareRequest(
   input: GatewayMiddlewareRequestInput,
-): Promise<GatewayMiddlewareRequestInput | null> {
+): Promise<GatewayMiddlewareRequestResult | null> {
   if (middlewareRunner === null) return null;
   try {
     return await middlewareRunner.request(input);
   } catch {
     // Fail open: a middleware that can't run leaves the traffic as it is.
+    return null;
+  }
+}
+
+/** Headers plugins add to one outgoing request, or null when none did. */
+export async function runGatewayMiddlewareHeaders(
+  input: GatewayMiddlewareHeadersInput,
+): Promise<Record<string, string> | null> {
+  if (middlewareRunner === null || middlewareRunner.headers === undefined) return null;
+  try {
+    const result = await middlewareRunner.headers(input);
+    if (result === null || Object.keys(result.headers).length === 0) return null;
+    return result.headers;
+  } catch {
+    // Fail open: the request goes without the headers a hook couldn't give.
     return null;
   }
 }

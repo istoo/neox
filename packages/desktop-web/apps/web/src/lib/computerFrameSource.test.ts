@@ -59,7 +59,7 @@ describe("computer frame socket url", () => {
       },
     });
     const url = new URL(requested);
-    expect(url.pathname).toBe("/ws/computer-frames");
+    expect(url.pathname).toBe("/rpc/computer-frames");
     expect(url.searchParams.get("computerId")).toBe(COMPUTER_ID);
   });
 });

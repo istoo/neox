@@ -1,5 +1,6 @@
 import { constants, type Stats } from "node:fs";
-import { open, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { open, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { join, resolve } from "node:path";
 import pLimit from "p-limit";
 import { withTimeout } from "./promise-timeout.js";
@@ -43,8 +44,12 @@ export function resolveNeolixConfigPath(repoRoot: string): string {
   return join(repoRoot, NEOLIX_CONFIG_FILE_NAME);
 }
 
-function revision(stats: Stats): NeolixConfigRevision {
-  return { mtimeMs: stats.mtimeMs, size: stats.size };
+function digestOf(content: string | Uint8Array): string {
+  return createHash("sha256").update(content).digest("hex");
+}
+
+function revision(stats: Stats, digest: string): NeolixConfigRevision {
+  return { mtimeMs: stats.mtimeMs, size: stats.size, digest };
 }
 
 async function inspect(repoRoot: string): Promise<Stats | null> {
@@ -56,9 +61,12 @@ async function inspect(repoRoot: string): Promise<Stats | null> {
   }
 }
 
+/** The current revision, including the content digest stale-write checks rely on. */
 export async function statNeolixConfigPath(repoRoot: string): Promise<NeolixConfigRevision | null> {
   const stats = await inspect(repoRoot);
-  return stats ? revision(stats) : null;
+  if (!stats) return null;
+  admit(stats);
+  return revision(stats, digestOf(await readFile(resolveNeolixConfigPath(repoRoot))));
 }
 
 function admit(stats: Stats): void {
@@ -186,6 +194,7 @@ class ProjectConfigOwner {
     const cached = this.snapshots.get(root);
     if (cached?.fingerprint === key) return this.remember(root, cached);
     let json: unknown = null;
+    let revisionToken: NeolixConfigRevision | null = null;
     if (stats) {
       // O_NONBLOCK prevents a regular-file -> FIFO replacement between stat and open
       // from waiting for a writer. Check the opened descriptor again before any read.
@@ -220,6 +229,7 @@ class ProjectConfigOwner {
         if (fingerprint(openedStats) !== key) {
           throw new Error("neox.json was replaced while reading; retry the operation");
         }
+        revisionToken = revision(stats, digestOf(bytes.subarray(0, length)));
       } finally {
         await handle.close();
       }
@@ -229,7 +239,7 @@ class ProjectConfigOwner {
     let edit: ReadNeolixConfigForEditResult = { ok: true, config: null, revision: null };
     if (parsed !== null) {
       edit = parsed.success
-        ? { ok: true, config: parsed.data, revision: stats ? revision(stats) : null }
+        ? { ok: true, config: parsed.data, revision: revisionToken }
         : { ok: false, error: { code: "invalid_project_config" } };
     }
     return this.remember(root, {
@@ -251,15 +261,14 @@ class ProjectConfigOwner {
       const tempPath = join(root, `.${NEOLIX_CONFIG_FILE_NAME}.${process.pid}.${randomUUID()}.tmp`);
       try {
         await writeFile(tempPath, content, { flag: "wx" });
-        const savedRevision = revision(await stat(tempPath));
-        const currentStats = await inspect(root);
-        if (currentStats) admit(currentStats);
-        const currentRevision = currentStats ? revision(currentStats) : null;
+        const savedRevision = revision(await stat(tempPath), digestOf(content));
+        const currentRevision = await statNeolixConfigPath(root);
         if (!neolixConfigRevisionsEqual(currentRevision, input.expectedRevision)) {
           return { ok: false, error: { code: "stale_project_config", currentRevision } };
         }
         // Serialized against daemon edits. External writers still have the existing
-        // optimistic stat/rename race; revision tokens remain mtime + size.
+        // optimistic stat/rename race; the digest closes the same-size, same-timestamp
+        // overwrite window coarse filesystems otherwise expose.
         await rename(tempPath, resolveNeolixConfigPath(root));
         this.snapshots.delete(root);
         return { ok: true, config: parsed.data, revision: savedRevision };
@@ -310,5 +319,8 @@ function neolixConfigRevisionsEqual(
   right: NeolixConfigRevision | null,
 ): boolean {
   if (left === null || right === null) return left === right;
-  return left.mtimeMs === right.mtimeMs && left.size === right.size;
+  if (left.mtimeMs !== right.mtimeMs || left.size !== right.size) return false;
+  // Tokens minted before the digest existed still carry mtime + size only.
+  if (left.digest === undefined || right.digest === undefined) return true;
+  return left.digest === right.digest;
 }

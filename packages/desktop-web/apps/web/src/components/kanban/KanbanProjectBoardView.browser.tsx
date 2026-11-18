@@ -68,6 +68,7 @@ import type { ServerProviderStatus, ThreadId } from "@synara/contracts";
 import { KANBAN_ATTENTION_LABELS, KANBAN_COLUMN_V2_LABELS } from "@synara/shared/kanban";
 import { dispatchKanbanDraftCardAsGoal } from "../../lib/kanbanDispatch";
 import { KanbanProjectBoardView } from "./KanbanProjectBoardView";
+import { KanbanCardView } from "./KanbanCardView";
 import { buildKanbanBoard, type KanbanCard, type KanbanProjectBoard } from "./kanban.logic";
 import type { SidebarThreadSummary } from "../../types";
 import KanbanView from "./KanbanView";
@@ -206,6 +207,52 @@ beforeEach(() => {
 });
 
 describe("KanbanProjectBoardView v2 (browser)", () => {
+  it("wraps a waiting card's status row instead of clipping the pills", async () => {
+    const thread: SidebarThreadSummary = {
+      id: "thread-wide" as ThreadId,
+      projectId: "project-1" as SidebarThreadSummary["projectId"],
+      title: "Waiting on approval and stuck",
+      modelSelection: { provider: "codex", model: "gpt-6-astra" },
+      interactionMode: "default",
+      branch: "main",
+      worktreePath: null,
+      session: {
+        provider: "codex",
+        status: "ready",
+        createdAt: "2026-08-21T11:00:00.000Z",
+        updatedAt: "2026-08-21T11:00:00.000Z",
+        orchestrationStatus: "idle",
+      },
+      createdAt: "2026-08-21T11:00:00.000Z",
+      updatedAt: "2026-08-21T11:00:00.000Z",
+      isPinned: false,
+      latestTurn: null,
+      latestUserMessageAt: "2026-08-21T11:00:00.000Z",
+      hasPendingApprovals: true,
+      hasPendingUserInput: false,
+      hasActionableProposedPlan: false,
+      hasLiveTailWork: false,
+      pendingBackgroundWorkCount: 0,
+    };
+    const card = makeCard("wide", "awaitingYou", {
+      thread,
+      attention: ["awaiting-approval", "stuck"],
+      activeWorkStartedAt: new Date(NOW_MS).toISOString(),
+    });
+    const screen = await render(
+      <div style={{ width: 280 }}>
+        <KanbanCardView card={card} prByThreadId={new Map()} nowMs={NOW_MS} />
+      </div>,
+    );
+    try {
+      const button = document.querySelector("button");
+      expect(button).not.toBeNull();
+      expect(button!.scrollWidth).toBeLessThanOrEqual(button!.clientWidth + 1);
+      expect(document.body.textContent).toContain("Stuck");
+    } finally {
+      await screen.unmount();
+    }
+  });
   it("lets users select Classic in the page header and remembers it on remount", async () => {
     const screen = await render(<KanbanView projectId="project-1" />);
     try {

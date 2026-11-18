@@ -10,6 +10,9 @@ async function writeToConsole(input: { closed?: Output; invalidStdout?: boolean 
   const child = spawn(
     process.execPath,
     [
+      // Node 25 warns that tsx's module.register() is deprecated. The child's
+      // stderr is the assertion surface, so silence that one warning.
+      "--disable-warning=DEP0205",
       "--import",
       "tsx",
       "-e",

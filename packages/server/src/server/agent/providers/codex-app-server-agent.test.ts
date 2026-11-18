@@ -2750,7 +2750,7 @@ describe("Codex app-server provider", () => {
         expect.objectContaining({
           ...customCodexConfig,
           mcp_servers: {
-            neolix: expect.objectContaining({
+            neox: expect.objectContaining({
               url: "http://127.0.0.1:6767/mcp/agents?callerAgentId=agent-1",
             }),
           },

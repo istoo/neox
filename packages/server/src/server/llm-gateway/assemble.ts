@@ -100,7 +100,13 @@ export function eventsFromResponse(response: IrResponse): IrEvent[] {
   for (const part of response.parts) {
     switch (part.type) {
       case "text":
-        events.push({ type: "text_delta", text: part.text });
+        events.push({
+          type: "text_delta",
+          text: part.text,
+          ...(part.citations === undefined || part.citations.length === 0
+            ? {}
+            : { citations: part.citations }),
+        });
         break;
       case "thinking":
         if (part.redacted !== undefined) {

@@ -89,6 +89,14 @@ export const PluginSlashCommandContributionSchema = z.object({
 });
 export type PluginSlashCommandContribution = z.infer<typeof PluginSlashCommandContributionSchema>;
 
+/**
+ * A built-in page a plugin's sidebar entry can take the place of. These are myna's replaceable
+ * pages: `sessions` is the History row and page, `usage` the Usage entry, and `library`/`routing`
+ * are settings sections with no sidebar row of their own.
+ */
+export const PluginReplaceablePageSchema = z.enum(["sessions", "library", "routing", "usage"]);
+export type PluginReplaceablePage = z.infer<typeof PluginReplaceablePageSchema>;
+
 /** A sidebar page entry. Selecting it opens the referenced web view. */
 export const PluginSidebarItemContributionSchema = z.object({
   id: PluginContributionIdSchema,
@@ -97,9 +105,34 @@ export const PluginSidebarItemContributionSchema = z.object({
   section: z.enum(["header", "footer"]).optional(),
   /** Lower numbers sort first; ties fall back to plugin ID then contribution ID. */
   order: z.number().int().optional(),
+  /** Takes this built-in page's place while the plugin is installed. */
+  replaces: PluginReplaceablePageSchema.optional(),
   view: PluginContributionIdSchema,
 });
 export type PluginSidebarItemContribution = z.infer<typeof PluginSidebarItemContributionSchema>;
+
+/**
+ * A built-in page a plugin's panel can join. These are myna's panel slots: under the Agents
+ * page's list (`agents`), at the end of Usage (`usage`), on Settings' Plugins tab (`settings`),
+ * and inside a provider's editor (`provider`), which also tells the view the provider's ID and
+ * name.
+ */
+export const PluginPanelSlotSchema = z.enum(["agents", "usage", "settings", "provider"]);
+export type PluginPanelSlot = z.infer<typeof PluginPanelSlotSchema>;
+
+/**
+ * A panel rendered inside one of the host's built-in pages. Its body is a sandboxed web view
+ * from the same `web.views` list as a sidebar page, so it gets the same frame, bridge, and CSP.
+ */
+export const PluginPanelContributionSchema = z.object({
+  id: PluginContributionIdSchema,
+  slot: PluginPanelSlotSchema,
+  title: z.string().min(1).max(200).optional(),
+  /** Initial height in CSS pixels. A view that grants `resize` may grow or shrink it. */
+  height: z.number().int().min(160).max(2400).optional(),
+  view: PluginContributionIdSchema,
+});
+export type PluginPanelContribution = z.infer<typeof PluginPanelContributionSchema>;
 
 /** A control in the composer's trailing cluster. */
 export const PluginComposerPillContributionSchema = z.object({
@@ -168,6 +201,7 @@ export const PluginContributionsSchema = z.object({
   commands: z.array(PluginCommandContributionSchema).max(128).optional(),
   slashCommands: z.array(PluginSlashCommandContributionSchema).max(128).optional(),
   sidebarItems: z.array(PluginSidebarItemContributionSchema).max(128).optional(),
+  panels: z.array(PluginPanelContributionSchema).max(32).optional(),
   composerPills: z.array(PluginComposerPillContributionSchema).max(64).optional(),
   attachmentSources: z.array(PluginAttachmentSourceContributionSchema).max(32).optional(),
   themes: z.array(PluginThemeContributionSchema).max(32).optional(),

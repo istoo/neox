@@ -13,19 +13,24 @@ import {
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import pino from "pino";
-import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { DaemonConfigStore } from "../daemon-config-store.js";
 import { PluginService } from "./index.js";
 import { BuiltinPluginLoader } from "./builtin/index.js";
 import { ManagedPluginSources } from "./managed-source.js";
+import { convertMynaPackage } from "./myna-compat.js";
 import type { PluginProviderMetadata } from "./plugin-process-protocol.js";
 import {
   startNpmRegistry,
   npmPluginPackages,
 } from "../../../../../scripts/test-support/npm-registry.mjs";
 import { runGitCommand } from "../../utils/run-git-command.js";
+
+// Plugin installation compiles and runs subprocesses. Use the package config's budget so a
+// runner-level default (5s) cannot time these cases out when the machine is loaded.
+vi.setConfig({ testTimeout: 30_000 });
 
 const roots: string[] = [];
 type TestPluginRuntime = NonNullable<ConstructorParameters<typeof PluginService>[3]["runtime"]>;
@@ -633,6 +638,106 @@ describe("PluginService", () => {
         name: "Checks",
         icon: "icon.png",
         media: ["screenshot.png", "https://example.com/demo.mp4"],
+      },
+    ]);
+    await service.stopAllPlugins();
+  });
+
+  it("lists a page contribution's replaced built-in page for the host", async () => {
+    const home = await mkdtemp(path.join(tmpdir(), "neolix-plugin-home-"));
+    roots.push(home);
+    const directory = await createPlugin(
+      "notes",
+      "export default function contribute() { return () => undefined; }",
+    );
+    await writeFile(
+      path.join(directory, "neox-plugin.json"),
+      JSON.stringify({
+        id: "notes",
+        contributions: {
+          sidebarItems: [
+            {
+              id: "main",
+              title: "Notes",
+              section: "header",
+              view: "main",
+              replaces: "sessions",
+            },
+          ],
+        },
+        web: { views: [{ id: "main", title: "Notes", entry: "web/main.html" }] },
+      }),
+    );
+    const service = createService(home, {
+      notes: { source: "directory", path: directory },
+    });
+
+    await service.start();
+
+    expect(await service.listPlugins()).toMatchObject([
+      {
+        id: "notes",
+        status: "running",
+        contributions: {
+          sidebarItems: [expect.objectContaining({ id: "main", replaces: "sessions" })],
+        },
+      },
+    ]);
+    await service.stopAllPlugins();
+  });
+
+  it("lists a converted myna page's web view and sidebar entry", async () => {
+    const home = await mkdtemp(path.join(tmpdir(), "neolix-plugin-home-"));
+    roots.push(home);
+    const directory = await mkdtemp(path.join(tmpdir(), "neolix-myna-listed-"));
+    roots.push(directory);
+    const fixture = fileURLToPath(new URL("./test-fixtures/myna-page-plugin", import.meta.url));
+    await cp(fixture, directory, { recursive: true });
+    await convertMynaPackage(directory);
+
+    const service = bindTestSessionHost(
+      new PluginService(
+        pino({ level: "silent" }),
+        createStore(home, { "usage-glance": { source: "directory", path: directory } }),
+        "0.15.0",
+        { settingsDirectory: path.join(home, "plugin-settings") },
+      ),
+    );
+    await service.start();
+
+    expect(await service.listPlugins()).toMatchObject([
+      {
+        id: "usage-glance",
+        status: "running",
+        contributions: {
+          sidebarItems: [{ id: "page", title: "Usage glance", view: "page", section: "header" }],
+          panels: [
+            {
+              id: "panel-usage",
+              slot: "usage",
+              title: "Usage glance panel",
+              view: "panel-usage",
+            },
+          ],
+        },
+        web: {
+          views: [
+            {
+              id: "page",
+              title: "Usage glance",
+              entry: "page/index.neolix.html",
+              permissions: ["rpc"],
+              rpcs: ["settings.options.read", "settings.options.write", "myna.read"],
+            },
+            {
+              id: "panel-usage",
+              title: "Usage glance panel",
+              entry: "panel/index.neolix.html",
+              permissions: ["rpc", "resize"],
+              rpcs: ["settings.options.read", "settings.options.write", "myna.read"],
+            },
+          ],
+        },
       },
     ]);
     await service.stopAllPlugins();
@@ -1260,7 +1365,7 @@ export default function contribute(plugin: unknown) {
     await service.stopAllPlugins();
   });
 
-  it("clears a failed disable intent so the previous enabled state can publish", async () => {
+  it("recovers from an unreadable config and lets a later disable win", async () => {
     const home = await mkdtemp(path.join(tmpdir(), "neolix-plugin-home-"));
     roots.push(home);
     const store = createStore(home, {
@@ -1271,13 +1376,16 @@ export default function contribute(plugin: unknown) {
       runtime: paused.runtime,
     });
     await service.start();
-    const enabling = service.enablePlugin("slow");
+    const enabling = expect(service.enablePlugin("slow")).rejects.toThrow(/cancelled/);
     await paused.started;
+    // The config store falls back to its last good backup instead of failing, so
+    // the disable lands and cancels the blocked enable on release.
     await writeFile(path.join(home, "config.json"), "invalid JSON");
-    await expect(service.disablePlugin("slow")).rejects.toThrow("Invalid JSON");
+    const disabling = service.disablePlugin("slow");
     paused.releaseStart();
-    await expect(enabling).resolves.toMatchObject({ enabled: true, status: "running" });
-    expect(service.catalog()).toEqual([{ id: "slow", clientBundle: "bundle" }]);
+    await expect(disabling).resolves.toMatchObject({ enabled: false, status: "disabled" });
+    await enabling;
+    expect(service.catalog()).toEqual([]);
     await service.stopAllPlugins();
   });
 

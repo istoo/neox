@@ -9,12 +9,15 @@
 import { Schema } from "effect";
 
 export const NEOLIX_HOST_WS_METHODS = {
+  getFeatures: "neolix.host.getFeatures",
+  subscribeFeatures: "neolix.host.subscribeFeatures",
   getConfig: "neolix.host.getConfig",
   patchConfig: "neolix.host.patchConfig",
   getStatus: "neolix.host.getStatus",
   listSessionTerminals: "neolix.host.listSessionTerminals",
   restart: "neolix.host.restart",
   update: "neolix.host.update",
+  subscribeUpdateProgress: "neolix.host.subscribeUpdateProgress",
   getDiagnostics: "neolix.host.getDiagnostics",
   getProviderDiagnostic: "neolix.host.getProviderDiagnostic",
   revealPath: "neolix.host.revealPath",
@@ -39,6 +42,7 @@ export const NEOLIX_HOST_WS_METHODS = {
   getSyncConfig: "neolix.host.getSyncConfig",
   setSyncConfig: "neolix.host.setSyncConfig",
   getSyncStatus: "neolix.host.getSyncStatus",
+  getSyncUsage: "neolix.host.getSyncUsage",
   listSyncRemote: "neolix.host.listSyncRemote",
   runSync: "neolix.host.runSync",
   restoreSync: "neolix.host.restoreSync",
@@ -57,6 +61,7 @@ export const NEOLIX_HOST_WS_METHODS = {
   revealBackups: "neolix.host.revealBackups",
   getWebPage: "neolix.host.getWebPage",
   setWebPage: "neolix.host.setWebPage",
+  getThirdPartyNotices: "neolix.host.getThirdPartyNotices",
   getLibraryGithubToken: "neolix.host.getLibraryGithubToken",
   setLibraryGithubToken: "neolix.host.setLibraryGithubToken",
 } as const;
@@ -73,6 +78,17 @@ export type NeolixHostConfig = unknown;
 export const NeolixHostConfigPatch = Schema.Json;
 export type NeolixHostConfigPatch = unknown;
 
+/**
+ * The capability flags the daemon advertises on `server_info.features`. The front end gates a
+ * feature on one flag and either runs it or asks the user to update the host; an absent flag is
+ * an older daemon, not a reason to fall back.
+ */
+export const NeolixHostFeatures = Schema.Struct({
+  serverVersion: Schema.NullOr(Schema.String),
+  features: Schema.Record(Schema.String, Schema.Boolean),
+});
+export type NeolixHostFeatures = typeof NeolixHostFeatures.Type;
+
 export const NeolixHostStatus = Schema.Struct({
   serverId: Schema.String,
   version: Schema.NullOr(Schema.String),
@@ -80,12 +96,35 @@ export const NeolixHostStatus = Schema.Struct({
   startedAt: Schema.NullOr(Schema.String),
   listen: Schema.NullOr(Schema.String),
   container: Schema.optional(Schema.Boolean),
+  /** NEOLIX_PUBLIC_URL: where other computers reach this host's page and gateway. */
+  publicUrl: Schema.optional(Schema.NullOr(Schema.String)),
   /** The daemon's config folder (its home), when the daemon reports one. */
   home: Schema.optional(Schema.NullOr(Schema.String)),
   /** The daemon's own log file; null when it writes none. */
   logPath: Schema.optional(Schema.NullOr(Schema.String)),
 });
 export type NeolixHostStatus = typeof NeolixHostStatus.Type;
+
+/** The phases the daemon reports while it replaces its own install. */
+export const NeolixHostUpdateProgressPhase = Schema.Literals([
+  "starting",
+  "downloading",
+  "installing",
+  "complete",
+]);
+export type NeolixHostUpdateProgressPhase = typeof NeolixHostUpdateProgressPhase.Type;
+
+/** One `daemon.update.progress` event, forwarded by the bridge while an update runs. */
+export const NeolixHostUpdateProgress = Schema.Struct({
+  phase: NeolixHostUpdateProgressPhase,
+});
+export type NeolixHostUpdateProgress = typeof NeolixHostUpdateProgress.Type;
+
+/** The third-party license list every build carries (Settings › About). */
+export const NeolixThirdPartyNotices = Schema.Struct({
+  notices: Schema.String,
+});
+export type NeolixThirdPartyNotices = typeof NeolixThirdPartyNotices.Type;
 
 /** One Mac terminal that can open a resumed session (the daemon's terminal_apps). */
 export const NeolixSessionTerminalApp = Schema.Struct({
@@ -205,6 +244,8 @@ export const NeolixExternalSessions = Schema.Struct({
   home: Schema.String,
   recording: Schema.Boolean,
   recorded: Schema.Boolean,
+  /** Rows from file headers while the daemon still reads their files in full. */
+  partial: Schema.optional(Schema.Boolean),
   error: Schema.NullOr(Schema.String),
 });
 export type NeolixExternalSessions = typeof NeolixExternalSessions.Type;
@@ -389,6 +430,160 @@ export const NeolixSyncRemoteVersion = Schema.Struct({
   files: Schema.Number,
 });
 export type NeolixSyncRemoteVersion = typeof NeolixSyncRemoteVersion.Type;
+
+/**
+ * Every computer's shared usage, as the daemon's `sync.usage.get` answers it (myna's
+ * Usage page). Top-level totals stay optional for an older host that still advertises
+ * `sync`; the arrays are what the page draws.
+ */
+const NeolixSyncUsageTotals = {
+  calls: Schema.optional(Schema.Number),
+  errors: Schema.optional(Schema.Number),
+  input: Schema.optional(Schema.Number),
+  output: Schema.optional(Schema.Number),
+  cache_read: Schema.optional(Schema.Number),
+  cache_write: Schema.optional(Schema.Number),
+  reasoning: Schema.optional(Schema.Number),
+  cost: Schema.optional(Schema.Number),
+  unpriced: Schema.optional(Schema.Number),
+} as const;
+
+const NeolixSyncUsagePointTotals = {
+  calls: Schema.Number,
+  errors: Schema.Number,
+  input: Schema.Number,
+  output: Schema.Number,
+  cache_read: Schema.Number,
+  cache_write: Schema.Number,
+  reasoning: Schema.Number,
+  cost: Schema.Number,
+  unpriced: Schema.Number,
+} as const;
+
+/** One day of the shared series (myna `usage.Point`); zero days are kept. */
+export const NeolixSyncUsageSeriesPoint = Schema.Struct({
+  label: Schema.String,
+  time: Schema.String,
+  ...NeolixSyncUsagePointTotals,
+});
+export type NeolixSyncUsageSeriesPoint = typeof NeolixSyncUsageSeriesPoint.Type;
+
+/** One computer's part of the period (myna `usage.Share`); this one is `this`. */
+export const NeolixSyncUsageComputer = Schema.Struct({
+  id: Schema.String,
+  name: Schema.String,
+  ...NeolixSyncUsagePointTotals,
+});
+export type NeolixSyncUsageComputer = typeof NeolixSyncUsageComputer.Type;
+
+/** One call of the shared ledger (myna `usageapi.Row`). */
+export const NeolixSyncUsageRow = Schema.Struct({
+  t: Schema.String,
+  agent: Schema.String,
+  provider: Schema.String,
+  providerAccount: Schema.optional(Schema.String),
+  model: Schema.String,
+  req: Schema.optional(Schema.String),
+  in: Schema.Number,
+  out: Schema.Number,
+  cache_read: Schema.Number,
+  cache_write: Schema.Number,
+  reasoning: Schema.optional(Schema.Number),
+  ms: Schema.Number,
+  status: Schema.Number,
+  cost: Schema.Number,
+  priced: Schema.Boolean,
+  source: Schema.optional(Schema.String),
+  computer: Schema.optional(Schema.String),
+  computerName: Schema.optional(Schema.String),
+});
+export type NeolixSyncUsageRow = typeof NeolixSyncUsageRow.Type;
+
+export const NeolixSyncUsageModelDay = Schema.Struct({
+  calls: Schema.Number,
+  inputTokens: Schema.Number,
+  outputTokens: Schema.Number,
+  costUsd: Schema.Number,
+});
+export type NeolixSyncUsageModelDay = typeof NeolixSyncUsageModelDay.Type;
+
+/** One computer's legacy per-day totals, kept for an older page shape. */
+export const NeolixSyncUsageDay = Schema.Struct({
+  day: Schema.String,
+  calls: Schema.Number,
+  failed: Schema.Number,
+  inputTokens: Schema.Number,
+  outputTokens: Schema.Number,
+  cacheReadTokens: Schema.Number,
+  cacheWriteTokens: Schema.Number,
+  reasoningTokens: Schema.Number,
+  costUsd: Schema.Number,
+  unpricedCalls: Schema.Number,
+  byModel: Schema.Record(Schema.String, NeolixSyncUsageModelDay),
+  updatedAt: Schema.String,
+});
+export type NeolixSyncUsageDay = typeof NeolixSyncUsageDay.Type;
+
+export const NeolixSyncUsageQuotaReading = Schema.Struct({
+  at: Schema.Number,
+  provider: Schema.String,
+  account: Schema.String,
+  remaining: Schema.NullOr(Schema.Number),
+  limit: Schema.NullOr(Schema.Number),
+  resetAt: Schema.NullOr(Schema.Number),
+  usedPercent: Schema.NullOr(Schema.Number),
+});
+export type NeolixSyncUsageQuotaReading = typeof NeolixSyncUsageQuotaReading.Type;
+
+/** One account's merged quota history (myna `provider.QuotaHistory`). */
+export const NeolixSyncUsageQuotaHistory = Schema.Struct({
+  provider: Schema.String,
+  user: Schema.String,
+  lines: Schema.Array(
+    Schema.Struct({
+      name: Schema.String,
+      points: Schema.Array(
+        Schema.Struct({
+          at: Schema.String,
+          left: Schema.Number,
+          resetsAt: Schema.optional(Schema.String),
+        }),
+      ),
+    }),
+  ),
+});
+export type NeolixSyncUsageQuotaHistory = typeof NeolixSyncUsageQuotaHistory.Type;
+
+export const NeolixSyncUsageDevice = Schema.Struct({
+  id: Schema.String,
+  name: Schema.String,
+  days: Schema.Array(NeolixSyncUsageDay),
+});
+export type NeolixSyncUsageDevice = typeof NeolixSyncUsageDevice.Type;
+
+export const NeolixSyncUsageQuotas = Schema.Struct({
+  device: Schema.String,
+  account: Schema.String,
+  entries: Schema.Array(NeolixSyncUsageQuotaReading),
+});
+export type NeolixSyncUsageQuotas = typeof NeolixSyncUsageQuotas.Type;
+
+export const NeolixSyncUsage = Schema.Struct({
+  period: Schema.optional(Schema.String),
+  since: Schema.optional(Schema.String),
+  ...NeolixSyncUsageTotals,
+  bucket: Schema.optional(Schema.String),
+  series: Schema.optional(Schema.Array(NeolixSyncUsageSeriesPoint)),
+  computers: Schema.optional(Schema.Array(NeolixSyncUsageComputer)),
+  rows: Schema.optional(Schema.Array(NeolixSyncUsageRow)),
+  total: Schema.optional(Schema.Number),
+  offset: Schema.optional(Schema.Number),
+  quotaHistory: Schema.optional(Schema.Array(NeolixSyncUsageQuotaHistory)),
+  devices: Schema.Array(NeolixSyncUsageDevice),
+  quotas: Schema.Array(NeolixSyncUsageQuotas),
+  error: Schema.optional(Schema.String),
+});
+export type NeolixSyncUsage = typeof NeolixSyncUsage.Type;
 
 export const NeolixBackupEntry = Schema.Struct({
   name: Schema.String,

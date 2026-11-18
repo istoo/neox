@@ -1,6 +1,7 @@
 # Minimal Neolix daemon + web UI deployment.
 #
-# Open http://localhost:6868 after `docker compose up -d`.
+# After `docker compose up -d`, enable Settings › Network › Browser access in a
+# Neox client connected to 127.0.0.1:6868, then open http://localhost:3430.
 # For any network-reachable deployment, change NEOLIX_PASSWORD first.
 services:
   neolix:
@@ -9,6 +10,8 @@ services:
     restart: unless-stopped
     ports:
       - "6868:6868"
+      # Browser access, enabled in Settings › Network.
+      - "3430:3430"
     environment:
       NEOLIX_PASSWORD: "change-me"
       # Add DNS names you use to reach this container. IPs and localhost are

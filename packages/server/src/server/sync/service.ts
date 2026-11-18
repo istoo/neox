@@ -125,6 +125,9 @@ export class SyncService {
   private lastAttempt = 0;
   private backoffMs = 0;
   private lastError: string | undefined;
+  private disposed = false;
+  /** Work started fire-and-forget; `stop()` waits for all of it. */
+  private readonly inFlight = new Set<Promise<void>>();
 
   constructor(options: SyncServiceOptions) {
     this.neolixHome = options.neolixHome;
@@ -133,31 +136,33 @@ export class SyncService {
       onAppSettings: (value) => {
         // A settings part pulled in or restored is a write the app hasn't
         // seen; mark it so the app adopts it at its next start.
-        void this.recordAppSettingsApplied(value).catch(() => undefined);
+        this.track(this.recordAppSettingsApplied(value));
         this.emit({ type: "sync.app_settings.apply", value });
       },
     });
   }
 
   start(): void {
-    if (this.timer) {
+    if (this.timer || this.disposed) {
       return;
     }
     // The keys this computer had before the first sync: a key the first
     // pull removes is told apart from one that was never here.
-    void this.initializeAppSettingsKeys().catch(() => undefined);
+    this.track(this.initializeAppSettingsKeys());
     // myna's Run waits a little after start (`davsync.go:766`).
-    this.firstTimer = setTimeout(() => void this.tick(), 20_000);
+    this.firstTimer = setTimeout(() => this.track(this.tick()), 20_000);
     this.firstTimer.unref?.();
-    this.timer = setInterval(() => void this.tick(), 60_000);
+    this.timer = setInterval(() => this.track(this.tick()), 60_000);
     this.timer.unref?.();
     // An automatic backup is checked hourly; `runAutoBackup` decides whether
     // the configured interval has passed (myna `backup/auto.go` AutoTick).
-    this.autoTimer = setInterval(() => void this.autoTick(), 3_600_000);
+    this.autoTimer = setInterval(() => this.track(this.autoTick()), 3_600_000);
     this.autoTimer.unref?.();
   }
 
-  stop(): void {
+  /** Stops the timers and waits for every tick in flight. */
+  async stop(): Promise<void> {
+    this.disposed = true;
     if (this.timer) {
       clearInterval(this.timer);
       this.timer = null;
@@ -170,6 +175,18 @@ export class SyncService {
       clearInterval(this.autoTimer);
       this.autoTimer = null;
     }
+    while (this.inFlight.size > 0) {
+      await Promise.allSettled(this.inFlight);
+    }
+  }
+
+  private track(task: Promise<unknown>): void {
+    const settled: Promise<void> = task.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.inFlight.add(settled);
+    void settled.then(() => this.inFlight.delete(settled));
   }
 
   async config(): Promise<SyncConfigView> {
@@ -581,6 +598,9 @@ export class SyncService {
   }
 
   private async autoTick(): Promise<void> {
+    if (this.disposed) {
+      return;
+    }
     try {
       await this.runAuto();
     } catch (error) {
@@ -606,6 +626,9 @@ export class SyncService {
   }
 
   private async tick(): Promise<void> {
+    if (this.disposed) {
+      return;
+    }
     const config = await loadSyncConfig(this.neolixHome);
     if (!config?.enabled) {
       return;

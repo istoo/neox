@@ -31,6 +31,26 @@ export function workspaceThreadKey(environmentId: string, threadId: string): str
   return JSON.stringify([environmentId, threadId]);
 }
 
+/** An empty filter means "all hosts"; otherwise the environment id must be selected. */
+export function isHostVisibleByFilter(
+  hostFilters: readonly string[],
+  environmentId: string,
+): boolean {
+  return hostFilters.length === 0 || hostFilters.includes(environmentId);
+}
+
+/** Narrows connected-host sessions to the hosts selected in display options. */
+export function filterWorkspaceSessionsByHostFilters<
+  Session extends {
+    readonly host: { readonly executionScope: { readonly environmentId: string } };
+  },
+>(sessions: readonly Session[], hostFilters: readonly string[]): readonly Session[] {
+  if (hostFilters.length === 0) return sessions;
+  return sessions.filter((session) =>
+    isHostVisibleByFilter(hostFilters, session.host.executionScope.environmentId),
+  );
+}
+
 /** Shared paging keeps remote project rows and keyboard destinations in the same order. */
 export function deriveWorkspaceProjectThreadRows(input: {
   entry: WorkspaceProjectEntry;

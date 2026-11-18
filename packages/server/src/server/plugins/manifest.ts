@@ -69,20 +69,28 @@ function validateWebViews(web: PluginWeb | undefined): ReadonlySet<string> {
   return new Set(views.map((view) => view.id));
 }
 
-function validateContributions(
-  contributions: PluginContributions,
-  views: ReadonlySet<string>,
-): void {
-  const duplicate = findDuplicateId([
+/** Every contribution ID, namespaced by kind, in the order the manifest declares them. */
+function contributionIds(contributions: PluginContributions): string[] {
+  return [
     ...(contributions.commands ?? []).map((item) => `command:${item.id}`),
     ...(contributions.sidebarItems ?? []).map((item) => `sidebar:${item.id}`),
+    ...(contributions.panels ?? []).map((item) => `panel:${item.id}`),
     ...(contributions.composerPills ?? []).map((item) => `pill:${item.id}`),
     ...(contributions.attachmentSources ?? []).map((item) => `attachment:${item.id}`),
     ...(contributions.themes ?? []).map((item) => `theme:${item.id}`),
     ...(contributions.timelineItems ?? []).map((item) => `timeline:${item.kind}:${item.version}`),
-  ]);
+  ];
+}
+
+function validateContributions(
+  contributions: PluginContributions,
+  views: ReadonlySet<string>,
+): void {
+  const duplicate = findDuplicateId(contributionIds(contributions));
   if (duplicate) throw new Error(`Duplicate plugin contribution ID: ${duplicate}`);
   for (const item of contributions.sidebarItems ?? []) assertKnownView(item.view, views, item.id);
+  for (const item of contributions.panels ?? [])
+    assertKnownView(item.view, views, `panel "${item.id}"`);
   for (const item of contributions.commands ?? [])
     assertActionView(item.action, views, `command "${item.id}"`);
   for (const item of contributions.slashCommands ?? [])

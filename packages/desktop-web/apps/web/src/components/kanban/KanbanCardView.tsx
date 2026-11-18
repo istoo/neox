@@ -222,7 +222,7 @@ function KanbanCardViewComponent({
           {card.draftPrompt}
         </span>
       ) : null}
-      <span className="flex min-w-0 items-center gap-2 pt-0.5">
+      <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 pt-0.5">
         {card.isTerminal ? null : (
           <ProviderIcon
             provider={card.provider}
@@ -255,7 +255,7 @@ function KanbanCardViewComponent({
         {card.draftHasAttachments ? (
           <PaperclipIcon className="size-3 shrink-0 text-muted-foreground/70" aria-hidden />
         ) : null}
-        <span className="ml-auto flex min-w-0 shrink-0 items-center gap-2">
+        <span className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2">
           {card.isOptimisticDispatch ? (
             // Optimistically In Progress — the thread's real status (Draft/Completed)
             // would contradict the column until the first runtime signal arrives.

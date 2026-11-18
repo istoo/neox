@@ -65,6 +65,7 @@ import { useRepoDiffTotals } from "~/hooks/useRepoDiffTotals";
 import { useStableCallback } from "~/hooks/useStableCallback";
 import { closeDockTerminalPane } from "~/hooks/useTerminalSurfaceController";
 import { useThreadRecap } from "~/hooks/useThreadRecap";
+import { useThreadAttentionClear } from "~/hooks/useThreadAttentionClear";
 import { SINGLE_CHAT_PANE_SCOPE_ID } from "~/lib/chatPaneScope";
 import { formatComposerMentionToken } from "~/lib/composerMentions";
 import { hasActiveComposerSend } from "~/lib/composerSendOwnership";
@@ -1736,6 +1737,14 @@ export default function ChatView({
     setComposerCursor,
     setComposerTrigger,
     setComposerHighlightedItemId,
+  });
+  // Same timings as the app: entering the thread/window clears, composer focus and prompt
+  // sends clear, and leaving the agent clears. A pending approval/question is the attention,
+  // so viewing it must not clear the mark before the user answers.
+  const attentionClear = useThreadAttentionClear({
+    threadId: autoReadThreadId ?? null,
+    isFocused: !isInactiveSplitPane,
+    hasPendingPermission: pendingApprovals.length > 0 || pendingUserInputs.length > 0,
   });
   const activeProposedPlan = useMemo(() => {
     if (!latestTurnSettled) {
@@ -3540,6 +3549,7 @@ export default function ChatView({
     saveProjectScript,
     updateProjectScript,
     deleteProjectScript,
+    saveProjectWorktree,
     lastInvokedScriptByProjectId,
   } = useChatProjectScripts({
     activeThreadId,
@@ -5122,12 +5132,15 @@ export default function ChatView({
       // next message. Automatic queue drains must not acknowledge a new draft choice.
       const switchKeyForSend = claudeSwitchKey;
       const accepted = await submitComposerTurn(...args);
+      if (accepted) {
+        attentionClear.clearOnPromptSend();
+      }
       if (accepted && switchKeyForSend !== null && args[2] === undefined) {
         setSubmittedClaudeSwitchKey(switchKeyForSend);
       }
       return accepted;
     },
-    [claudeSwitchKey, isNativeSubagentMessagingUnavailable, submitComposerTurn],
+    [attentionClear, claudeSwitchKey, isNativeSubagentMessagingUnavailable, submitComposerTurn],
   );
   const showClaudeModelSwitchNote =
     claudeSwitchKey !== null &&
@@ -6415,9 +6428,19 @@ export default function ChatView({
           projectActions: {
             scripts: activeProjectScripts,
             onRunScript: onRunProjectScriptFromHeader,
+            // A draft chat has no daemon workspace until its first message; running an
+            // action before then would open a terminal the daemon cannot bind.
+            ...(activeThread?.neolixWorkspaceId
+              ? {}
+              : { runDisabledReason: t("chat:workspaceNeedsFirstMessage") }),
             onAddScript: saveProjectScript,
             onUpdateScript: updateProjectScript,
             onDeleteScript: deleteProjectScript,
+            worktree: {
+              setup: activeProject?.worktreeSetup ?? "",
+              teardown: activeProject?.worktreeTeardown ?? "",
+            },
+            onSaveWorktree: saveProjectWorktree,
           },
         }
       : {}),
@@ -6542,6 +6565,15 @@ export default function ChatView({
       <form
         ref={composerFormRef}
         onSubmit={onSend}
+        onFocusCapture={(event) => {
+          const target = event.target;
+          if (
+            target instanceof HTMLElement &&
+            target.closest('input, textarea, [contenteditable="true"]')
+          ) {
+            attentionClear.clearOnInputFocus();
+          }
+        }}
         className="relative z-10 w-full overflow-visible"
         data-chat-composer-form="true"
         data-chat-pane-scope={paneScopeId}

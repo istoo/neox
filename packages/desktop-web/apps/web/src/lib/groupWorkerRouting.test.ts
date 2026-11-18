@@ -23,6 +23,13 @@ const nativeApiMocks = vi.hoisted(() => ({
   getOverview: vi.fn(async () => ({})),
 }));
 
+// Neox hides the Groups surface; this suite covers the routing helper itself,
+// so re-enable the container gate for it.
+vi.mock("../betaFeatures", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../betaFeatures")>()),
+  GROUPS_ON: true,
+}));
+
 vi.mock("../nativeApi", () => ({
   readNativeApi: () => ({
     projectAgent: {

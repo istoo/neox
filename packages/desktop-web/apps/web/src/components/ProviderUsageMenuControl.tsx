@@ -2,15 +2,29 @@
 // Purpose: Shared provider-usage chip/menu used in the chat header and Environment panel.
 
 import {
+  DEFAULT_SERVER_SETTINGS_VIEW,
   PROVIDER_DISPLAY_NAMES,
   type ProviderInstanceId,
   type ProviderKind,
   type ServerCodexResetCredits,
   type ServerGetProviderUsageSnapshotResult,
+  type ServerProviderUsageSnapshot,
 } from "@synara/contracts";
+import {
+  deriveProviderInstances,
+  type ResolvedProviderInstance,
+} from "@synara/shared/providerInstances";
+import { providerUsageDisplayName } from "@synara/shared/providerUsage";
+import { useQuery } from "@tanstack/react-query";
 import { type ReactNode } from "react";
 
 import { useAppSettings } from "~/appSettings";
+import { providerUsageAccountSnapshots, usageSnapshotKey } from "~/lib/providerUsageAccounts.logic";
+import { providerAccountQualifiedLabel } from "~/lib/providerInstancePresentation";
+import {
+  serverAllProviderUsageQueryOptions,
+  serverSettingsQueryOptions,
+} from "~/lib/serverReactQuery";
 import {
   type ProviderUsageSummaryData,
   useProviderUsageSummary,
@@ -167,9 +181,15 @@ export function ProviderUsageMenuPopup({
   );
 }
 
-export function ProviderUsageMenuControl({ provider }: { provider: ProviderKind }) {
-  const model = useProviderUsageMenuModel(provider);
-
+function ProviderUsageChip({
+  provider,
+  model,
+  title,
+}: {
+  provider: ProviderKind;
+  model: ProviderUsageMenuModel;
+  title: string;
+}) {
   if (!model.primaryRow) {
     return null;
   }
@@ -185,7 +205,7 @@ export function ProviderUsageMenuControl({ provider }: { provider: ProviderKind 
                   type="button"
                   tone="plain"
                   className="gap-1.5 px-2"
-                  aria-label={model.menuTitle}
+                  aria-label={title}
                 />
               }
             >
@@ -194,8 +214,66 @@ export function ProviderUsageMenuControl({ provider }: { provider: ProviderKind 
             </MenuTrigger>
           }
         />
-        <TooltipPopup side="bottom">{model.menuTitle}</TooltipPopup>
+        <TooltipPopup side="bottom">{title}</TooltipPopup>
       </Tooltip>
     </ProviderUsageMenuPopup>
   );
+}
+
+/** One chip per signed-in account, named in its tooltip when the account is not the default. */
+function ProviderUsageAccountChip({
+  provider,
+  instance,
+  snapshot,
+}: {
+  provider: ProviderKind;
+  instance: ResolvedProviderInstance;
+  snapshot: ServerProviderUsageSnapshot;
+}) {
+  const model = useProviderUsageMenuModel(provider, {
+    instanceId: instance.instanceId,
+    providerSnapshot: snapshot,
+  });
+  const providerName = providerUsageDisplayName(provider);
+  const accountName = snapshot.accountLabel ?? instance.displayName;
+  const showsAccount =
+    snapshot.accountLabel !== undefined ||
+    !instance.isDefault ||
+    instance.displayName !== providerName;
+  const title = showsAccount
+    ? providerAccountQualifiedLabel(providerName, accountName)
+    : model.menuTitle;
+  return <ProviderUsageChip provider={provider} model={model} title={title} />;
+}
+
+/** The single provider-scoped chip, for a host with no per-account snapshots to draw. */
+function ProviderUsageFallbackChip({ provider }: { provider: ProviderKind }) {
+  const model = useProviderUsageMenuModel(provider);
+  return <ProviderUsageChip provider={provider} model={model} title={model.menuTitle} />;
+}
+
+export function ProviderUsageMenuControl({ provider }: { provider: ProviderKind }) {
+  const usageQuery = useQuery(serverAllProviderUsageQueryOptions());
+  const settingsQuery = useQuery(serverSettingsQueryOptions());
+  const instances = deriveProviderInstances(
+    settingsQuery.data ?? DEFAULT_SERVER_SETTINGS_VIEW,
+  ).filter((instance) => instance.enabled);
+  const accounts = providerUsageAccountSnapshots(usageQuery.data ?? [], instances, provider);
+
+  if (accounts.length > 0) {
+    return (
+      <>
+        {accounts.map(({ instance, snapshot }) => (
+          <ProviderUsageAccountChip
+            key={`${instance.instanceId}:${usageSnapshotKey(snapshot)}`}
+            provider={provider}
+            instance={instance}
+            snapshot={snapshot}
+          />
+        ))}
+      </>
+    );
+  }
+
+  return <ProviderUsageFallbackChip provider={provider} />;
 }

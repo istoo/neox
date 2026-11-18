@@ -4,7 +4,7 @@ For AI coding agents working in `packages/server`. Supplements [CLAUDE.md](../CL
 
 ## Project Overview
 
-Neolix is a mobile + CLI app for monitoring and controlling local AI coding agents (Claude Code, Codex, GitHub Copilot, OpenCode, Pi). The daemon runs on your machine, manages agent processes, and streams their output over WebSocket to clients.
+Neolix is a desktop + CLI app for monitoring and controlling local AI coding agents (Claude Code, Codex, GitHub Copilot, OpenCode, Pi). The daemon runs on your machine, manages agent processes, and streams their output over WebSocket to clients.
 
 ---
 
@@ -13,7 +13,7 @@ Neolix is a mobile + CLI app for monitoring and controlling local AI coding agen
 ### Root (monorepo)
 
 ```bash
-npm run dev                          # Start daemon + Expo in Tmux
+npm run dev                          # Start the dev daemon
 npm run build:server                 # Build: highlight + relay + protocol + client + server + cli
 npm run typecheck                    # Typecheck all packages
 npm run test                         # Test all packages

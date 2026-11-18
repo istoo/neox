@@ -43,7 +43,7 @@ function connectMini() {
   addWorkspaceSession({
     hostId: "paired-mini",
     hostName: "Mac mini",
-    wsPath: "/ws/remote/paired-mini",
+    wsPath: "/rpc/remote/paired-mini",
     executionScope: {
       environmentId: "mini",
       accountAuthority: "https://account.example",

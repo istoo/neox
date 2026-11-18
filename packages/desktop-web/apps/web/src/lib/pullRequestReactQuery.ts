@@ -12,6 +12,7 @@ export {
   pullRequestAutoFixQueryOptions,
   pullRequestDetailQueryOptions,
   pullRequestDiffQueryOptions,
+  pullRequestPipelineQueryOptions,
   pullRequestQueryErrorState,
   pullRequestQueryKeys,
 } from "./pullRequestQueryOptions";
@@ -22,6 +23,7 @@ export {
   pullRequestActionMutationOptions,
   pullRequestCommentMutationOptions,
   pullRequestMutationKeys,
+  pullRequestSetAutoMergeMutationOptions,
   pullRequestsForceRefreshMutationOptions,
   pullRequestSetAutoFixMutationOptions,
   pullRequestSetPinnedMutationOptions,

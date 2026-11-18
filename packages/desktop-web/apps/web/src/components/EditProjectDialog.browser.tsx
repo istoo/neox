@@ -1,5 +1,6 @@
 import "../index.css";
 
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { page } from "vitest/browser";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
@@ -7,15 +8,20 @@ import { render } from "vitest-browser-react";
 import { EditProjectDialog, type EditProjectValue } from "./EditProjectDialog";
 
 function renderDialog(onSave: (value: EditProjectValue) => void) {
+  // The dialog reads host features through react-query; the app root always
+  // provides a client (router.ts), so the test provides one too.
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
-    <EditProjectDialog
-      open
-      cwd="/tmp/ws-alpha"
-      folderName="ws-alpha"
-      initialValue={{ name: "", appearance: null }}
-      onOpenChange={() => {}}
-      onSave={onSave}
-    />,
+    <QueryClientProvider client={queryClient}>
+      <EditProjectDialog
+        open
+        cwd="/tmp/ws-alpha"
+        folderName="ws-alpha"
+        initialValue={{ name: "", appearance: null }}
+        onOpenChange={() => {}}
+        onSave={onSave}
+      />
+    </QueryClientProvider>,
   );
 }
 

@@ -20,7 +20,7 @@ import {
 import { tmpdir } from "os";
 import { join, resolve as resolvePath } from "path";
 import pino from "pino";
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 
 import {
   assertPullRequestAutoMergeDisableReady,
@@ -2133,6 +2133,19 @@ test("push token revocation only acknowledges durable removal", async () => {
 
 describe("daemon status + pairing RPC", () => {
   const tempDirs: string[] = [];
+  const originalContainer = process.env.NEOLIX_CONTAINER;
+
+  beforeAll(() => {
+    process.env.NEOLIX_CONTAINER = "0";
+  });
+
+  afterAll(() => {
+    if (originalContainer === undefined) {
+      delete process.env.NEOLIX_CONTAINER;
+    } else {
+      process.env.NEOLIX_CONTAINER = originalContainer;
+    }
+  });
 
   afterEach(() => {
     for (const dir of tempDirs.splice(0)) {
@@ -4167,6 +4180,7 @@ describe("session checkout status handling", () => {
     const messages: unknown[] = [];
     const workspaceRuntimeStore = { ...createWorkspaceRuntimeStore(), get: vi.fn() };
     const workspaceGitService = {
+      refresh: vi.fn().mockResolvedValue(undefined),
       getSnapshot: vi.fn().mockResolvedValue(createWorkspaceGitSnapshot("/tmp/service-worktree")),
     };
     const session = createSessionForTest({ workspaceRuntimeStore, workspaceGitService, messages });
@@ -4207,6 +4221,7 @@ describe("session checkout status handling", () => {
     const messages: unknown[] = [];
     const workspaceRuntimeStore = { ...createWorkspaceRuntimeStore(), get: vi.fn(() => null) };
     const workspaceGitService = {
+      refresh: vi.fn().mockResolvedValue(undefined),
       getSnapshot: vi.fn().mockResolvedValue(
         createWorkspaceGitSnapshot("/tmp/cold-worktree", {
           git: {

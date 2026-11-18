@@ -3,6 +3,12 @@ export const NEOLIX_BROWSER_PROFILE_PARTITION = "persist:neolix-browser";
 const LEGACY_BROWSER_ID_PATTERN =
   /^(?:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}|\d{13,}-[0-9a-f]+)$/i;
 const MAX_LEGACY_BROWSER_PROFILES = 1000;
+// Chromium stores `persist:foo` under `Partitions/foo`; that is the only place a
+// retired legacy profile is still visible once the old app stopped naming it.
+const LEGACY_BROWSER_PARTITION_DIRECTORY_PREFIX = `${NEOLIX_BROWSER_PROFILE_PARTITION.replace(
+  /^persist:/,
+  "",
+)}-`;
 
 const NEOLIX_BROWSER_STORAGE_TYPES = [
   "cookies",
@@ -66,6 +72,25 @@ export function readLegacyNeolixBrowserIds(input: unknown): string[] {
     }
   }
   return [...browserIds];
+}
+
+/**
+ * Chromium stores a persistent partition under `Partitions/<name>` with the
+ * `persist:` prefix stripped, so `persist:neolix-browser-<id>` leaves a
+ * `neolix-browser-<id>` directory behind. Recover those ids from the directory
+ * names; a partition only lives on disk if some retired tab actually used it.
+ */
+export function readLegacyNeolixBrowserIdsFromPartitionDirectory(
+  names: Iterable<string>,
+): string[] {
+  const legacyBrowserIds: string[] = [];
+  for (const name of names) {
+    if (!name.startsWith(LEGACY_BROWSER_PARTITION_DIRECTORY_PREFIX)) {
+      continue;
+    }
+    legacyBrowserIds.push(name.slice(LEGACY_BROWSER_PARTITION_DIRECTORY_PREFIX.length));
+  }
+  return readLegacyNeolixBrowserIds(legacyBrowserIds);
 }
 
 export function getNeolixBrowserProfileSessions(

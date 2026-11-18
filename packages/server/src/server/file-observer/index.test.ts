@@ -123,7 +123,7 @@ test("an ignore update is a barrier for later delivery", async () => {
   );
   const sentinel = join(root, "still-observed.txt");
   await writeFile(sentinel, "observed");
-  await expect.poll(() => deliveredPaths.has(sentinel)).toBe(true);
+  await expect.poll(() => deliveredPaths.has(sentinel), { timeout: 10_000 }).toBe(true);
 
   expect(
     delivered
@@ -143,14 +143,30 @@ test("survives atomic replacement and remains observable", async () => {
     events.push(...batch);
   });
 
+  // fs.watch starts its FSEvents stream asynchronously on macOS. A change made
+  // in the gap after subscribe() resolves is never delivered, so keep writing
+  // a probe until one event round-trips through the subscription.
+  const ready = join(root, "ready.txt");
+  await expect
+    .poll(
+      async () => {
+        if (events.some((event) => event.path === ready)) return true;
+        await writeFile(ready, `${Date.now()}`);
+        return false;
+      },
+      { timeout: 20_000, interval: 500 },
+    )
+    .toBe(true);
+  events.length = 0;
+
   const replacement = join(root, "replacement.txt");
   await writeFile(replacement, "after");
   await rename(replacement, target);
-  await expect.poll(() => events.map((event) => event.path)).toContain(target);
+  await expect.poll(() => events.map((event) => event.path), { timeout: 20_000 }).toContain(target);
 
   events.length = 0;
   await writeFile(target, "again");
-  await expect.poll(() => events.map((event) => event.path)).toContain(target);
+  await expect.poll(() => events.map((event) => event.path), { timeout: 20_000 }).toContain(target);
   await subscription.unsubscribe();
 });
 

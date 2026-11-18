@@ -59,7 +59,7 @@ describe("codex agent commands E2E", () => {
 
     const agent = await ctx.client.createAgent({
       ...getFullAccessConfig("codex"),
-      cwd: "/tmp",
+      cwd: tmpdir(),
       title: "Codex Commands Test Agent",
     });
 
@@ -113,7 +113,7 @@ describe("codex agent commands E2E", () => {
 
     const agent = await ctx.client.createAgent({
       ...getFullAccessConfig("codex"),
-      cwd: "/tmp",
+      cwd: tmpdir(),
       title: "Codex Prompt Execute Test Agent",
     });
 
@@ -141,7 +141,7 @@ describe("codex agent commands E2E", () => {
     try {
       const agent = await ctx.client.createAgent({
         ...getFullAccessConfig("codex"),
-        cwd: "/tmp",
+        cwd: tmpdir(),
         title: "Codex Command Route Test",
       });
 
@@ -163,7 +163,7 @@ describe("codex agent commands E2E", () => {
   test("sendMessage keeps unknown slash input as plain prompt text", async () => {
     const agent = await ctx.client.createAgent({
       ...getFullAccessConfig("codex"),
-      cwd: "/tmp",
+      cwd: tmpdir(),
       title: "Codex Slash Fallback",
     });
 

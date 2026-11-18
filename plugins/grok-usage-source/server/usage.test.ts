@@ -265,6 +265,15 @@ describe("grok usage source", () => {
       balances: [],
     });
   });
+
+  it("does not request the billing API without a Grok login", async () => {
+    const request = vi.fn(async () => new Response(null, { status: 200 }));
+
+    await expect(fetchFirst(request as unknown as typeof fetch)).rejects.toThrow(
+      "No configured account",
+    );
+    expect(request).not.toHaveBeenCalled();
+  });
 });
 
 it("discovery returns a locator when fetch finds grok credentials", async () => {

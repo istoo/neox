@@ -1,8 +1,9 @@
 # Running Neox in Docker
 
 Neox publishes a container image for running the daemon on a server, VM, NAS,
-or homelab box. The image also serves the bundled browser web UI, so one
-container gives you both the daemon API and a self-hosted UI.
+or homelab box. The image runs the daemon and includes the web client. The daemon
+serves that client to browsers through Settings › Network › Browser access, on a
+port of its own.
 
 The image source lives in [`docker/`](../docker/).
 
@@ -11,16 +12,20 @@ The image source lives in [`docker/`](../docker/).
 The official image:
 
 - builds `@neolix/server` and `@neolix/cli` from source-built workspace tarballs
+- builds the desktop web app with Bun in the build stage and ships
+  `dist/server/web-app` (the page and its RPC bundle) in `@neolix/server`; Bun is
+  not in the final image
 - runs the daemon as the non-root `neolix` user
 - listens on `0.0.0.0:6868` inside the container
-- enables the bundled daemon web UI with `NEOLIX_WEB_UI_ENABLED=true`
 - stores daemon state and agent credentials under `/home/neolix`
 - leaves agent CLIs out of the base image
 
-Open the container's HTTP origin, for example `http://localhost:6868`, to load
-the web UI. The served app receives a same-origin connection hint and connects
-back to that daemon. Static UI files load without daemon auth; API and
-WebSocket requests still require `NEOLIX_PASSWORD` when one is configured.
+Point clients at the container's HTTP origin, for example `http://localhost:6868`.
+The web app on that port answers only requests from inside the container: the
+daemon checks the peer and the `Host` name against loopback. A published port is
+reached from another address, so the browser page comes from Browser access
+instead. API and WebSocket requests still require `NEOLIX_PASSWORD` when one is
+configured.
 
 Host-side CLI commands select the container explicitly, for example `neox project ls --host 127.0.0.1:6868`. Without an endpoint selector the CLI looks for a local home’s supervisor. Container environment settings are deployment overrides; worker restart preserves them. Your container manager owns full supervisor replacement.
 
@@ -29,20 +34,25 @@ Host-side CLI commands select the container explicitly, for example `neox projec
 ```bash
 docker run -d --name neolix \
   -p 6868:6868 \
+  -p 3430:3430 \
   -e NEOLIX_PASSWORD=change-me \
   -v "$PWD/neox-home:/home/neolix" \
   -v "$PWD:/workspace" \
   ghcr.io/istoo/neox:latest
 ```
 
-Then open:
+Connect a Neox client to `127.0.0.1:6868` with that password. Open Settings ›
+Network › Browser access, choose LAN, keep port `3430`, and copy the key. Then
+open:
 
 ```text
-http://localhost:6868
+http://localhost:3430/?k=<the key>
 ```
 
-If you set `NEOLIX_PASSWORD`, enter the same password when adding the direct
-daemon connection in the web UI or another Neox client.
+`localhost` is one of the names Browser access answers to. From another
+computer, use the Docker host's address in the link and start the container with
+`NEOLIX_PUBLIC_URL` set to that same origin (for example
+`http://192.168.1.5:3430`), so the daemon's Host check accepts the name.
 
 ## Docker Compose
 
@@ -63,6 +73,7 @@ services:
     restart: unless-stopped
     ports:
       - "6868:6868"
+      - "3430:3430"
     environment:
       NEOLIX_PASSWORD: "change-me"
     volumes:
@@ -136,13 +147,16 @@ container with Docker's `--user` / Compose `user:` option.
 ## Reverse Proxies
 
 When serving Neox behind a reverse proxy, forward normal HTTP requests and
-WebSocket upgrades to the same daemon port.
+WebSocket upgrades to the Browser access port, and set `NEOLIX_PUBLIC_URL` to
+the public origin. Browser access refuses a `Host` it was not told about, and
+that variable is how a tunnel's or proxy's own name is allowed in. The daemon
+port serves API clients directly and answers its web app only on loopback.
 
 Caddy example:
 
 ```caddy
 neox.example.com {
-  reverse_proxy 127.0.0.1:6868
+  reverse_proxy 127.0.0.1:3430
 }
 ```
 
@@ -154,7 +168,7 @@ server {
     server_name neox.example.com;
 
     location / {
-        proxy_pass http://127.0.0.1:6868;
+        proxy_pass http://127.0.0.1:3430;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
@@ -164,12 +178,13 @@ server {
 }
 ```
 
-If you reach the daemon by DNS name, set `NEOLIX_HOSTNAMES` so host-header
-validation allows that name:
+If API clients reach the daemon by DNS name, set `NEOLIX_HOSTNAMES` so the
+daemon's host-header validation allows that name:
 
 ```yaml
 environment:
   NEOLIX_HOSTNAMES: "neox.example.com,.lan"
+  NEOLIX_PUBLIC_URL: "https://neox.example.com"
 ```
 
 IPs and `localhost` are allowed by default.
@@ -178,13 +193,14 @@ IPs and `localhost` are allowed by default.
 
 - Set `NEOLIX_PASSWORD` for any published port or network-reachable deployment.
 - Prefer HTTPS at the reverse proxy for direct browser access.
-- Deploy your own [relay](../packages/relay) for untrusted networks or mobile
+- Deploy your own [relay](../packages/relay) for untrusted networks or remote
   access when you do not want to expose the daemon port directly.
 - The container is the isolation boundary for agents. Agents can read and write
   whatever you mount into `/workspace` and whatever credentials you place in
   `/home/neolix`.
-- The bundled web UI static files are public on the daemon origin. The daemon
-  API and WebSocket remain protected by password auth when configured.
+- Browser access is guarded by its key and its `Host` check. The web app on the
+  daemon port answers loopback requests only. The daemon API and WebSocket remain
+  protected by password auth when configured.
 
 See [SECURITY.md](../SECURITY.md) for the daemon trust model.
 
@@ -229,9 +245,10 @@ The published image is multi-arch for `linux/amd64` and `linux/arm64`.
 
 ## Troubleshooting
 
-- **The web UI loads but cannot connect**: if `NEOLIX_PASSWORD` is set, add a
-  direct connection with the same password.
-- **403 Host not allowed**: set `NEOLIX_HOSTNAMES` to the DNS names you use.
+- **The page does not open on `:6868`**: expected. The daemon port serves its web
+  app to loopback only; publish `3430` and use Browser access.
+- **403 Host not allowed**: for API clients set `NEOLIX_HOSTNAMES`; for Browser
+  access set `NEOLIX_PUBLIC_URL` to the address the browser uses.
 - **Provider not available**: install that agent CLI in a child image or mount a
   runtime where the binary is on `PATH`.
 - **Permission errors in `/workspace`**: make the mounted directory writable by

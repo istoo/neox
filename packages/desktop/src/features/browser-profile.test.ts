@@ -5,6 +5,7 @@ import {
   getNeolixBrowserProfileSessions,
   listNeolixBrowserProfileGuests,
   readLegacyNeolixBrowserIds,
+  readLegacyNeolixBrowserIdsFromPartitionDirectory,
 } from "./browser-profile.js";
 
 class FakeProfileSession {
@@ -131,6 +132,23 @@ describe("legacy browser profiles", () => {
     expect(getLegacyNeolixBrowserProfileSession(sessions, "1700000000000-abcd")).not.toBeNull();
     expect(getLegacyNeolixBrowserProfileSession(sessions, "invalid")).toBeNull();
     expect(partitions).toEqual(["persist:neolix-browser-1700000000000-abcd"]);
+  });
+
+  test("recovers legacy ids from the partition directories Chromium leaves on disk", () => {
+    const uuid = "123e4567-e89b-42d3-a456-426614174000";
+    const fallbackId = "1700000000000-abcd";
+
+    // Chromium stores `persist:neolix-browser-<id>` as `neolix-browser-<id>`.
+    expect(
+      readLegacyNeolixBrowserIdsFromPartitionDirectory([
+        "neolix-browser",
+        `neolix-browser-${uuid}`,
+        `neolix-browser-${fallbackId}`,
+        `neolix-browser-${uuid}`,
+        "neolix-browser-not-a-browser-id",
+        "some-other-app",
+      ]),
+    ).toEqual([uuid, fallbackId]);
   });
 });
 

@@ -1143,7 +1143,7 @@ describe.skipIf(isPlatform("win32"))("worktree POSIX-only", () => {
         worktree: {
           terminals: [
             { name: "Dev Server", command: "npm run dev" },
-            { command: "cd packages/app && npm run dev" },
+            { command: "cd packages/server && npm run dev" },
           ],
         },
       };
@@ -1151,7 +1151,7 @@ describe.skipIf(isPlatform("win32"))("worktree POSIX-only", () => {
 
       expect(await getWorktreeTerminalSpecs(repoDir)).toEqual([
         { name: "Dev Server", command: "npm run dev" },
-        { command: "cd packages/app && npm run dev" },
+        { command: "cd packages/server && npm run dev" },
       ]);
     });
 
@@ -1162,7 +1162,7 @@ describe.skipIf(isPlatform("win32"))("worktree POSIX-only", () => {
             null,
             {},
             { name: "   ", command: "   " },
-            { name: " Watch ", command: "npm run watch", cwd: "packages/app" },
+            { name: " Watch ", command: "npm run watch", cwd: "packages/server" },
             { name: 123, command: "npm run test" },
           ],
         },

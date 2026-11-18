@@ -21,7 +21,7 @@ const bridges: ClaudeBridge[] = [];
 
 afterEach(async () => {
   for (const bridge of bridges.splice(0)) {
-    bridge.abortAll();
+    await bridge.abortAll();
   }
   await Promise.all(
     servers.splice(0).map(
@@ -37,13 +37,12 @@ afterEach(async () => {
 });
 
 const SCRIPT = `
-while read -r line; do
-  printf '%s\\n' \\
-    '{"type":"stream_event","event":{"type":"message_start","message":{"id":"m","model":"model-a","usage":{"input_tokens":3}}}}' \\
-    '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello from claude"}}}' \\
-    '{"type":"stream_event","event":{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}}' \\
-    '{"type":"stream_event","event":{"type":"message_stop"}}'
-done
+onLines(() => {
+  out(JSON.stringify({ type: "stream_event", event: { type: "message_start", message: { id: "m", model: "model-a", usage: { input_tokens: 3 } } } }));
+  out(JSON.stringify({ type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "hello from claude" } } }));
+  out(JSON.stringify({ type: "stream_event", event: { type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 2 } } }));
+  out(JSON.stringify({ type: "stream_event", event: { type: "message_stop" } }));
+});
 `;
 
 interface Gateway {
@@ -141,15 +140,15 @@ const SECRET = "sk-live-abcdEFGH12345678ijklMNOP";
 
 /** A reply that says the placeholder it was sent, so masking can be checked. */
 const maskingScript = (dir: string): string => `
-while read -r line; do
-  printf '%s' "$line" > ${JSON.stringify(path.join(dir, "input"))}
-  token=$(printf '%s' "$line" | grep -o '{{API_KEY_[0-9a-f]*}}' | head -1)
-  printf '%s\\n' \\
-    '{"type":"stream_event","event":{"type":"message_start","message":{"id":"m","model":"model-a","usage":{"input_tokens":3}}}}' \\
-    '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"key is '"$token"'"}}}' \\
-    '{"type":"stream_event","event":{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}}' \\
-    '{"type":"stream_event","event":{"type":"message_stop"}}'
-done
+onLines((line) => {
+  fs.writeFileSync(${JSON.stringify(path.join(dir, "input"))}, line);
+  const found = /\\{\\{API_KEY_[0-9a-f]*\\}\\}/.exec(line);
+  const token = found ? found[0] : "";
+  out(JSON.stringify({ type: "stream_event", event: { type: "message_start", message: { id: "m", model: "model-a", usage: { input_tokens: 3 } } } }));
+  out(JSON.stringify({ type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "key is " + token } } }));
+  out(JSON.stringify({ type: "stream_event", event: { type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 2 } } }));
+  out(JSON.stringify({ type: "stream_event", event: { type: "message_stop" } }));
+});
 `;
 
 const ask = (stream: boolean) =>

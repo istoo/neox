@@ -14,7 +14,10 @@ function fakeModel(entries: Array<{ id: string; title: string; updatedAt: string
 
 function fakeClient(input: {
   locations: Record<string, Array<{ seq: number; count?: number }>>;
-  timelines?: Record<string, Array<{ seqStart: number; item: Record<string, unknown> }>>;
+  timelines?: Record<
+    string,
+    Array<{ seqStart: number; seqEnd?: number; item: Record<string, unknown> }>
+  >;
 }): DaemonClient {
   return {
     searchAgentTimeline: async ({ agentId }: { agentId: string }) => ({
@@ -45,7 +48,11 @@ describe("searchRpc", () => {
       timelines: {
         "thread-a": [
           { seqStart: 1, item: { type: "user_message", text: "please check" } },
-          { seqStart: 2, item: { type: "assistant_message", text: "The alpha result is here" } },
+          {
+            seqStart: 2,
+            seqEnd: 2,
+            item: { type: "assistant_message", text: "The alpha result is here" },
+          },
         ],
       },
     });
@@ -57,6 +64,34 @@ describe("searchRpc", () => {
     expect(() =>
       Schema.encodeUnknownSync(OrchestrationSearchThreadsResult as never)(result),
     ).not.toThrow();
+  });
+
+  it("excerpts a merged assistant entry from the seqEnd the daemon reports", async () => {
+    const model = fakeModel([
+      { id: "thread-a", title: "Unrelated title", updatedAt: "2026-11-08T00:00:01.000Z" },
+    ]);
+    const client = fakeClient({
+      // The daemon's search reports the projected entry's seqEnd. Streaming replies are
+      // merged from many rows, so seqStart and seqEnd differ.
+      locations: { "thread-a": [{ seq: 14, count: 1 }] },
+      timelines: {
+        "thread-a": [
+          {
+            seqStart: 2,
+            seqEnd: 14,
+            item: { type: "assistant_message", text: "Now the scroll anchor logic is clear" },
+          },
+        ],
+      },
+    });
+    const result = await searchThreads(model, client, { query: "scroll anchor" });
+    expect(result.matches).toEqual([
+      {
+        threadId: "thread-a",
+        excerpt: "Now the scroll anchor logic is clear",
+        matchCount: 1,
+      },
+    ]);
   });
 
   it("caps the result at the requested limit", async () => {

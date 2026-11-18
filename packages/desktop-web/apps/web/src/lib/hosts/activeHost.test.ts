@@ -41,12 +41,12 @@ describe("activeHost", () => {
   it("leaves a legacy remote selection for migration without changing local execution", () => {
     sessionStorage.setItem(
       KEY,
-      JSON.stringify({ hostId: "host_1", hostName: "Ada", wsPath: "/ws/remote/host_1/" }),
+      JSON.stringify({ hostId: "host_1", hostName: "Ada", wsPath: "/rpc/remote/host_1/" }),
     );
     expect(readLegacyActiveHost()).toEqual({
       hostId: "host_1",
       hostName: "Ada",
-      wsPath: "/ws/remote/host_1/",
+      wsPath: "/rpc/remote/host_1/",
     });
     expect(readActiveHost()).toBeNull();
   });

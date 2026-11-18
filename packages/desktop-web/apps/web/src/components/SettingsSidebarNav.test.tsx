@@ -6,8 +6,10 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach } from "vitest";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { setLanguagePreference, t } from "../i18n";
 import { SettingsRow } from "./settings/SettingsPanelPrimitives";
+import { SettingsSidebarNav } from "./SettingsSidebarNav";
 
 import {
   SETTINGS_SEARCH_ENTRIES,
@@ -202,5 +204,21 @@ describe("rankSettingsSearchEntries", () => {
     expect(ids("vim")).not.toContain("behavior:archive-confirmation");
     expect(ids("pr")).not.toContain("behavior:archive-confirmation");
     expect(ids("stt")).not.toContain("behavior:archive-confirmation");
+  });
+});
+
+describe("SettingsSidebarNav groups", () => {
+  it("lists every settings page once under its own group", () => {
+    setLanguagePreference("en");
+    const html = renderToStaticMarkup(
+      <QueryClientProvider client={new QueryClient()}>
+        <SettingsSidebarNav activeSection="general" onSelectSection={() => {}} />
+      </QueryClientProvider>,
+    );
+    const occurrences = (label: string) => html.split(label).length - 1;
+    expect(occurrences("General")).toBe(1);
+    expect(occurrences("Appearance")).toBe(1);
+    expect(occurrences("Usage &amp; quota")).toBe(1);
+    expect(occurrences("Host &amp; diagnostics")).toBe(1);
   });
 });

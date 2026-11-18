@@ -7,6 +7,8 @@ import { relative as relativePath } from "node:path";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
 
+import { vitestMaxWorkers } from "./vitest-max-workers.mjs";
+
 const repoRoot = new URL("../", import.meta.url);
 const ciWorkflowPath = new URL(".github/workflows/ci.yml", repoRoot);
 const dockerWorkflowPath = new URL(".github/workflows/docker.yml", repoRoot);
@@ -30,15 +32,18 @@ const gatedCiJobs = new Map([
   ],
   ["desktop-tests-ubuntu", { name: "desktop-tests (ubuntu-latest)", contract: "desktop" }],
   ["desktop-tests-windows", { name: "desktop-tests (windows-latest)", contract: "desktop" }],
-  ["app-tests", { name: "app-tests", contract: "app" }],
-  ["playwright-1", { name: "playwright (shard 1/8)", contract: "browser" }],
-  ["playwright-2", { name: "playwright (shard 2/8)", contract: "browser" }],
-  ["playwright-3", { name: "playwright (shard 3/8)", contract: "browser" }],
-  ["playwright-4", { name: "playwright (shard 4/8)", contract: "browser" }],
-  ["playwright-5", { name: "playwright (shard 5/8)", contract: "browser" }],
-  ["playwright-6", { name: "playwright (shard 6/8)", contract: "browser" }],
-  ["playwright-7", { name: "playwright (shard 7/8)", contract: "browser" }],
-  ["playwright-8", { name: "playwright (shard 8/8)", contract: "browser" }],
+  [
+    "desktop-web-tests",
+    { name: "desktop-web-tests (typecheck and unit)", contract: "desktop_web" },
+  ],
+  ["desktop-web-browser-1", { name: "desktop-web-browser (shard 1/4)", contract: "desktop_web" }],
+  ["desktop-web-browser-2", { name: "desktop-web-browser (shard 2/4)", contract: "desktop_web" }],
+  ["desktop-web-browser-3", { name: "desktop-web-browser (shard 3/4)", contract: "desktop_web" }],
+  ["desktop-web-browser-4", { name: "desktop-web-browser (shard 4/4)", contract: "desktop_web" }],
+  [
+    "desktop-web-e2e",
+    { name: "desktop-web-e2e (real daemon and UI)", contract: "desktop_web_real_daemon" },
+  ],
   ["cli-tests-1", { name: "cli-tests (shard 1/3)", contract: "cli" }],
   ["cli-tests-2", { name: "cli-tests (shard 2/3)", contract: "cli" }],
   ["cli-tests-3", { name: "cli-tests (shard 3/3)", contract: "cli" }],
@@ -190,19 +195,96 @@ test("focused contracts stay inside existing required checks", () => {
   assert.match(server, /npm run test --workspace=@neolix\/server/);
   assert.ok(!jobs.has("hub-cli-contract"));
 
-  assert.match(desktop, /test:e2e:renderer/);
-  assert.match(desktop, /test:e2e:browser-tabs/);
   assert.match(desktop, /npm run test --workspace=@neolix\/desktop/);
   assert.ok(!jobs.has("desktop-browser-bridge"));
   assert.ok(!jobs.has("playwright-desktop"));
 });
 
-test("ordinary CI keeps app tests without prebuilding Android modules", () => {
-  const source = readFileSync(ciWorkflowPath, "utf8");
-  const app = jobBlocks(source).get("app-tests").join("\n");
-  assert.match(app, /npm run build:app-deps/);
-  assert.match(app, /npm run test --workspace=@neolix\/app/);
-  assert.doesNotMatch(source, /test:android|expo prebuild|gradlew|actions\/setup-java/);
+test("desktop-web typechecks, unit tests, and every browser project run in CI", () => {
+  const jobs = jobBlocks(readFileSync(ciWorkflowPath, "utf8"));
+  const changes = jobs.get("changes").join("\n");
+  const unitJob = jobs.get("desktop-web-tests").join("\n");
+
+  assert.match(changes, /^      desktop_web: \$\{\{ steps\.filter\.outputs\.desktop_web \}\}$/m);
+  assert.match(unitJob, /run: node scripts\/npm-retry\.mjs ci/);
+  assert.match(unitJob, /run: npm run build:server/);
+  assert.match(
+    unitJob,
+    /working-directory: packages\/desktop-web\n        run: bun install --frozen-lockfile/,
+  );
+  for (const directory of [
+    "packages/desktop-web/packages/contracts",
+    "packages/desktop-web/packages/client-runtime",
+    "packages/desktop-web/apps/bridge",
+    "packages/desktop-web/apps/web",
+  ]) {
+    assert.match(
+      unitJob,
+      new RegExp(
+        `working-directory: ${directory.replaceAll("/", "\\/")}\n        run: bun run typecheck`,
+      ),
+      `${directory} typecheck`,
+    );
+  }
+  assert.match(
+    unitJob,
+    /working-directory: packages\/desktop-web\/packages\/client-runtime\n        run: bun run test/,
+  );
+  assert.match(
+    unitJob,
+    /working-directory: packages\/desktop-web\/apps\/bridge\n        run: bunx vitest run/,
+  );
+  assert.match(
+    unitJob,
+    /working-directory: packages\/desktop-web\/apps\/web\n        run: bunx vitest run/,
+  );
+
+  const browserConfig = readFileSync(
+    new URL("packages/desktop-web/apps/web/vitest.browser.ci.config.ts", repoRoot),
+    "utf8",
+  );
+  const projects = [...browserConfig.matchAll(/^          name: "([^"]+)",$/gm)].map(
+    (match) => match[1],
+  );
+  assert.ok(projects.length > 1, "the browser CI config declares shard projects");
+  const shardProjects = [];
+  for (let shard = 1; shard <= projects.length; shard += 1) {
+    const job = jobs.get(`desktop-web-browser-${shard}`)?.join("\n");
+    assert.ok(job, `missing browser shard ${shard}`);
+    if (shard === 1) {
+      assert.match(
+        job,
+        /working-directory: packages\/desktop-web\/apps\/web\n        run: bun run test:browser:install/,
+      );
+      assert.match(
+        job,
+        /run: bunx vitest run --config vitest\.browser\.ci\.config\.ts --project="\$DESKTOP_WEB_BROWSER_PROJECT"/,
+      );
+    } else {
+      // Later shards reuse the first shard's steps instead of copying them.
+      assert.match(job, /^    steps: \*desktop_web_browser_steps$/m, `browser shard ${shard}`);
+    }
+    const project = /^      DESKTOP_WEB_BROWSER_PROJECT: (\S+)$/m.exec(job)?.[1];
+    assert.ok(project, `browser shard ${shard} selects a project`);
+    shardProjects.push(project);
+  }
+  assert.deepEqual(shardProjects.sort(), projects.sort());
+  assert.ok(!jobs.has(`desktop-web-browser-${projects.length + 1}`));
+});
+
+test("desktop-web e2e builds the daemon page and runs the real-daemon suite", () => {
+  const jobs = jobBlocks(readFileSync(ciWorkflowPath, "utf8"));
+  const job = jobs.get("desktop-web-e2e")?.join("\n");
+  assert.ok(job, "missing desktop-web-e2e job");
+  assert.match(job, /run: node scripts\/npm-retry\.mjs ci/);
+  assert.match(job, /run: npm run build:server/);
+  assert.match(
+    job,
+    /working-directory: packages\/desktop-web\n        run: bun install --frozen-lockfile/,
+  );
+  assert.match(job, /run: npm run build:daemon-web-app/);
+  assert.match(job, /run: npx playwright install --with-deps chromium/);
+  assert.match(job, /run: npm run test:e2e:desktop-web --workspace=@neolix\/server/);
 });
 
 test("server builds exclude test utilities at every domain depth", () => {
@@ -231,21 +313,28 @@ test("PR routing declares stable behavior ownership", () => {
       ".agents/**/*.{cjs,css,html,js,json,jsonc,jsx,md,mjs,ts,tsx,yaml,yml}",
       ".github/**/*.{cjs,css,html,js,json,jsonc,jsx,md,mjs,ts,tsx,yaml,yml}",
       "**/*.{cjs,css,html,js,json,jsonc,jsx,md,mjs,ts,tsx,yaml,yml}",
-      "packages/expo-two-way-audio/**",
     ],
-    quality: ["**/*.{cjs,js,json,jsx,mjs,ts,tsx}", "packages/expo-two-way-audio/**"],
+    quality: ["**/*.{cjs,js,json,jsx,mjs,ts,tsx}"],
     hub: ["packages/cli/src/commands/hub/**", "packages/server/src/server/hub/**"],
-    server: ["plugins/**", "packages/server/**", "packages/app/e2e/support/fixtures/recording.*"],
-    desktop: [
-      "packages/desktop/**",
-      "packages/app/src/desktop/**",
-      "packages/app/src/**/*.electron.{ts,tsx}",
-      "packages/server/src/server/browser-tools/**",
-      "packages/app/e2e/support/**",
-      "packages/app/*config.{cjs,js,ts}",
-      "packages/app/package.json",
+    server: ["plugins/**", "packages/server/**"],
+    desktop: ["packages/desktop/**", "packages/server/src/server/browser-tools/**"],
+    desktop_web: [
+      "packages/desktop-web/**",
+      "packages/client/**",
+      "packages/protocol/**",
+      "packages/relay/**",
+      "packages/server/src/server/local-credential.ts",
+      "CHANGELOG*.md",
     ],
-    app: ["packages/app/**", "packages/expo-two-way-audio/**"],
+    desktop_web_real_daemon: [
+      "packages/desktop-web/**",
+      "packages/server/**",
+      "packages/client/**",
+      "packages/protocol/**",
+      "packages/relay/**",
+      "scripts/build-daemon-web-app.mjs",
+      "CHANGELOG*.md",
+    ],
     sdk: [
       "packages/plugin/**",
       "plugin-examples/**",
@@ -253,28 +342,6 @@ test("PR routing declares stable behavior ownership", () => {
       "packages/client/**",
       "packages/highlight/**",
       "packages/protocol/**",
-    ],
-    browser: [
-      "packages/server/src/server/agent/provider-snapshot-manager.ts",
-      "packages/server/src/server/session/provider/provider-catalog-session.ts",
-      "packages/client/src/compat/normalize-provider-models.ts",
-      "packages/protocol/src/client-capabilities.ts",
-      "packages/server/src/server/agent/provider-registry.ts",
-      "packages/server/src/server/agent/agent-sdk-types.ts",
-      "packages/server/src/server/agent/providers/codex-app-server-agent.ts",
-      "packages/server/src/server/agent/providers/claude/agent.ts",
-      "packages/server/src/server/agent/plugin-provider.ts",
-      "packages/server/src/server/plugins/{index,plugin-process,plugin-process-protocol,runtime}.ts",
-      "packages/server/src/executable-resolution/**",
-      "packages/plugin/src/server/provider.ts",
-      "packages/app/src/!(desktop)/**",
-      "packages/app/e2e/browser/**",
-      "packages/app/e2e/support/**",
-      "packages/app/assets/**",
-      "packages/app/public/**",
-      "packages/app/index.ts",
-      "packages/app/*config.{cjs,js,ts}",
-      "packages/app/package.json",
     ],
     relay: ["packages/relay/**"],
     cli: ["packages/cli/**"],
@@ -299,61 +366,16 @@ test("cross-package invariants live in the suite that owns them", () => {
   assert.match(readFileSync(protocolWireCompatibility, "utf8"), /wire schema compatibility/);
 });
 
-test("browser and desktop tests have exclusive, directory-owned suites", () => {
+test("desktop tests keep their directory-owned suite", () => {
   const filters = loadFilters(filtersPath);
-  const browserSpecs = filesUnder("packages/app/e2e", (path) => path.endsWith(".spec.ts"));
-  const desktopSpecs = filesUnder("packages/desktop/e2e", (path) => path.endsWith(".spec.ts"));
-
-  assert.ok(browserSpecs.length > 0);
-  assert.ok(desktopSpecs.length > 0);
-  assert.ok(browserSpecs.every((path) => path.startsWith("packages/app/e2e/browser/")));
-  assert.ok(desktopSpecs.every((path) => path.startsWith("packages/desktop/e2e/")));
-
   const desktopPackage = JSON.parse(readFileSync(desktopPackagePath, "utf8"));
   assert.match(desktopPackage.scripts.test, /--exclude ["']e2e\/\*\*["']/);
-
-  for (const path of browserSpecs) {
-    assert.doesNotMatch(
-      readFileSync(new URL(path, repoRoot), "utf8"),
-      /neolixDesktop|injectDesktopBridge/,
-    );
-  }
-  for (const path of desktopSpecs) {
-    assert.ok(path.startsWith("packages/desktop/e2e/"));
-  }
 
   const routingSource = readFileSync(filtersPath, "utf8");
   assert.doesNotMatch(routingSource, /desktop_bridge|playwright_desktop|browser-\*|browser-\*\//);
   assert.deepEqual(filters.desktop, [
     "packages/desktop/**",
-    "packages/app/src/desktop/**",
-    "packages/app/src/**/*.electron.{ts,tsx}",
     "packages/server/src/server/browser-tools/**",
-    "packages/app/e2e/support/**",
-    "packages/app/*config.{cjs,js,ts}",
-    "packages/app/package.json",
-  ]);
-  assert.deepEqual(filters.browser, [
-    "packages/server/src/server/agent/provider-snapshot-manager.ts",
-    "packages/server/src/server/session/provider/provider-catalog-session.ts",
-    "packages/client/src/compat/normalize-provider-models.ts",
-    "packages/protocol/src/client-capabilities.ts",
-    "packages/server/src/server/agent/provider-registry.ts",
-    "packages/server/src/server/agent/agent-sdk-types.ts",
-    "packages/server/src/server/agent/providers/codex-app-server-agent.ts",
-    "packages/server/src/server/agent/providers/claude/agent.ts",
-    "packages/server/src/server/agent/plugin-provider.ts",
-    "packages/server/src/server/plugins/{index,plugin-process,plugin-process-protocol,runtime}.ts",
-    "packages/server/src/executable-resolution/**",
-    "packages/plugin/src/server/provider.ts",
-    "packages/app/src/!(desktop)/**",
-    "packages/app/e2e/browser/**",
-    "packages/app/e2e/support/**",
-    "packages/app/assets/**",
-    "packages/app/public/**",
-    "packages/app/index.ts",
-    "packages/app/*config.{cjs,js,ts}",
-    "packages/app/package.json",
   ]);
 });
 
@@ -377,59 +399,6 @@ test("desktop packaging smokes main pushes and only the pull requests that touch
   for (const action of ["actions/checkout", "actions/setup-node", "actions/upload-artifact"]) {
     assert.match(source, new RegExp(`${action}@[0-9a-f]{40} # v\\d+\\.\\d+\\.\\d+`));
   }
-});
-
-test("stable iOS releases upload once and distribute to external testers before App Store review", () => {
-  const source = readFileSync(
-    new URL("packages/app/.eas/workflows/release-mobile.yml", repoRoot),
-    "utf8",
-  );
-  const jobs = jobBlocks(source);
-  const uploads = [...jobs.entries()].filter(
-    ([, lines]) =>
-      lines.some((line) => /^    type: (submit|testflight)$/.test(line)) &&
-      lines.some((line) => line.includes("needs.build_ios.outputs.build_id")),
-  );
-  assert.equal(uploads.length, 1, "the iOS binary must be uploaded exactly once");
-  const [distributionId, distributionLines] = uploads[0];
-  const distribution = distributionLines.join("\n");
-  assert.match(distribution, /^    type: testflight$/m);
-  assert.match(distribution, /external_groups:\s*\n\s+- Neolix Beta/);
-  assert.match(distribution, /^      submit_beta_review: true$/m);
-
-  const review = jobs.get("submit_ios_for_review").join("\n");
-  assert.match(review, new RegExp(`needs: \\[build_ios, ${distributionId}\\]`));
-  assert.match(review, /APP_VERSION="\$\{\{ needs\.build_ios\.outputs\.app_version \}\}"/);
-  assert.match(
-    review,
-    /APP_BUILD_VERSION="\$\{\{ needs\.build_ios\.outputs\.app_build_version \}\}"/,
-  );
-  assert.match(review, /bundle exec fastlane ios submit_review/);
-});
-
-test("eight Playwright shards share two-worker coverage", () => {
-  const source = readFileSync(ciWorkflowPath, "utf8");
-  const jobs = jobBlocks(source);
-  assert.equal(jobs.size, 21);
-  for (let shard = 1; shard <= 8; shard++) {
-    const job = jobs.get(`playwright-${shard}`).join("\n");
-    assert.match(job, new RegExp(`PLAYWRIGHT_SHARD: "${shard}/8"`));
-    assert.match(job, new RegExp(`PLAYWRIGHT_ARTIFACT: "${shard}"`));
-    assert.match(
-      job,
-      shard === 1 ? /steps: &playwright_test_steps/ : /steps: \*playwright_test_steps/,
-    );
-  }
-  const shared = jobs.get("playwright-1").join("\n");
-  assert.match(shared, /E2E_WORKERS: "2"/);
-  const weights = /PWTEST_SHARD_WEIGHTS: "([\d:]+)"/.exec(shared)[1].split(":").map(Number);
-  assert.equal(weights.length, 8);
-  assert.ok(weights.every((weight) => weight > 0));
-  assert.match(shared, /npm run test:e2e --workspace=@neolix\/app -- --shard=/);
-
-  // No fan-in result job: a gate needs its own runner and under contention it
-  // queued 8m08s behind the last shard. Required checks name the shards directly.
-  assert.equal(jobs.has("playwright"), false);
 });
 
 test("quality preserves commands and routes each domain independently after failures", () => {
@@ -541,7 +510,9 @@ test("Windows units and integration run independently with complete routed cover
     'vitest run --maxWorkers=1 src/server/agent/providers/omp/history.e2e.test.ts src/server/daemon-e2e/git-operations.e2e.test.ts src/server/session.create-agent-worktree-autoarchive.e2e.test.ts src/server/agent/providers/opencode-bridge.local.e2e.test.ts src/server/daemon-e2e/relay-transport.e2e.test.ts -t "merges into|creates a worktree and auto-archives both|versioned runtime|oversized attachments|connected hosts|password-protected daemon refuses|replays selected OMP history"',
   );
   const serverConfig = readFileSync(new URL("packages/server/vitest.config.ts", repoRoot), "utf8");
-  assert.doesNotMatch(serverConfig, /maxWorkers/);
+  // CI must keep Vitest's own worker count; the cap applies to local runs only.
+  assert.match(serverConfig, /maxWorkers: vitestMaxWorkers\(\)/);
+  assert.doesNotMatch(serverConfig, /maxWorkers:\s*\d/);
 
   function condition(job) {
     return /    if: \$\{\{ (.+) \}\}/.exec(job)[1];
@@ -580,6 +551,37 @@ test("Windows units and integration run independently with complete routed cover
     assert.equal(selected(unitCondition, outputs, true), false);
     assert.equal(selected(integrationCondition, outputs, true), false);
   }
+});
+
+test("local Vitest runs cap workers while CI keeps Vitest's default", () => {
+  assert.equal(
+    vitestMaxWorkers({ CI: "true" }, () => 18),
+    undefined,
+  );
+  assert.equal(
+    vitestMaxWorkers({}, () => 18),
+    4,
+  );
+  assert.equal(
+    vitestMaxWorkers({}, () => 4),
+    2,
+  );
+  assert.equal(
+    vitestMaxWorkers({}, () => 1),
+    1,
+  );
+  assert.equal(
+    vitestMaxWorkers({ NEOX_TEST_MAX_WORKERS: "3" }, () => 18),
+    3,
+  );
+  assert.equal(
+    vitestMaxWorkers({ NEOX_TEST_MAX_WORKERS: "0" }, () => 18),
+    4,
+  );
+  assert.equal(
+    vitestMaxWorkers({ CI: "true", NEOX_TEST_MAX_WORKERS: "3" }, () => 18),
+    3,
+  );
 });
 
 test("macOS release retries only transient stapling failures without rebuilding the signed app", async (t) => {

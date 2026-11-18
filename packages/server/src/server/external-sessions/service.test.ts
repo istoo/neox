@@ -1,7 +1,9 @@
-import { access, mkdir, mkdtemp, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { PARSE_CACHE_VERSION, parseCachePath } from "./parse-cache.js";
+import type { SessionPricer } from "./read-session.js";
 import { ExternalSessionsService } from "./service.js";
 
 const roots: string[] = [];
@@ -332,6 +334,96 @@ describe("session reads gate", () => {
   });
 });
 
+describe("header-first listing", () => {
+  it("answers with titles and folders at once, then fills the totals in the background", async () => {
+    const { service, claudeDir } = await fixture();
+    await writeClaude(claudeDir, "-work-app", "session-one", [
+      {
+        type: "user",
+        message: { content: "Fix the login bug" },
+        timestamp: "2026-09-20T10:00:00.000Z",
+        cwd: "/work/app",
+      },
+      {
+        type: "assistant",
+        message: {
+          id: "m1",
+          model: "claude-opus-5-5",
+          content: [{ type: "text", text: "ok" }],
+          usage: { input_tokens: 100, output_tokens: 50 },
+        },
+        timestamp: "2026-09-20T10:00:05.000Z",
+        cwd: "/work/app",
+      },
+    ]);
+
+    const first = await service.list("claude", { fast: true });
+
+    expect(first.partial).toBe(true);
+    expect(first.agents).toEqual([
+      { agent: "claude", name: "Claude Code", count: 1, deletable: true },
+    ]);
+    expect(first.sessions[0]).toMatchObject({
+      id: "session-one",
+      title: "Fix the login bug",
+      cwd: "/work/app",
+      start: "2026-09-20T10:00:00.000Z",
+      messages: 0,
+    });
+
+    await vi.waitFor(async () => {
+      const complete = await service.list("claude", { fast: true });
+      expect(complete.partial).toBe(false);
+      expect(complete.sessions[0]?.messages).toBe(2);
+      expect(complete.sessions[0]?.tokens).toEqual({
+        input: 100,
+        output: 50,
+        cacheRead: 0,
+        cacheWrite: 0,
+      });
+    });
+  });
+
+  it("keeps the full read's totals when a warm daemon lists from its index", async () => {
+    const facts = await fixture();
+    await writeClaude(facts.claudeDir, "-work-app", "session-one", [
+      {
+        type: "user",
+        message: { content: "Already read" },
+        timestamp: "2026-09-20T10:00:00.000Z",
+        cwd: "/work/app",
+      },
+      {
+        type: "assistant",
+        message: {
+          id: "m1",
+          model: "claude-opus-5-5",
+          content: [{ type: "text", text: "ok" }],
+          usage: { input_tokens: 7, output_tokens: 3 },
+        },
+        timestamp: "2026-09-20T10:00:05.000Z",
+        cwd: "/work/app",
+      },
+    ]);
+    expect((await facts.service.list("claude", { fast: true })).partial).toBe(true);
+
+    await vi.waitFor(async () => {
+      const reopened = new ExternalSessionsService({
+        neolixHome: facts.neolixHome,
+        homeDir: path.dirname(facts.claudeDir),
+        env: {
+          CLAUDE_CONFIG_DIR: facts.claudeDir,
+          CODEX_HOME: facts.codexHome,
+          PI_CODING_AGENT_DIR: facts.piHome,
+        },
+      });
+      const list = await reopened.list("claude", { fast: true });
+      expect(list.partial).toBe(false);
+      expect(list.sessions[0]?.messages).toBe(2);
+    });
+  });
+});
+
 describe("session activity", () => {
   it("reads per-day tokens and active time when the list asks for it", async () => {
     const { service, claudeDir } = await fixture();
@@ -383,5 +475,97 @@ describe("session activity", () => {
 
     const plain = await service.list("claude");
     expect(plain.sessions[0]?.activity).toBeUndefined();
+  });
+});
+
+describe("parse cache", () => {
+  function reopen(facts: Fixture, pricer?: SessionPricer) {
+    return new ExternalSessionsService({
+      neolixHome: facts.neolixHome,
+      homeDir: path.dirname(facts.claudeDir),
+      env: {
+        CLAUDE_CONFIG_DIR: facts.claudeDir,
+        CODEX_HOME: facts.codexHome,
+        PI_CODING_AGENT_DIR: facts.piHome,
+      },
+      ...(pricer === undefined ? {} : { pricer }),
+    });
+  }
+
+  async function cacheEntries(neolixHome: string): Promise<[string, unknown][]> {
+    const parsed: unknown = JSON.parse(await readFile(parseCachePath(neolixHome), "utf8"));
+    return (parsed as { entries: [string, unknown][] }).entries;
+  }
+
+  it("reads a session once per mtime and size when another daemon lists it", async () => {
+    const facts = await fixture();
+    const file = await writeClaude(facts.claudeDir, "-work-app", "session-one", [
+      { type: "user", message: { content: "First title" }, timestamp: "2026-09-20T10:00:00.000Z" },
+    ]);
+    const written = new Date(Date.now() - 60_000);
+    await utimes(file, written, written);
+    expect((await facts.service.list()).sessions[0]?.title).toBe("First title");
+
+    // Same length and mtime: only the cached parse can still hold the first title.
+    await writeFile(
+      file,
+      `${JSON.stringify({
+        type: "user",
+        message: { content: "Other title" },
+        timestamp: "2026-09-20T10:00:00.000Z",
+      })}\n`,
+      "utf8",
+    );
+    await utimes(file, written, written);
+    expect((await reopen(facts).list()).sessions[0]?.title).toBe("First title");
+
+    // A new mtime is a new read.
+    const now = new Date();
+    await utimes(file, now, now);
+    expect((await reopen(facts).list()).sessions[0]?.title).toBe("Other title");
+
+    // A session that no longer exists leaves the cache.
+    await rm(file);
+    await reopen(facts).list();
+    expect(await cacheEntries(facts.neolixHome)).toEqual([]);
+  });
+
+  it("prices a cached parse with the pricer reading it", async () => {
+    const facts = await fixture();
+    await writeClaude(facts.claudeDir, "-work-app", "session-one", [
+      { type: "user", message: { content: "Spend it" }, timestamp: "2026-09-20T10:00:00.000Z" },
+      {
+        type: "assistant",
+        message: {
+          id: "m1",
+          model: "claude-opus-5-5",
+          content: [{ type: "text", text: "ok" }],
+          usage: { input_tokens: 1_000_000, output_tokens: 500_000 },
+        },
+        timestamp: "2026-09-20T10:00:05.000Z",
+      },
+    ]);
+    const unpriced = (await facts.service.list()).sessions[0];
+    expect(unpriced?.priced).toBe(false);
+    expect(unpriced?.cost).toBe(0);
+
+    const priced = reopen(facts, () => ({ inputPerMTok: 3, outputPerMTok: 15 }));
+    const session = (await priced.list()).sessions[0];
+    expect(session?.priced).toBe(true);
+    expect(session?.cost).toBeCloseTo(10.5);
+    expect(session?.models[0]?.cost).toBeCloseTo(10.5);
+  });
+
+  it("ignores a cache file it cannot read and writes a fresh one", async () => {
+    const facts = await fixture();
+    await writeFile(parseCachePath(facts.neolixHome), "{not json", "utf8");
+    await writeClaude(facts.claudeDir, "-work-app", "session-one", [
+      { type: "user", message: { content: "Kept title" }, timestamp: "2026-09-20T10:00:00.000Z" },
+    ]);
+
+    expect((await facts.service.list()).sessions[0]?.title).toBe("Kept title");
+    const parsed: unknown = JSON.parse(await readFile(parseCachePath(facts.neolixHome), "utf8"));
+    expect((parsed as { version: number }).version).toBe(PARSE_CACHE_VERSION);
+    expect(await cacheEntries(facts.neolixHome)).toHaveLength(1);
   });
 });

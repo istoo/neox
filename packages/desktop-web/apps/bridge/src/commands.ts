@@ -192,7 +192,9 @@ export function modeIdFor(
               : ["auto", "acceptEdits"]
             : codexTiers
               ? ["auto"]
-              : ["default", ACP_AGENT_MODE, "build", "ask"];
+              : // Codex builds without `auto-review` still name their asking tier `auto`;
+                // leaving it out made "Ask for approval" unmappable after Full access.
+                ["default", ACP_AGENT_MODE, "build", "ask", "auto"];
   return candidates.find(offers);
 }
 

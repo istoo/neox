@@ -1,6 +1,6 @@
-import { spawn } from "node:child_process";
 import { rm } from "node:fs/promises";
 import { afterEach, describe, expect, it } from "vitest";
+import { spawnProcess } from "../../../utils/spawn.js";
 import { ClaudeStreamParser, type ClaudeStreamEvent } from "./stream.js";
 import { installFakeClaude, printLines } from "./testing/fake-claude.js";
 
@@ -151,7 +151,8 @@ describe("ClaudeStreamParser", () => {
 
 function runToEnd(binary: string): Promise<string> {
   return new Promise((resolve, reject) => {
-    const child = spawn(binary, ["-p"], { stdio: ["ignore", "pipe", "pipe"] });
+    // The fake is a `.cmd` on Windows, which only the shared launcher starts.
+    const child = spawnProcess(binary, ["-p"], { stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
     child.stdout.setEncoding("utf8");

@@ -1,7 +1,7 @@
 import { createVerify, generateKeyPairSync } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, posix } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   clearVertexTokens,
@@ -196,12 +196,16 @@ describe("vertexCredentialsFile", () => {
         env: { GOOGLE_APPLICATION_CREDENTIALS: "~/adc.json" },
       }),
     ).toBe(join(home, "adc.json"));
-    expect(await vertexCredentialsFile("", { home, env: {} })).toBe(
-      join(home, ".config", "gcloud", "application_default_credentials.json"),
+    expect(await vertexCredentialsFile("", { home, env: {}, platform: "linux" })).toBe(
+      posix.join(home, ".config", "gcloud", "application_default_credentials.json"),
     );
-    expect(await vertexCredentialsFile("", { home, env: { CLOUDSDK_CONFIG: "/gcloud" } })).toBe(
-      "/gcloud/application_default_credentials.json",
-    );
+    expect(
+      await vertexCredentialsFile("", {
+        home,
+        env: { CLOUDSDK_CONFIG: "/gcloud" },
+        platform: "linux",
+      }),
+    ).toBe("/gcloud/application_default_credentials.json");
   });
 
   it("refuses a variable that is no full path", async () => {
@@ -435,7 +439,9 @@ describe("vertexAccessToken with impersonation", () => {
 describe("vertexAccessToken failures", () => {
   it("says how to sign in again when a person's credentials are refused", async () => {
     const home = tempHome();
-    const file = join(home, ".config", "gcloud", "application_default_credentials.json");
+    // The options below pin the POSIX path flavor, so build the expected path
+    // the same way even when the test host is Windows.
+    const file = posix.join(home, ".config", "gcloud", "application_default_credentials.json");
     write(file, {
       type: "authorized_user",
       client_id: "client-1",
@@ -445,7 +451,10 @@ describe("vertexAccessToken failures", () => {
     const { fetchImpl } = recorder(() =>
       jsonResponse({ error: "invalid_grant", error_description: "Bad Request" }, 400),
     );
-    const result = await vertexAccessToken({ project: "proj-1" }, { home, env: {}, fetchImpl });
+    const result = await vertexAccessToken(
+      { project: "proj-1" },
+      { home, env: {}, platform: "linux", fetchImpl },
+    );
     expect(result).toEqual({
       error:
         "the Google credentials in " +

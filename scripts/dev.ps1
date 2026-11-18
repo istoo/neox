@@ -47,16 +47,6 @@ Write-Host @"
 # the daemon binds to localhost and this script is never used for production.
 $env:NEOLIX_CORS_ORIGINS = "*"
 
-# Configure the app to auto-connect to this daemon on localhost
-$env:APP_VARIANT = "development"
-$env:EXPO_PUBLIC_LOCAL_DAEMON = "localhost:6768"
-$env:EXPO_PUBLIC_NEOLIX_DEV_BUILD_LABEL = (git branch --show-current).Trim()
 $env:NEOLIX_LISTEN = "127.0.0.1:6768"
-$env:BROWSER = "none"
 
-# Run both with concurrently
-concurrently `
-    --names "daemon,metro" `
-    --prefix-colors "cyan,magenta" `
-    "npm run dev:server:watch" `
-    "cd packages/app && npx expo start"
+npm run dev:server:watch

@@ -19,16 +19,21 @@ import {
   ChatBubbleIcon,
   ChevronRightIcon,
   CircleCheckIcon,
+  ListChecksIcon,
   TagIcon,
   UsersIcon,
 } from "~/lib/icons";
 import { cn } from "~/lib/utils";
 import { ensureNativeApi } from "~/nativeApi";
-import { withStableCheckKeys } from "~/components/chat/environment/environmentPullRequest.logic";
+import {
+  formatPullRequestCheckDuration,
+  withStableCheckKeys,
+} from "~/components/chat/environment/environmentPullRequest.logic";
 import { GitHubLabelChips } from "./GitHubLabelChips";
 import { PullRequestActorLabel } from "./PullRequestActorLabel";
 import { PullRequestCheckStatusIcon } from "./PullRequestCheckStatusIcon";
 import { PullRequestChecksRing } from "./PullRequestChecksRing";
+import { PullRequestPipelineContent, usePullRequestPipeline } from "./PullRequestPipelineSection";
 import {
   describePullRequestChecksBrief,
   describePullRequestMergeStatus,
@@ -226,7 +231,12 @@ function CheckRows({ checks }: { checks: PullRequestDetail["checks"] }) {
           className="-mx-1.5 flex min-w-0 items-center gap-2 rounded-md px-1.5 py-1 text-left hover:bg-muted/50 disabled:hover:bg-transparent"
         >
           <PullRequestCheckStatusIcon status={check.status} />
-          <span className="min-w-0 truncate">{check.name}</span>
+          <span className="min-w-0 flex-1 truncate">{check.name}</span>
+          {formatPullRequestCheckDuration(check, t) ? (
+            <span className="shrink-0 text-ui-xs text-muted-foreground tabular-nums">
+              {formatPullRequestCheckDuration(check, t)}
+            </span>
+          ) : null}
         </button>
       ))}
       {rows.length > CHECKS_VISIBLE_LIMIT ? (
@@ -294,6 +304,27 @@ function ChecksSection({ variant, detail }: { variant: InfoVariant; detail: Pull
   );
 }
 
+function PipelineSection({ variant, detail }: { variant: InfoVariant; detail: PullRequestDetail }) {
+  const { t } = useTranslation();
+  const state = usePullRequestPipeline({
+    cwd: detail.workspaceRoot,
+    changeRequestNumber: detail.number,
+    summary: detail.pipeline ?? null,
+  });
+  if (!state.summary) {
+    return null;
+  }
+  return (
+    <InfoSection
+      variant={variant}
+      label={t("git:pipeline")}
+      icon={<ListChecksIcon className="size-4" />}
+    >
+      <PullRequestPipelineContent {...state} />
+    </InfoSection>
+  );
+}
+
 export function PullRequestInfo({
   detail,
   variant,
@@ -315,6 +346,7 @@ export function PullRequestInfo({
       <CommentsSection variant={variant} count={detail.comments.length} />
       <ReviewsSection variant={variant} detail={detail} />
       <ChecksSection variant={variant} detail={detail} />
+      <PipelineSection variant={variant} detail={detail} />
     </div>
   );
 }

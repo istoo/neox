@@ -84,11 +84,6 @@ type DesktopQuitConfirmationResponse =
     }
   | { requestId: string; phase: "decision"; allow: boolean };
 
-interface DesktopUiModeState {
-  mode: "native" | "web";
-  selectable: boolean;
-}
-
 interface DesktopKeepAwakeState {
   enabled: boolean;
   active: boolean;
@@ -222,7 +217,10 @@ function createRendererBrowserState() {
   function createTab(url = BLANK_BROWSER_URL): BrowserTab {
     nextTabNumber += 1;
     return {
-      id: `tab-${Date.now().toString(36)}-${nextTabNumber}`,
+      // Browser automation's protocol accepts UUIDs or `<13+ digits>-<hex>` ids;
+      // this timestamp-plus-serial shape is the latter. The random suffix keeps
+      // ids unique across windows, whose serial counters start independently.
+      id: `${Date.now()}-${nextTabNumber.toString(16)}${Math.random().toString(16).slice(2, 8)}`,
       url,
       title: url === BLANK_BROWSER_URL ? "New Tab" : url,
       status: "live",
@@ -374,6 +372,12 @@ function createRendererBrowserState() {
   });
 
   return {
+    // Agent-driven browser automation executes through the Electron main process's
+    // per-tab CDP session. The web client's executor bridge reads this from
+    // `desktopBridge.browser`, so it must live beside the tab-state methods.
+    executeAutomationCommand(request: Record<string, unknown>): Promise<unknown> {
+      return invokeCommand("neolix:browser:execute-automation-command", request);
+    },
     open(input: { threadId: string; initialUrl?: string }): ThreadBrowserState {
       const state = ensureThread(input.threadId);
       state.open = true;
@@ -730,10 +734,6 @@ const desktopBridge = {
         restartRequired: false,
       }),
     relaunch: () => invokeCommand("neolix:desktop:relaunch"),
-  },
-  uiMode: {
-    getState: () => invokeCommand<DesktopUiModeState>("neolix:desktop:ui-mode-state"),
-    setMode: (mode: "native" | "web") => invokeCommand("neolix:desktop:set-ui-mode", mode),
   },
   keepAwake: {
     getState: () => invokeCommand<DesktopKeepAwakeState>("neolix:desktop:keep-awake-state"),

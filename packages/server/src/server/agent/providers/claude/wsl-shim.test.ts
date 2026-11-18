@@ -67,6 +67,17 @@ describe("Claude's WSL shim", () => {
     // A value is never written: WSLENV names it instead.
     expect(text).not.toContain("C:\\Users\\me\\x");
     expect(text).not.toContain("C:\\Users\\me\\.claude");
+  });
+
+  // Windows has no POSIX mode bits, so the 0700 the shim is written with is
+  // only observable on the platforms that have them.
+  it.skipIf(process.platform === "win32")("keeps the shim and its folder private", async () => {
+    const file = await writeClaudeWslShim({
+      neolixHome,
+      tool: TOOL,
+      cwd: "C:\\work",
+      platform: "linux",
+    });
     expect((await fs.stat(file)).mode & 0o777).toBe(0o700);
     expect((await fs.stat(path.dirname(file))).mode & 0o777).toBe(0o700);
   });
@@ -154,7 +165,7 @@ describe("Claude's WSL shim", () => {
     expect(windowsShimContent([], [])).toBe("@echo off\r\nwsl.exe  %*\r\n");
   });
 
-  it("keeps the file private and free of values off Windows", async () => {
+  it("keeps values out of the file and reuses it for the same names", async () => {
     const injected = "injected-secret-value";
     const first = await writeClaudeWslShim({
       neolixHome,
@@ -166,8 +177,6 @@ describe("Claude's WSL shim", () => {
     const text = await fs.readFile(first, "utf8");
     expect(text).not.toContain(injected);
     expect(text).toContain("ANTHROPIC_AUTH_TOKEN");
-    expect((await fs.stat(first)).mode & 0o777).toBe(0o700);
-    expect((await fs.stat(path.dirname(first))).mode & 0o777).toBe(0o700);
     // The name comes from the parts that are not secret: another token, one file.
     const second = await writeClaudeWslShim({
       neolixHome,

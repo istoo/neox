@@ -12,6 +12,7 @@ import type {
   NeolixPluginComposerPill,
   NeolixPluginContributions,
   NeolixPluginFilePanel,
+  NeolixPluginPanel,
   NeolixPluginProviderAction,
   NeolixPluginProviderPanel,
   NeolixPluginSidebarItem,
@@ -41,6 +42,12 @@ export interface PluginSidebarEntry {
   readonly pluginId: string;
   readonly pluginName: string;
   readonly contribution: NeolixPluginSidebarItem;
+}
+
+export interface PluginPanelEntry {
+  readonly pluginId: string;
+  readonly pluginName: string;
+  readonly contribution: NeolixPluginPanel;
 }
 
 export interface PluginComposerPillEntry {
@@ -101,6 +108,7 @@ export interface PluginContributionIndex {
   readonly commands: readonly PluginCommandEntry[];
   readonly slashCommands: readonly PluginSlashCommandEntry[];
   readonly sidebarItems: readonly PluginSidebarEntry[];
+  readonly panels: readonly PluginPanelEntry[];
   readonly composerPills: readonly PluginComposerPillEntry[];
   readonly attachmentSources: readonly PluginAttachmentSourceEntry[];
   readonly themes: readonly PluginThemeEntry[];
@@ -116,6 +124,7 @@ const EMPTY_INDEX: PluginContributionIndex = {
   commands: [],
   slashCommands: [],
   sidebarItems: [],
+  panels: [],
   composerPills: [],
   attachmentSources: [],
   themes: [],
@@ -142,6 +151,7 @@ export function buildPluginContributionIndex(
   const commands: PluginCommandEntry[] = [];
   const slashCommands: PluginSlashCommandEntry[] = [];
   const sidebarItems: PluginSidebarEntry[] = [];
+  const panels: PluginPanelEntry[] = [];
   const composerPills: PluginComposerPillEntry[] = [];
   const attachmentSources: PluginAttachmentSourceEntry[] = [];
   const themes: PluginThemeEntry[] = [];
@@ -162,6 +172,8 @@ export function buildPluginContributionIndex(
       slashCommands.push({ pluginId: plugin.id, pluginName, contribution });
     for (const contribution of contributions.sidebarItems ?? [])
       sidebarItems.push({ pluginId: plugin.id, pluginName, contribution });
+    for (const contribution of contributions.panels ?? [])
+      panels.push({ pluginId: plugin.id, pluginName, contribution });
     for (const contribution of contributions.composerPills ?? [])
       composerPills.push({ pluginId: plugin.id, pluginName, contribution });
     for (const contribution of contributions.attachmentSources ?? [])
@@ -191,6 +203,7 @@ export function buildPluginContributionIndex(
     commands,
     slashCommands,
     sidebarItems,
+    panels,
     composerPills,
     attachmentSources,
     themes,

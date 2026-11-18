@@ -15,6 +15,9 @@ import {
   serverAllProviderUsageQueryOptions,
   serverSettingsQueryOptions,
 } from "~/lib/serverReactQuery";
+import { usageSnapshotKey, usageSnapshotsForInstance } from "~/lib/providerUsageAccounts.logic";
+import { providerAccountQualifiedLabel } from "~/lib/providerInstancePresentation";
+import { providerUsageDisplayName } from "@synara/shared/providerUsage";
 import { cn } from "~/lib/utils";
 
 import { sidebarFooterButtonClassName } from "./sidebarFooterStyles";
@@ -68,8 +71,11 @@ function AppRailUsageRing({
 }) {
   const { t } = useTranslation();
 
-  const { instance, label } = account;
+  const { instance, label: instanceLabel } = account;
   const provider = instance.driver;
+  const accountLabel = snapshot?.accountLabel
+    ? providerAccountQualifiedLabel(providerUsageDisplayName(provider), snapshot.accountLabel)
+    : instanceLabel;
   const model = useProviderUsageMenuModel(provider, {
     instanceId: instance.instanceId,
     providerSnapshot: snapshot ?? null,
@@ -85,7 +91,7 @@ function AppRailUsageRing({
 
   const summary = resolveEnvironmentProviderUsageSummary(
     {
-      providerName: label,
+      providerName: accountLabel,
       rows: model.rows,
       snapshot,
       hasUsageLines: model.usageLines.length > 0,
@@ -178,7 +184,7 @@ function AppRailUsageRing({
       >
         <div className="space-y-2 p-2.5">
           <div className="flex items-center justify-between gap-2">
-            <span className="truncate text-ui font-medium text-foreground">{label}</span>
+            <span className="truncate text-ui font-medium text-foreground">{accountLabel}</span>
             {snapshot?.planName ? (
               <span className="shrink-0 text-ui-sm text-muted-foreground">{snapshot.planName}</span>
             ) : null}
@@ -231,19 +237,34 @@ export function AppRailUsage({ onOpenUsageSettings }: { onOpenUsageSettings: () 
 
   return (
     <>
-      {accounts.map((account) => (
-        <AppRailUsageRing
-          key={account.instance.instanceId}
-          account={account}
-          snapshot={(usageQuery.data ?? []).find(
-            (entry) =>
-              entry.provider === account.instance.driver &&
-              (entry.instanceId ?? entry.provider) === account.instance.instanceId,
-          )}
-          window={settings.railUsageWindow}
-          onOpenUsageSettings={onOpenUsageSettings}
-        />
-      ))}
+      {accounts.flatMap((account) => {
+        const snapshots = usageSnapshotsForInstance(
+          usageQuery.data ?? [],
+          account.instance.driver,
+          account.instance.instanceId,
+        );
+        if (snapshots.length === 0) {
+          return [
+            <AppRailUsageRing
+              key={account.instance.instanceId}
+              account={account}
+              snapshot={undefined}
+              window={settings.railUsageWindow}
+              onOpenUsageSettings={onOpenUsageSettings}
+            />,
+          ];
+        }
+        // One ring per signed-in account of the selected provider instance.
+        return snapshots.map((snapshot) => (
+          <AppRailUsageRing
+            key={`${account.instance.instanceId}:${usageSnapshotKey(snapshot)}`}
+            account={account}
+            snapshot={snapshot}
+            window={settings.railUsageWindow}
+            onOpenUsageSettings={onOpenUsageSettings}
+          />
+        ));
+      })}
     </>
   );
 }

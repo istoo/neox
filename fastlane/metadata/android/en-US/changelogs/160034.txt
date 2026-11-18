@@ -1,6 +1,0 @@
-Fixed
-- Project actions appear in the Environment panel and run from the top bar; saving one stores it in the project's neox.json
-- Editing an action keeps the rest of the script's configuration, including a service's type and port
-- "Run automatically on worktree creation" now sets the project's worktree setup and stays on after a reload
-
-Full notes: https://github.com/istoo/neox/releases

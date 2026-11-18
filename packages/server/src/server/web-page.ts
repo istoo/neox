@@ -7,7 +7,9 @@ import type { Duplex } from "node:stream";
 import { networkInterfaces } from "node:os";
 import path from "node:path";
 import express from "express";
+import type { NextFunction, Request, Response } from "express";
 import type { Logger } from "pino";
+import { isWebAppUpgrade } from "./web-app.js";
 import { createWebUiMiddleware } from "./web-ui.js";
 
 /**
@@ -68,12 +70,20 @@ export interface WebPageTarget {
   port: number;
 }
 
+/** The web app's routes, entered after this page's guard instead of the daemon's port. */
+export interface WebPageWebApp {
+  trustedMiddleware(): (req: Request, res: Response, next: NextFunction) => void;
+  trustedUpgrade(): (request: IncomingMessage, socket: Duplex, head: Buffer) => void;
+}
+
 export interface WebPageOptions {
   neolixHome: string;
   distDir: string | null;
   logger: Logger;
   /** The daemon's own TCP address; null when it listens on a socket. */
   daemonAddress: () => WebPageTarget | null;
+  /** Answers the web app's own routes in this process, past its loopback check. */
+  webApp?: WebPageWebApp;
 }
 
 export function checkWebPagePort(port: number, daemonPort: number | null = null): string | null {
@@ -438,6 +448,19 @@ function mergeWebPageSettings(current: WebPageSettings, patch: WebPagePatch): We
   };
 }
 
+interface WebPageUpdatePatch {
+  mode?: WebPageMode;
+  port?: number;
+  newKey?: boolean;
+  /** host:port, or null to go back to the mode's own address. */
+  addr?: string | null;
+  /** The TLS certificate and key files, or null to serve plain HTTP again. */
+  tlsCert?: string | null;
+  tlsKey?: string | null;
+  /** `neolix web --gateway`: the browser page in gateway mode; not saved. */
+  gateway?: boolean;
+}
+
 export class WebPageServer {
   private settings: WebPageSettings = { mode: "off", port: WEB_PAGE_DEFAULT_PORT, key: "" };
   /** The certificate and key, read when the settings name both. */
@@ -452,6 +475,7 @@ export class WebPageServer {
   private retry: NodeJS.Timeout | null = null;
   private pending: Promise<void> | null = null;
   private closed = false;
+  private updateQueue: Promise<unknown> = Promise.resolve();
 
   constructor(private readonly options: WebPageOptions) {}
 
@@ -464,18 +488,19 @@ export class WebPageServer {
   }
 
   /** Takes a change: persisted, then bound now (myna's POST /api/web-page). */
-  public async update(patch: {
-    mode?: WebPageMode;
-    port?: number;
-    newKey?: boolean;
-    /** host:port, or null to go back to the mode's own address. */
-    addr?: string | null;
-    /** The TLS certificate and key files, or null to serve plain HTTP again. */
-    tlsCert?: string | null;
-    tlsKey?: string | null;
-    /** `neolix web --gateway`: the browser page in gateway mode; not saved. */
-    gateway?: boolean;
-  }): Promise<WebPageState> {
+  public update(patch: WebPageUpdatePatch): Promise<WebPageState> {
+    // Two settings updates can arrive back to back. Serialize them: concurrent
+    // applies race for the same port (EADDRINUSE leaves a stale error) and both
+    // write the same temporary settings file.
+    const next = this.updateQueue.then(() => this.applyUpdate(patch));
+    this.updateQueue = next.then(
+      () => undefined,
+      () => undefined,
+    );
+    return next;
+  }
+
+  private async applyUpdate(patch: WebPageUpdatePatch): Promise<WebPageState> {
     if (patch.gateway !== undefined) {
       this.gatewayFlag = patch.gateway;
     }
@@ -500,7 +525,10 @@ export class WebPageServer {
     this.settings = next;
     await this.loadTls();
     this.error = null;
-    this.apply();
+    // `nudge` clears a retry that was waiting and applies once. Calling `apply`
+    // here too would start a second bind for the same address while the first is
+    // still in flight; the loser records EADDRINUSE and leaves a stale error on a
+    // page that is actually being served.
     this.nudge();
     await this.pending;
     return this.state();
@@ -631,7 +659,7 @@ export class WebPageServer {
       this.error = `the certificate or key is not a usable PEM: ${this.settings.tlsCert ?? ""}`;
       return;
     }
-    server.on("upgrade", (req, socket, head) => this.proxyUpgrade(req, socket, head));
+    server.on("upgrade", (req, socket, head) => this.handleUpgrade(req, socket, head));
     this.pending = new Promise<void>((resolve) => {
       server.once("error", (error: NodeJS.ErrnoException) => {
         this.error = busySays(this.settings.port, error);
@@ -679,6 +707,13 @@ export class WebPageServer {
       res.setHeader("set-cookie", cookieFor(this.settings.key, this.tls()));
       res.redirect(303, "/");
     });
+    // The web app's own routes and page: same process, so the browser's LAN name
+    // never reaches the daemon's loopback-only check. The guard above has already
+    // admitted this request; everything else the daemon owns still goes over TCP.
+    const webApp = this.options.webApp;
+    if (webApp !== undefined) {
+      app.use(webApp.trustedMiddleware());
+    }
     app.use((req, res, next) => {
       if (!isDaemonPath(req.path)) {
         next();
@@ -727,6 +762,26 @@ export class WebPageServer {
     });
     req.pipe(upstream);
     res.once("close", () => upstream.destroy());
+  }
+
+  /** The web app's sockets stay in this process; the daemon's own go over TCP. */
+  private handleUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer): void {
+    const pathname = (req.url ?? "").split("?")[0] ?? "";
+    const webApp = this.options.webApp;
+    if (webApp === undefined || !isWebAppUpgrade(pathname)) {
+      this.proxyUpgrade(req, socket, head);
+      return;
+    }
+    const key = cookieKey(req.headers.cookie);
+    if (
+      !allowedHost(req.headers.host, this.settings.mode === "lan", this.settings.addr) ||
+      key === null ||
+      !sameKey(key, this.settings.key)
+    ) {
+      socket.destroy();
+      return;
+    }
+    webApp.trustedUpgrade()(req, socket, head);
   }
 
   private proxyUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer): void {

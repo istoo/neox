@@ -1,8 +1,8 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { DaemonConfigStore } from "../daemon-config-store.js";
 import { editPersistedConfig, loadPersistedConfig } from "../persisted-config.js";
@@ -86,6 +86,7 @@ function makeService(params: {
     now: () => params.now ?? new Date("2026-11-06T10:00:00.000Z"),
     config: () => params.config,
     usage: () => params.usage ?? USAGE,
+    platform: "linux",
   });
 }
 
@@ -127,6 +128,44 @@ describe("TelemetryService", () => {
     expect(() => readFileSync(path.join(dir, "telemetry-sent"))).toThrow();
   });
 
+  test("aborts an in-flight send, returns quickly, and writes nothing after", async () => {
+    const dir = home();
+    let started!: () => void;
+    const requestStarted = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const service = new TelemetryService({
+      neolixHome: dir,
+      version: "9.9.9",
+      endpoint: "https://telemetry.test/batch/",
+      env: {},
+      now: () => new Date("2026-11-06T10:00:00.000Z"),
+      config: () => ({ enabled: true }),
+      usage: () => USAGE,
+      fetchImpl: ((_input: RequestInfo | URL, init?: RequestInit) => {
+        started();
+        return new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => {
+            reject(new DOMException("Aborted", "AbortError"));
+          });
+        });
+      }) as typeof fetch,
+    });
+
+    service.start();
+    await requestStarted;
+    const before = readdirSync(dir).sort();
+    const startedAt = Date.now();
+    await service.stopAndDrain();
+    // Aborting ends the request at once instead of waiting out its timeout.
+    expect(Date.now() - startedAt).toBeLessThan(1000);
+    expect(readdirSync(dir).sort()).toEqual(before);
+    expect(() => readFileSync(path.join(dir, "telemetry-sent"))).toThrow();
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(readdirSync(dir).sort()).toEqual(before);
+  });
+
   test("enabled sends a random id once a day and records the day", async () => {
     const dir = home();
     const http = await stub();
@@ -137,6 +176,9 @@ describe("TelemetryService", () => {
     });
 
     service.start();
+    await vi.waitFor(() =>
+      expect(readFileSync(path.join(dir, "telemetry-sent"), "utf8").trim()).toBe("2026-11-06"),
+    );
     await service.stopAndDrain();
 
     expect(http.requests).toHaveLength(1);
@@ -151,7 +193,7 @@ describe("TelemetryService", () => {
     expect(active.properties).toMatchObject({
       version: "9.9.9",
       kind: "daemon",
-      $os: "Mac OS X",
+      $os: "Linux",
       arch: process.arch,
       $process_person_profile: false,
       distinct_id: active.distinct_id,
@@ -163,7 +205,10 @@ describe("TelemetryService", () => {
 
     const idPath = path.join(dir, "telemetry-id");
     expect(readFileSync(idPath, "utf8").trim()).toBe(active.distinct_id);
-    expect(modeOf(idPath)).toBe(0o600);
+    // Windows cannot express POSIX permissions; the file is private by location there.
+    if (process.platform !== "win32") {
+      expect(modeOf(idPath)).toBe(0o600);
+    }
     expect(readFileSync(path.join(dir, "telemetry-sent"), "utf8").trim()).toBe("2026-11-06");
 
     service.start();
@@ -182,6 +227,9 @@ describe("TelemetryService", () => {
     });
 
     service.start();
+    await vi.waitFor(() =>
+      expect(readFileSync(path.join(dir, "telemetry-sent"), "utf8").trim()).toBe("2026-11-06"),
+    );
     await service.stopAndDrain();
 
     const batch = http.requests[0]!.body.batch;
@@ -254,6 +302,7 @@ describe("TelemetryService", () => {
     });
 
     service.start();
+    await vi.waitFor(() => expect(http.requests).toHaveLength(1));
     await service.stopAndDrain();
 
     expect(http.requests).toHaveLength(1);

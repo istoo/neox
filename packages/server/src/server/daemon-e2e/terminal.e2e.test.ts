@@ -1,6 +1,6 @@
 import { Terminal as HeadlessTerminal } from "@xterm/headless";
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { mkdtempSync, rmSync } from "fs";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
+import { mkdirSync, mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import path from "path";
 import { WebSocket } from "ws";
@@ -21,7 +21,9 @@ import { createDaemonTestContext, type DaemonTestContext } from "../test-utils/i
 type RawSessionEnvelope = Extract<WSOutboundMessage, { type: "session" }>;
 
 function tmpCwd(): string {
-  return mkdtempSync(path.join(tmpdir(), "daemon-terminal-e2e-"));
+  const dir = mkdtempSync(path.join(tmpdir(), "daemon-terminal-e2e-"));
+  tempDirs.push(dir);
+  return dir;
 }
 
 interface CreateTerminalInWorkspaceInput {
@@ -376,6 +378,72 @@ async function waitForNoRawBinaryFrame(ws: WebSocket, timeout = 500): Promise<vo
   });
 }
 
+// The sequences TerminalInputModeTracker can put in a replay preamble. The
+// probe below only ever enables these two, so this is the full set a replay
+// for this terminal could carry. Built from an ESC constant so the source has
+// no raw control characters.
+const ESC = String.fromCharCode(0x1b);
+// ConPTY always emits ESC[?9001h on initialization to ask its attached
+// terminal for win32 input records (microsoft/terminal spec #4999, "ConPTY will
+// always emit a ^[[?9001h on initialization"). That enable comes from the PTY
+// host, not the probe, so on Windows the shared input-mode state legitimately
+// holds it before anything is "enabled" and the preamble repeats it for the
+// reattaching terminal. Kitty keyboard mode is what the probe enables and
+// ConPTY never announces by itself, so that is the sequence that proves a
+// premature replay on Windows.
+const INPUT_MODE_REPLAY_SEQUENCE = new RegExp(
+  process.platform === "win32" ? `${ESC}\\[=[0-9;]*u` : `${ESC}\\[=[0-9;]*u|${ESC}\\[\\?9001h`,
+);
+
+// ConPTY emits startup output of its own after a terminal is created, so "no
+// frames at all" is not a stable assertion on Windows. What the test cares
+// about is that no input-mode replay arrives before the client enables it.
+async function waitForNoInputModeReplay(ws: WebSocket, timeout = 500): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timeoutHandle = setTimeout(() => {
+      cleanup();
+      resolve();
+    }, timeout);
+
+    const onMessage = (raw: WebSocket.RawData) => {
+      const buffer = toWsBuffer(raw);
+      if (!buffer) {
+        return;
+      }
+      const frame = decodeTerminalStreamFrame(new Uint8Array(buffer));
+      if (!frame) {
+        cleanup();
+        reject(new Error("Received malformed terminal frame"));
+        return;
+      }
+      if (INPUT_MODE_REPLAY_SEQUENCE.test(getFrameText(frame))) {
+        cleanup();
+        // JSON.stringify keeps the control bytes visible in CI logs.
+        reject(
+          new Error(
+            `Replayed input modes before they were enabled: ${JSON.stringify(getFrameText(frame))}`,
+          ),
+        );
+        return;
+      }
+    };
+
+    const onError = (error: Error) => {
+      cleanup();
+      reject(error);
+    };
+
+    const cleanup = () => {
+      clearTimeout(timeoutHandle);
+      ws.off("message", onMessage);
+      ws.off("error", onError);
+    };
+
+    ws.on("message", onMessage);
+    ws.on("error", onError);
+  });
+}
+
 async function collectRawBinaryFrames(
   ws: WebSocket,
   predicate: (frames: TerminalStreamFrame[]) => boolean,
@@ -527,6 +595,27 @@ function sendRawTerminalInput(ws: WebSocket, slot: number, data: string): void {
   );
 }
 
+// A terminal program rather than a command typed through a shell: the burst
+// must be produced after the test pauses the socket, and shell startup, prompt
+// parsing, or user rc files must not decide when that happens.
+function createSlowClientBurstProbeOptions(): { command: string; args: string[] } {
+  return {
+    command: process.execPath,
+    args: [
+      "-e",
+      `
+process.stdin.setRawMode?.(true);
+process.stdin.resume();
+process.stdin.once("data", () => {
+  process.stdout.write("A".repeat(${8 * 1024 * 1024}));
+  process.stdout.write("\\nBURST-DONE\\n");
+});
+setInterval(() => {}, 1000);
+`,
+    ],
+  };
+}
+
 function createInputModeProbeOptions(): { command: string; args: string[] } {
   return {
     command: process.execPath,
@@ -535,6 +624,9 @@ function createInputModeProbeOptions(): { command: string; args: string[] } {
       `
 process.stdin.setRawMode?.(true);
 process.stdin.resume();
+// Marks that the probe is running. Tests wait for it before subscribing so the
+// PTY host's own startup output has already been committed to the terminal.
+process.stdout.write("PROBE-READY\\n");
 process.stdin.on("data", (chunk) => {
   const text = chunk.toString("utf8");
   if (text.includes("e")) {
@@ -787,6 +879,35 @@ async function subscribeRawTerminal(
 
 let ctx: DaemonTestContext;
 let tempDirs: string[];
+let isolatedHome: string;
+let originalHome: string | undefined;
+let originalZdotdir: string | undefined;
+
+// Terminals inherit the daemon's environment, so a developer's ~/.zshrc runs
+// inside every shell these tests spawn. Prompt frameworks (powerline/starship,
+// syntax highlighting, per-key git lookups) change both the bytes and the pace
+// of prompt redraws, which turns cadence assertions into a property of the
+// developer's machine. Give the suite an empty home and ZDOTDIR: zsh then loads
+// no user rc, which is the "default zsh" behavior CI sees on a clean runner.
+beforeAll(() => {
+  isolatedHome = mkdtempSync(path.join(tmpdir(), "daemon-terminal-home-"));
+  originalHome = process.env.HOME;
+  originalZdotdir = process.env.ZDOTDIR;
+  process.env.HOME = isolatedHome;
+  // The zsh shell-integration wrapper restores this value after sourcing its
+  // own .zshenv, so an empty directory suppresses every user startup file.
+  const isolatedZdotdir = path.join(isolatedHome, ".zdotdir");
+  mkdirSync(isolatedZdotdir, { recursive: true });
+  process.env.ZDOTDIR = isolatedZdotdir;
+});
+
+afterAll(() => {
+  if (originalHome === undefined) delete process.env.HOME;
+  else process.env.HOME = originalHome;
+  if (originalZdotdir === undefined) delete process.env.ZDOTDIR;
+  else process.env.ZDOTDIR = originalZdotdir;
+  rmSync(isolatedHome, { recursive: true, force: true });
+});
 
 beforeEach(async () => {
   ctx = await createDaemonTestContext();
@@ -794,10 +915,13 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  for (const dir of tempDirs) {
-    rmSync(dir, { recursive: true, force: true });
-  }
+  // Stop the daemon (and its PTYs) before removing directories. Windows refuses
+  // to delete a directory that is still a live process's working directory,
+  // which surfaced as EBUSY on every cleanup here.
   await ctx.cleanup();
+  for (const dir of tempDirs) {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
 }, 60000);
 
 test("lists terminals for a directory", async () => {
@@ -807,8 +931,6 @@ test("lists terminals for a directory", async () => {
 
   expect(list.cwd).toBe(cwd);
   expect(list.terminals).toEqual([]);
-
-  rmSync(cwd, { recursive: true, force: true });
 }, 30000);
 
 test("client connects and receives a snapshot of the current terminal state", async () => {
@@ -829,8 +951,6 @@ test("client connects and receives a snapshot of the current terminal state", as
   const snapshot = await snapshotPromise;
 
   expect(extractStateText(snapshot)).toContain("hello");
-
-  rmSync(cwd, { recursive: true, force: true });
 }, 30000);
 
 test("live terminal restore skips the initial snapshot", async () => {
@@ -844,7 +964,13 @@ test("live terminal restore skips the initial snapshot", async () => {
       type: "input",
       data: "printf 'before-live\\n'\r",
     });
-    await new Promise((resolve) => setTimeout(resolve, 300));
+    // Do not subscribe on a fixed delay: a slow shell startup still has the
+    // typed command queued at that point, so its echo and output legitimately
+    // arrive as live bytes and the assertion below blames the daemon for it.
+    await waitForCondition(async () => {
+      const capture = await ctx.client.captureTerminal(terminalId);
+      return capture.lines.join("\n").includes("before-live");
+    }, 10000);
 
     const slot = await subscribeRawTerminal(ws, terminalId, "subscribe-live", { mode: "live" });
     const outputFramesPromise = collectRawBinaryFrames(
@@ -868,8 +994,6 @@ test("live terminal restore skips the initial snapshot", async () => {
   } finally {
     await closeWebSocket(ws);
   }
-
-  rmSync(cwd, { recursive: true, force: true });
 }, 30000);
 
 test("visible terminal restore sends bounded ANSI history", async () => {
@@ -877,10 +1001,12 @@ test("visible terminal restore sends bounded ANSI history", async () => {
   const created = await createTerminalInWorkspace(ctx.client, {
     cwd,
     options: {
-      command: "/bin/sh",
+      // `node -e` instead of `/bin/sh -lc`: Windows has no /bin/sh, and this
+      // suite runs the default shell (cmd.exe) there.
+      command: process.execPath,
       args: [
-        "-lc",
-        "i=1; while [ $i -le 1200 ]; do printf 'restore-line-%04d\\n' $i; i=$((i+1)); done; sleep 30",
+        "-e",
+        `for (let i = 1; i <= 1200; i += 1) console.log("restore-line-" + String(i).padStart(4, "0")); setTimeout(() => {}, 30000);`,
       ],
     },
   });
@@ -915,8 +1041,6 @@ test("visible terminal restore sends bounded ANSI history", async () => {
   } finally {
     await closeWebSocket(ws);
   }
-
-  rmSync(cwd, { recursive: true, force: true });
 }, 30000);
 
 test("propagates debounced terminal titles through list responses and snapshots", async () => {
@@ -924,8 +1048,12 @@ test("propagates debounced terminal titles through list responses and snapshots"
   const created = await createTerminalInWorkspace(ctx.client, {
     cwd,
     options: {
-      command: "/bin/sh",
-      args: ["-lc", "printf '\\033]0;Build Output\\007'; sleep 2"],
+      // Windows has no /bin/sh; emit the OSC title sequence from node instead.
+      command: process.execPath,
+      args: [
+        "-e",
+        `process.stdout.write("\\x1b]0;Build Output\\x07"); setTimeout(() => {}, 2000);`,
+      ],
     },
   });
   const terminalId = created.terminal!.id;
@@ -948,8 +1076,6 @@ test("propagates debounced terminal titles through list responses and snapshots"
   expect(afterAttach.terminals.find((terminal) => terminal.id === terminalId)?.title).toBe(
     "Build Output",
   );
-
-  rmSync(cwd, { recursive: true, force: true });
 }, 30000);
 
 test("subscribe response is sent before the initial snapshot frame", async () => {
@@ -1041,7 +1167,6 @@ test("subscribe response is sent before the initial snapshot frame", async () =>
     expect(observed).toEqual(["response", "snapshot"]);
   } finally {
     await closeWebSocket(ws);
-    rmSync(cwd, { recursive: true, force: true });
   }
 }, 30000);
 
@@ -1060,8 +1185,6 @@ test("client sends input and receives output as raw bytes", async () => {
   });
 
   expect(await outputPromise).toContain("binary-stream");
-
-  rmSync(cwd, { recursive: true, force: true });
 }, 30000);
 
 test("default zsh terminal does not eagerly flush full state during repeat bursts", async () => {
@@ -1106,8 +1229,6 @@ test("one client can stream two terminals concurrently", async () => {
 
   expect(await firstOutput).toContain("from-first");
   expect(await secondOutput).toContain("from-second");
-
-  rmSync(cwd, { recursive: true, force: true });
 }, 30000);
 
 test("disconnect and reconnect both receive the current snapshot", async () => {
@@ -1130,8 +1251,6 @@ test("disconnect and reconnect both receive the current snapshot", async () => {
   await ctx.client.subscribeTerminal(terminalId);
 
   expect(extractStateText(await snapshotPromise)).toContain("while-detached");
-
-  rmSync(cwd, { recursive: true, force: true });
 }, 30000);
 
 test("reconnected terminal streams replay active input modes after the snapshot", async () => {
@@ -1189,7 +1308,6 @@ test("reconnected terminal streams replay active input modes after the snapshot"
     expect(getFrameText(replay)).toContain("\x1b[?9001h");
   } finally {
     await closeWebSocket(secondWs);
-    rmSync(cwd, { recursive: true, force: true });
   }
 }, 30000);
 
@@ -1201,6 +1319,13 @@ test("reconnected terminal streams do not replay input modes before they are ena
     options: createInputModeProbeOptions(),
   });
   const terminalId = created.terminal!.id;
+  // Let the PTY host's initialization output settle before subscribing. ConPTY
+  // emits startup sequences on its own schedule; a frame produced mid-startup
+  // says nothing about whether the daemon replays input modes early.
+  await waitForCondition(async () => {
+    const capture = await ctx.client.captureTerminal(terminalId);
+    return capture.lines.join("\n").includes("PROBE-READY");
+  }, 15000);
   const ws = await connectRawWebSocket(ctx.daemon.port);
 
   try {
@@ -1209,16 +1334,18 @@ test("reconnected terminal streams do not replay input modes before they are ena
       ws,
       (frame) => frame.slot === slot && frame.opcode === TerminalStreamOpcode.Restore,
     );
-    await waitForNoRawBinaryFrame(ws, 300);
+    await waitForNoInputModeReplay(ws, 300);
   } finally {
     await closeWebSocket(ws);
-    rmSync(cwd, { recursive: true, force: true });
   }
 }, 30000);
 
 test("fast output to a slow websocket client falls back to a snapshot", async () => {
   const cwd = tmpCwd();
-  const created = await createTerminalInWorkspace(ctx.client, { cwd });
+  const created = await createTerminalInWorkspace(ctx.client, {
+    cwd,
+    options: createSlowClientBurstProbeOptions(),
+  });
   const terminalId = created.terminal!.id;
   const ws = await connectRawWebSocket(ctx.daemon.port);
 
@@ -1230,12 +1357,17 @@ test("fast output to a slow websocket client falls back to a snapshot", async ()
   expect(rawSocket).toBeDefined();
 
   rawSocket!.pause();
-  ctx.client.sendTerminalInput(terminalId, {
-    type: "input",
-    data: `node -e 'process.stdout.write("A".repeat(${8 * 1024 * 1024}))'\r`,
-  });
+  ctx.client.sendTerminalInput(terminalId, { type: "input", data: "go" });
 
-  await new Promise((resolve) => setTimeout(resolve, 750));
+  // Waiting for the burst's final marker, read over the client's separate
+  // connection, proves the daemon produced all 8 MiB while the stream socket
+  // was paused. A fixed sleep resumed too early on a busy machine, before the
+  // output existed, so backpressure never accumulated and no catch-up was due.
+  await waitForCondition(async () => {
+    const capture = await ctx.client.captureTerminal(terminalId, { start: -20 });
+    return capture.lines.join("\n").includes("BURST-DONE");
+  }, 15000);
+
   const catchUpFramePromise = waitForRawBinaryFrame(
     ws,
     (frame) => frame.opcode === TerminalStreamOpcode.Restore,
@@ -1246,7 +1378,6 @@ test("fast output to a slow websocket client falls back to a snapshot", async ()
   expect(catchUpFrame.opcode).toBe(TerminalStreamOpcode.Restore);
 
   await closeWebSocket(ws);
-  rmSync(cwd, { recursive: true, force: true });
 }, 40000);
 
 test("multiple clients on the same terminal each receive output independently", async () => {
@@ -1278,8 +1409,6 @@ test("multiple clients on the same terminal each receive output independently", 
   } finally {
     await secondClient.close();
   }
-
-  rmSync(cwd, { recursive: true, force: true });
 }, 30000);
 
 test("resize updates server dimensions without sending a live snapshot", async () => {
@@ -1298,8 +1427,6 @@ test("resize updates server dimensions without sending a live snapshot", async (
   const state = ctx.daemon.daemon.terminalManager?.getTerminal(terminalId)?.getSize();
   expect(state?.rows).toBe(10);
   expect(state?.cols).toBe(40);
-
-  rmSync(cwd, { recursive: true, force: true });
 }, 30000);
 
 test("the latest resize from any attached client owns the PTY size", async () => {
@@ -1360,7 +1487,6 @@ test("the latest resize from any attached client owns the PTY size", async () =>
     await expectSize({ rows: 42, cols: 54 });
   } finally {
     await mobileClient.close();
-    rmSync(cwd, { recursive: true, force: true });
   }
 }, 30000);
 
@@ -1399,7 +1525,6 @@ test("resize does not stall streamed output for an attached client", async () =>
     expect(await secondOutput).toContain("after-resize-stream");
   } finally {
     await secondClient.close();
-    rmSync(cwd, { recursive: true, force: true });
   }
 }, 30000);
 
@@ -1424,8 +1549,6 @@ test("terminal exits notify the client", async () => {
 
   await waitForCondition(() => sawExit, 10000);
   unsubscribe();
-
-  rmSync(cwd, { recursive: true, force: true });
 }, 30000);
 
 test("websocket terminate then new connection gets snapshot with all prior output", async () => {
@@ -1445,7 +1568,9 @@ test("websocket terminate then new connection gets snapshot with all prior outpu
 
     ctx.client.sendTerminalInput(terminalId, {
       type: "input",
-      data: "printf 'before-drop\\n'\r",
+      // `echo` exists in both POSIX shells and cmd.exe, and its output starts
+      // at column 0, so ConPTY cannot wrap the marker the snapshot asserts on.
+      data: "echo before-drop\r",
     });
     const beforeDropFrame = await waitForRawBinaryFrame(
       firstSocket,
@@ -1466,7 +1591,7 @@ test("websocket terminate then new connection gets snapshot with all prior outpu
     try {
       secondClient.sendTerminalInput(terminalId, {
         type: "input",
-        data: "printf 'while-dead\\n'\r",
+        data: "echo while-dead\r",
       });
       await new Promise((resolve) => setTimeout(resolve, 300));
     } finally {
@@ -1487,7 +1612,7 @@ test("websocket terminate then new connection gets snapshot with all prior outpu
       await closeWebSocket(secondSocket);
     }
   } finally {
-    rmSync(cwd, { recursive: true, force: true });
+    await closeWebSocket(firstSocket);
   }
 }, 30000);
 
@@ -1525,7 +1650,6 @@ test("two clients can both send input and each sees its own output", async () =>
     expect(await secondOwnOutput).toContain("from-b");
   } finally {
     await secondClient.close();
-    rmSync(cwd, { recursive: true, force: true });
   }
 }, 30000);
 
@@ -1566,7 +1690,6 @@ test("snapshot fidelity through websocket decode preserves dimensions and visibl
     expect(extractStateText(state!)).toContain("line3");
   } finally {
     await closeWebSocket(ws);
-    rmSync(cwd, { recursive: true, force: true });
   }
 }, 30000);
 
@@ -1600,7 +1723,6 @@ test("terminal exit prevents resubscribe and sends no frames after exit", async 
     await waitForNoRawBinaryFrame(ws, 750);
   } finally {
     await closeWebSocket(ws);
-    rmSync(cwd, { recursive: true, force: true });
   }
 }, 30000);
 
@@ -1639,7 +1761,6 @@ test("empty input frame does not crash the server", async () => {
     expect(getFrameText(aliveFrame)).toContain("alive");
   } finally {
     await closeWebSocket(ws);
-    rmSync(cwd, { recursive: true, force: true });
   }
 }, 30000);
 
@@ -1696,14 +1817,12 @@ test("1MB output burst keeps frames decodable and terminal usable afterward", as
     expect(getFrameText(postBurstFrame)).toContain("after-burst");
   } finally {
     await closeWebSocket(ws);
-    rmSync(cwd, { recursive: true, force: true });
   }
 }, 40000);
 
 describe("capture", () => {
   test("captures visible terminal output as plain text", async () => {
     const cwd = tmpCwd();
-    tempDirs.push(cwd);
     const created = await createTerminalInWorkspace(ctx.client, { cwd });
     const terminalId = created.terminal!.id;
 
@@ -1727,7 +1846,6 @@ describe("capture", () => {
 
   test("captures with start/end line range", async () => {
     const cwd = tmpCwd();
-    tempDirs.push(cwd);
     const created = await createTerminalInWorkspace(ctx.client, { cwd });
     const terminalId = created.terminal!.id;
 
@@ -1760,7 +1878,6 @@ describe("capture", () => {
 
   test("supports negative line indices", async () => {
     const cwd = tmpCwd();
-    tempDirs.push(cwd);
     const created = await createTerminalInWorkspace(ctx.client, { cwd });
     const terminalId = created.terminal!.id;
 
@@ -1790,7 +1907,6 @@ describe("capture", () => {
 
   test("strips ANSI by default", async () => {
     const cwd = tmpCwd();
-    tempDirs.push(cwd);
     const created = await createTerminalInWorkspace(ctx.client, { cwd });
     const terminalId = created.terminal!.id;
 
@@ -1820,7 +1936,6 @@ describe("list terminals across directories", () => {
   test("lists terminals from all directories when cwd is omitted", async () => {
     const cwd1 = tmpCwd();
     const cwd2 = tmpCwd();
-    tempDirs.push(cwd1, cwd2);
 
     const firstCreated = await createTerminalInWorkspace(ctx.client, {
       cwd: cwd1,
@@ -1836,14 +1951,14 @@ describe("list terminals across directories", () => {
     expect(list).not.toHaveProperty("cwd");
     expect(list.terminals).toEqual(
       expect.arrayContaining([
-        {
+        expect.objectContaining({
           id: firstCreated.terminal!.id,
           name: "first-terminal",
-        },
-        {
+        }),
+        expect.objectContaining({
           id: secondCreated.terminal!.id,
           name: "second-terminal",
-        },
+        }),
       ]),
     );
   });
@@ -1851,7 +1966,6 @@ describe("list terminals across directories", () => {
   test("lists terminals for specific directory when cwd is provided", async () => {
     const cwd1 = tmpCwd();
     const cwd2 = tmpCwd();
-    tempDirs.push(cwd1, cwd2);
 
     const firstCreated = await createTerminalInWorkspace(ctx.client, {
       cwd: cwd1,
@@ -1863,10 +1977,10 @@ describe("list terminals across directories", () => {
 
     expect(list.cwd).toBe(cwd1);
     expect(list.terminals).toEqual([
-      {
+      expect.objectContaining({
         id: firstCreated.terminal!.id,
         name: "cwd-one-terminal",
-      },
+      }),
     ]);
   });
 });
@@ -1875,14 +1989,14 @@ test.each([3000, 12050])(
   "chunked SDK replay retains requested history for %s printed lines",
   async (count) => {
     const cwd = tmpCwd();
-    tempDirs.push(cwd);
     const created = await createTerminalInWorkspace(ctx.client, {
       cwd,
       options: {
-        command: "/bin/sh",
+        // Windows has no /bin/sh; produce the same colored, padded lines with node.
+        command: process.execPath,
         args: [
-          "-lc",
-          `i=1; while [ $i -le ${count} ]; do printf '\\033[31mreplay-%04d界🙂 payload-abcdefghijklmnopqrstuvwxyz0123456789\\033[0m\\n' $i; i=$((i+1)); done; sleep 30`,
+          "-e",
+          `for (let i = 1; i <= ${count}; i += 1) console.log("\\u001b[31mreplay-" + String(i).padStart(4, "0") + "界🙂 payload-abcdefghijklmnopqrstuvwxyz0123456789\\u001b[0m"); setTimeout(() => {}, 30000);`,
         ],
       },
     });
@@ -1940,7 +2054,6 @@ test.each([false, true])(
   "default SDK observation replays a terminal without waiting for output (quietScreen=%s)",
   async (quietScreen) => {
     const cwd = tmpCwd();
-    tempDirs.push(cwd);
     const created = await createTerminalInWorkspace(ctx.client, {
       cwd,
       options: {
@@ -2005,7 +2118,6 @@ test.each([false, true])(
   async (chunked) => {
     const { existsSync } = await import("node:fs");
     const cwd = tmpCwd();
-    tempDirs.push(cwd);
     const marker = path.join(cwd, "output-complete");
     const created = await createTerminalInWorkspace(ctx.client, {
       cwd,

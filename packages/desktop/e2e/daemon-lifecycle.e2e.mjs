@@ -1,4 +1,3 @@
-import { verifyAttachedDaemonControls } from "./daemon-lifecycle-renderer.electron.mjs";
 import { once } from "node:events";
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, writeFile, readFile, rm, readdir, copyFile } from "node:fs/promises";
@@ -126,9 +125,9 @@ try {
     JSON.parse(await readFile(path.join(home, "config.json"), "utf8")).features.webUi.enabled,
     true,
   );
-  const liveWebUi = await fetch(`http://127.0.0.1:${port}/`);
-  assert.equal(liveWebUi.status, 200);
-  assert.match(await liveWebUi.text(), /Lifecycle web UI/);
+  const liveDaemon = await fetch(`http://127.0.0.1:${port}/api/health`);
+  assert.equal(liveDaemon.status, 200);
+  assert.equal((await liveDaemon.json()).status, "ok");
   await command("patch_desktop_settings", { daemon: { keepRunningAfterQuit: true } });
   await closeDesktop();
   desktop = null;
@@ -150,20 +149,6 @@ try {
   assert.equal(await readDaemonInstance(home), null);
   captured = null;
   await closeDesktop();
-  if (process.platform === "linux") {
-    const rendererLaunch = await startDaemonInstance({
-      home,
-      command: process.execPath,
-      args: [path.join(repo, "packages/server/dist/scripts/supervisor-entrypoint.js")],
-      env,
-      mode: "deployment",
-      desktopManaged: true,
-      timeoutMs: 30_000,
-    });
-    captured = rendererLaunch.instance;
-    await verifyAttachedDaemonControls({ repo, root, env, home, port, instance: captured });
-    captured = null;
-  }
   if (process.platform !== "win32") {
     const preload = path.join(root, "slow-worker.mjs");
     await writeFile(

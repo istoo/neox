@@ -2421,7 +2421,7 @@ test("close_items_request archives agents and kills terminals in one batch", asy
     requestId: "req-close-items",
   });
 
-  expect(cancelAgentRun).toHaveBeenCalledWith("agent-1");
+  expect(cancelAgentRun).toHaveBeenCalledWith("agent-1", undefined);
   expect(killTerminal).toHaveBeenCalledWith("term-1");
   expect(emitted.find((message) => message.type === "close_items_response")?.payload).toEqual({
     agents: [{ agentId: "agent-1", archivedAt }],
@@ -2839,7 +2839,7 @@ test("workspace placements preserve checkout facts independently from the projec
   const neolixSubdirectory = createPersistedWorkspaceRecord({
     workspaceId: "ws-neolix-subdirectory",
     projectId: "proj-manual-worktree",
-    cwd: "/tmp/neolix-worktree/packages/app",
+    cwd: "/tmp/neolix-worktree/packages/server",
     kind: "worktree",
     displayName: "app",
     isNeolixOwnedWorktree: true,
@@ -2968,7 +2968,7 @@ test("active-scoped fetch_agents includes only unarchived agents in active works
     }),
     makeAgent({
       id: "agent-subdir",
-      cwd: "/tmp/active/packages/app",
+      cwd: "/tmp/active/packages/server",
       workspaceId: "ws-active",
       status: "idle",
       updatedAt: "2026-03-01T12:03:00.000Z",
@@ -3888,7 +3888,7 @@ test("subdirectory agents contribute to their owning workspace descriptor", asyn
   session.listAgentPayloads = async () => [
     makeAgent({
       id: "a1",
-      cwd: "/tmp/repo/packages/app",
+      cwd: "/tmp/repo/packages/server",
       workspaceId: "ws-repo-subdir",
       status: "running",
       updatedAt: "2026-03-01T12:03:00.000Z",
@@ -6121,7 +6121,7 @@ test.skip("open_project_request collapses a git subdirectory onto the repo root 
   const projects = new Map<string, ReturnType<typeof createPersistedProjectRecord>>();
   const workspaces = new Map<string, ReturnType<typeof createPersistedWorkspaceRecord>>();
   const repoRoot = REPO_CWD;
-  const subdir = "/tmp/repo/packages/app";
+  const subdir = "/tmp/repo/packages/server";
 
   session.emit = (message) => {
     if (isSessionOutboundMessage(message)) emitted.push(message);

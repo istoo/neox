@@ -2,57 +2,87 @@ import { mkdtemp, mkdir, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { createExternalProcessEnv } from "../../neolix-env.js";
 import { ClaudeBridge } from "./bridge.js";
 import { installFakeClaude } from "./testing/fake-claude.js";
 import { ClaudeTuiRun, interactiveArgs } from "./tui-run.js";
 import type { ClaudeStreamEvent } from "./stream.js";
 
 const dirs: string[] = [];
-const runs: Array<{ abort(): void }> = [];
+const runs: Array<{ abort(): void; waitForExit(): Promise<void> }> = [];
 
 afterEach(async () => {
-  for (const run of runs.splice(0)) {
+  const stopped = runs.splice(0);
+  for (const run of stopped) {
     run.abort();
   }
+  // The run's cwd is one of these temp dirs; Windows refuses to remove it
+  // until the process behind cmd.exe has exited.
+  await Promise.all(stopped.map((run) => run.waitForExit()));
   for (const dir of dirs.splice(0)) {
     await rm(dir, { recursive: true, force: true });
   }
 });
 
 const SCRIPT = `
-sid=""
-prev=""
-for a in "$@"; do
-  [ "$prev" = "--session-id" ] && sid="$a"
-  prev="$a"
-done
-f="$TUI_PROJECTS/$sid.jsonl"
-stty raw -echo
-printf '❯ '
-while :; do
-  head=""
-  while :; do
-    c=$(dd bs=1 count=1 2>/dev/null) || exit 0
-    head="$head$c"
-    case "$head" in *'[200~'*) break;; esac
-  done
-  body=""
-  while :; do
-    c=$(dd bs=1 count=1 2>/dev/null) || exit 0
-    body="$body$c"
-    case "$body" in *'[201~'*) break;; esac
-  done
-  body=\${body%'[201~'}
-  body=$(printf '%s' "$body" | tr -d '\\033')
-  while :; do
-    c=$(dd bs=1 count=1 2>/dev/null) || exit 0
-    [ "$c" = "$(printf '\r')" ] && break
-  done
-  printf '{"type":"user","message":{"content":[{"type":"text","text":"%s"}]}}\\n' "$body" >> "$f"
-  printf '{"type":"assistant","uuid":"u1","message":{"id":"msg_1","model":"m","content":[{"type":"text","text":"reply:%s"}]}}\\n' "$body" >> "$f"
-  printf '{"type":"system","subtype":"turn_duration"}\\n' >> "$f"
-  printf '❯ '
-done
+const args = process.argv.slice(2);
+let sid = "";
+for (let i = 0; i < args.length; i += 1) {
+  if (args[i] === "--session-id" && i + 1 < args.length) {
+    sid = args[i + 1];
+  }
+}
+const file = path.join(process.env.TUI_PROJECTS, sid + ".jsonl");
+let buffer = "";
+let mode = "idle";
+let body = "";
+function writeRow(text) {
+  fs.appendFileSync(file, JSON.stringify({ type: "user", message: { content: [{ type: "text", text: text }] } }) + "\\n");
+  fs.appendFileSync(file, JSON.stringify({ type: "assistant", uuid: "u1", message: { id: "msg_1", model: "m", content: [{ type: "text", text: "reply:" + text }] } }) + "\\n");
+  fs.appendFileSync(file, JSON.stringify({ type: "system", subtype: "turn_duration" }) + "\\n");
+}
+function pump(chunk) {
+  buffer += chunk;
+  if (mode === "sent") {
+    const enter = buffer.indexOf("\\r");
+    if (enter === -1) {
+      return;
+    }
+    buffer = buffer.slice(enter + 1);
+    writeRow(body.replace(/\\u001b/g, "").replace(/\\n+$/, ""));
+    mode = "idle";
+    outRaw("\\u276f ");
+    return;
+  }
+  for (;;) {
+    if (mode === "idle") {
+      const start = buffer.indexOf("\\u001b[200~");
+      if (start === -1) {
+        if (buffer.length > 6) {
+          buffer = buffer.slice(-6);
+        }
+        return;
+      }
+      buffer = buffer.slice(start + 6);
+      body = "";
+      mode = "body";
+      continue;
+    }
+    const end = buffer.indexOf("\\u001b[201~");
+    if (end === -1) {
+      body += buffer;
+      buffer = "";
+      return;
+    }
+    body += buffer.slice(0, end);
+    buffer = buffer.slice(end + 6);
+    mode = "sent";
+    pump("");
+    return;
+  }
+}
+outRaw("\\u276f ");
+onKeys(pump);
 `;
 
 async function setup(): Promise<{
@@ -126,7 +156,12 @@ describe("ClaudeTuiRun through the bridge", { timeout: 20_000 }, () => {
         messages: [{ role: "user", parts: [{ kind: "text", text: "hello" }] }],
       },
       cwd: work,
-      env: { PATH: "/usr/bin:/bin", TUI_PROJECTS: projects },
+      // A real turn's env starts from process.env, which Node on Windows
+      // needs (SystemRoot among it) to start; keep the fixture's overrides.
+      env: createExternalProcessEnv(process.env, {
+        PATH: "/usr/bin:/bin",
+        TUI_PROJECTS: projects,
+      }),
       mcpConfig: "{}",
       sessionDirs: [projects],
       tui: { listedFile: path.join(work, "listed") },
@@ -144,7 +179,7 @@ describe("ClaudeTuiRun through the bridge", { timeout: 20_000 }, () => {
   });
 
   it("fails the turn when the interactive mode does not come up, never running -p instead", async () => {
-    const fake = await installFakeClaude(`printf 'not a terminal Claude Code\\n'\nexit 1\n`);
+    const fake = await installFakeClaude(`out("not a terminal Claude Code"); process.exit(1);`);
     dirs.push(fake.dir);
     const dir = await mkdtemp(path.join(os.tmpdir(), "neolix-claude-tui-run-"));
     dirs.push(dir);
@@ -165,7 +200,12 @@ describe("ClaudeTuiRun through the bridge", { timeout: 20_000 }, () => {
       model: "claude-haiku",
       request: { messages: [{ role: "user", parts: [{ kind: "text", text: "hello" }] }] },
       cwd: dir,
-      env: { PATH: "/usr/bin:/bin", TUI_PROJECTS: projects },
+      // A real turn's env starts from process.env, which Node on Windows
+      // needs (SystemRoot among it) to start; keep the fixture's overrides.
+      env: createExternalProcessEnv(process.env, {
+        PATH: "/usr/bin:/bin",
+        TUI_PROJECTS: projects,
+      }),
       mcpConfig: "{}",
       sessionDirs: [projects],
       tui: { listedFile: path.join(dir, "listed") },
@@ -180,7 +220,7 @@ describe("ClaudeTuiRun through the bridge", { timeout: 20_000 }, () => {
   });
 
   it("fails the turn when the tools are never listed, after its ready wait", async () => {
-    const fake = await installFakeClaude(`printf '❯ '\nwhile :; do sleep 1; done\n`);
+    const fake = await installFakeClaude(`outRaw("\\u276f "); keepAlive();`);
     dirs.push(fake.dir);
     const dir = await mkdtemp(path.join(os.tmpdir(), "neolix-claude-tui-run-"));
     dirs.push(dir);
@@ -205,7 +245,12 @@ describe("ClaudeTuiRun through the bridge", { timeout: 20_000 }, () => {
       model: "claude-haiku",
       request: { messages: [{ role: "user", parts: [{ kind: "text", text: "hello" }] }] },
       cwd: dir,
-      env: { PATH: "/usr/bin:/bin", TUI_PROJECTS: projects },
+      // A real turn's env starts from process.env, which Node on Windows
+      // needs (SystemRoot among it) to start; keep the fixture's overrides.
+      env: createExternalProcessEnv(process.env, {
+        PATH: "/usr/bin:/bin",
+        TUI_PROJECTS: projects,
+      }),
       mcpConfig: "{}",
       sessionDirs: [projects],
       tui: { listedFile: path.join(dir, "never-listed") },

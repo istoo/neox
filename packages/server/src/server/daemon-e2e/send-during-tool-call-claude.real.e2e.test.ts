@@ -1148,7 +1148,7 @@ describe("daemon E2E (real claude) - send message during tool call", () => {
   }, 300_000);
 
   test("the app's default steer survives a backgrounded helper while the main session works", async () => {
-    // appSettings.sendBehavior defaults to "steer" (packages/app/src/hooks/use-settings/storage.ts),
+    // appSettings.sendBehavior defaults to "steer" (the web client's settings store),
     // so this is what the app actually sends when a user replies while an agent looks busy.
     const logger = pino({ level: "silent" });
     const resources: SteeringResources = {

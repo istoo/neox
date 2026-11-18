@@ -88,7 +88,7 @@ describe("workspace editor autosave", () => {
     const workspace = addWorkspaceSession({
       hostId: "remote-host",
       hostName: "Remote",
-      wsPath: "/ws/remote/remote-host",
+      wsPath: "/rpc/remote/remote-host",
       executionScope: {
         environmentId: "remote",
         accountAuthority: "https://account.example",

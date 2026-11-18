@@ -81,7 +81,6 @@ describe("desktop-settings", () => {
     const settings = await store.get();
 
     expect(settings).toEqual({
-      uiMode: "web",
       releaseChannel: "stable",
       notifications: { playSound: true },
       daemon: {
@@ -132,7 +131,6 @@ describe("desktop-settings", () => {
     const files = await readdir(userDataPath);
 
     expect(next).toEqual({
-      uiMode: "web",
       releaseChannel: "beta",
       notifications: { playSound: true },
       daemon: {
@@ -171,22 +169,37 @@ describe("desktop-settings", () => {
     expect(files).toEqual(["desktop-settings.json"]);
   });
 
-  it("patches the renderer and sleep choices and ignores unusable values", async () => {
+  it("patches the sleep choice and ignores unusable values", async () => {
     const userDataPath = await createTempUserDataDir();
     directories.add(userDataPath);
     const store = createDesktopSettingsStore({ userDataPath });
 
-    const next = await store.patch({ uiMode: "native", preventSleep: "display" });
-    expect(next.uiMode).toBe("native");
+    const next = await store.patch({ preventSleep: "display" });
     expect(next.preventSleep).toBe("display");
 
-    const ignored = await store.patch({ uiMode: "RN", preventSleep: "banana" });
-    expect(ignored.uiMode).toBe("native");
+    const ignored = await store.patch({ preventSleep: "banana" });
     expect(ignored.preventSleep).toBe("display");
 
     const reloaded = createDesktopSettingsStore({ userDataPath });
-    expect((await reloaded.get()).uiMode).toBe("native");
     expect((await reloaded.get()).preventSleep).toBe("display");
+  });
+
+  it("ignores a renderer choice left in an older settings file", async () => {
+    const userDataPath = await createTempUserDataDir();
+    directories.add(userDataPath);
+    await writeFile(
+      settingsFilePath(userDataPath),
+      JSON.stringify({
+        version: 1,
+        settings: { uiMode: "native" },
+        migrations: { legacyRendererSettingsImported: true, daemonStopOnQuitDefaultApplied: true },
+      }),
+    );
+    const store = createDesktopSettingsStore({ userDataPath });
+
+    const settings = await store.get();
+    expect(settings).not.toHaveProperty("uiMode");
+    expect((await store.patch({ preventSleep: "on" })).preventSleep).toBe("on");
   });
 
   it("keeps the chosen app icon across restarts and ignores unknown names", async () => {
@@ -358,7 +371,6 @@ describe("desktop-settings", () => {
     });
 
     expect(migrated).toEqual({
-      uiMode: "web",
       releaseChannel: "beta",
       notifications: { playSound: true },
       daemon: {
@@ -432,7 +444,6 @@ describe("desktop-settings", () => {
     expect(persisted.futureDocumentKey).toBe("kept");
     expect(persisted.settings.releaseChannel).toBe("beta");
     expect(next).toEqual({
-      uiMode: "web",
       releaseChannel: "beta",
       notifications: { playSound: false },
       daemon: { manageBuiltInDaemon: true, keepRunningAfterQuit: false },
@@ -509,29 +520,5 @@ describe("desktop-settings", () => {
 
     expect(persisted.settings.releaseChannel).toBe("stable");
     expect(persisted.settings.futureSetting).toEqual({ enabled: true });
-  });
-
-  it("moves a saved native renderer to web once, then keeps a later choice of native", async () => {
-    const userDataPath = await createTempUserDataDir();
-    directories.add(userDataPath);
-    await writeFile(
-      settingsFilePath(userDataPath),
-      JSON.stringify({
-        version: 1,
-        settings: { uiMode: "native" },
-        migrations: { legacyRendererSettingsImported: true, daemonStopOnQuitDefaultApplied: true },
-      }),
-    );
-
-    const first = createDesktopSettingsStore({ userDataPath });
-    expect((await first.get()).uiMode).toBe("web");
-    await first.patch({ uiMode: "native" });
-
-    const reopened = createDesktopSettingsStore({ userDataPath });
-    expect((await reopened.get()).uiMode).toBe("native");
-    const persisted = JSON.parse(await readFile(settingsFilePath(userDataPath), "utf8")) as {
-      migrations: Record<string, boolean>;
-    };
-    expect(persisted.migrations.webRendererDefaultApplied).toBe(true);
   });
 });

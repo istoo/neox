@@ -2,6 +2,8 @@ import {
   GitHubRepositoryResult,
   type GitActionProgressEvent,
   GitListBranchesResult,
+  GitListCommitsResult,
+  GitCommitDiffResult,
   GitListRecentCommitsResult,
   GitPullResult,
   GitReadWorkingTreeDiffResult,
@@ -87,7 +89,8 @@ interface Fakes {
   readonly diff?: Record<string, unknown>;
   readonly branches?: Record<string, unknown>;
   readonly worktrees?: Record<string, unknown>;
-  readonly commits?: Record<string, unknown[]>;
+  readonly commits?: unknown;
+  readonly commitFiles?: Record<string, unknown>;
   readonly stashes?: Record<string, unknown>;
   readonly stashPop?: Record<string, unknown>;
   readonly prCreate?: Record<string, unknown>;
@@ -133,6 +136,12 @@ function makeHandlers(fakes: Fakes = {}) {
           worktrees: [{ worktreePath: "/repo-feature", branchName: "feature" }],
         }
       );
+    },
+    getCommitFileDiff: async (cwd: string, sha: string, filePath: string) => {
+      calls.push(["getCommitFileDiff", { cwd, sha, path: filePath }]);
+      return {
+        file: (fakes.commitFiles?.[filePath] as Record<string, unknown> | undefined) ?? null,
+      };
     },
     listCheckoutCommits: async (cwd: string) => {
       calls.push(["listCheckoutCommits", cwd]);
@@ -480,6 +489,111 @@ describe("gitRpc", () => {
     expect(() => encode(GitListRecentCommitsResult, result)).not.toThrow();
     expect(result.commits).toHaveLength(5);
     expect(result.commits[0]).toMatchObject({ sha: "sha-0", subject: "commit 0" });
+  });
+
+  it("lists commits with their files and base classification", async () => {
+    const { handlers } = makeHandlers({
+      commits: {
+        baseRef: "main",
+        commits: [
+          {
+            sha: "abc123",
+            shortSha: "abc123",
+            subject: "Add commit browser",
+            authorName: "Dev",
+            authorDate: "2026-11-01T00:00:00.000Z",
+            isOnRemote: false,
+            isOnBase: false,
+            files: [
+              { path: "src/a.ts", additions: 3, deletions: 1, status: "modified" },
+              { path: "src/b.ts", additions: 2, deletions: 0, status: "added" },
+            ],
+          },
+        ],
+      },
+    });
+    const result = await call<GitListCommitsResult>(handlers, WS_METHODS.gitListCommits, {
+      cwd: CWD,
+    });
+    expect(() => encode(GitListCommitsResult, result)).not.toThrow();
+    expect(result.baseRef).toBe("main");
+    expect(result.commits[0]).toMatchObject({
+      sha: "abc123",
+      authorName: "Dev",
+      isOnRemote: false,
+      isOnBase: false,
+    });
+    expect(result.commits[0]?.files).toEqual([
+      { path: "src/a.ts", additions: 3, deletions: 1, status: "modified" },
+      { path: "src/b.ts", additions: 2, deletions: 0, status: "added" },
+    ]);
+  });
+
+  it("renders one commit's file diffs as a unified patch", async () => {
+    const { handlers, calls } = makeHandlers({
+      commits: {
+        baseRef: "main",
+        commits: [
+          {
+            sha: "abc123",
+            shortSha: "abc123",
+            subject: "Add commit browser",
+            authorName: "Dev",
+            authorDate: "2026-11-01T00:00:00.000Z",
+            isOnRemote: true,
+            files: [{ path: "src/a.ts", additions: 2, deletions: 1 }],
+          },
+        ],
+      },
+      commitFiles: { "src/a.ts": DIFF.files[0] },
+    });
+    const result = await call<GitCommitDiffResult>(handlers, WS_METHODS.gitCommitDiff, {
+      cwd: CWD,
+      sha: "abc123",
+    });
+    expect(() => encode(GitCommitDiffResult, result)).not.toThrow();
+    expect(result.patch).toContain("diff --git a/src/a.ts b/src/a.ts");
+    expect(result.patch).toContain("+d");
+    expect(calls).toContainEqual([
+      "getCommitFileDiff",
+      { cwd: CWD, sha: "abc123", path: "src/a.ts" },
+    ]);
+  });
+
+  it("keeps a binary commit file visible instead of returning an empty patch", async () => {
+    const { handlers } = makeHandlers({
+      commits: {
+        baseRef: "main",
+        commits: [
+          {
+            sha: "abc123",
+            shortSha: "abc123",
+            subject: "Add logo",
+            authorName: "Dev",
+            authorDate: "2026-11-01T00:00:00.000Z",
+            isOnRemote: true,
+            files: [{ path: "assets/logo.png", additions: 0, deletions: 0, status: "added" }],
+          },
+        ],
+      },
+      commitFiles: {
+        "assets/logo.png": {
+          path: "assets/logo.png",
+          isNew: true,
+          isDeleted: false,
+          additions: 0,
+          deletions: 0,
+          hunks: [],
+          status: "binary",
+        },
+      },
+    });
+    const result = await call<GitCommitDiffResult>(handlers, WS_METHODS.gitCommitDiff, {
+      cwd: CWD,
+      sha: "abc123",
+    });
+    expect(result.patch).toContain("diff --git a/assets/logo.png b/assets/logo.png");
+    expect(result.patch).toContain("Binary files /dev/null and b/assets/logo.png differ");
   });
 
   it("reads the GitHub repository from the checkout remote", async () => {

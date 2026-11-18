@@ -88,16 +88,16 @@ afterEach(() => {
 describe("subscription account store", () => {
   it("names each agent's file under the gateway directory", () => {
     expect(subscriptionAccountsFile("/home/x/gateway", "chatgpt-api")).toBe(
-      "/home/x/gateway/chatgpt-api-accounts.json",
+      join("/home/x/gateway", "chatgpt-api-accounts.json"),
     );
     expect(subscriptionAccountsFile("/home/x/gateway", "copilot")).toBe(
-      "/home/x/gateway/copilot-accounts.json",
+      join("/home/x/gateway", "copilot-accounts.json"),
     );
     expect(subscriptionAccountsFile("/home/x/gateway", "gemini")).toBe(
-      "/home/x/gateway/google-accounts.json",
+      join("/home/x/gateway", "google-accounts.json"),
     );
     expect(subscriptionAccountsFile("/home/x/gateway", "antigravity")).toBe(
-      "/home/x/gateway/google-accounts.json",
+      join("/home/x/gateway", "google-accounts.json"),
     );
   });
 
@@ -120,7 +120,10 @@ describe("subscription account store", () => {
     const file = join(tempDir(), "copilot-accounts.json");
     const saved = copilot();
     await saveSubscriptionAccounts(file, [saved]);
-    expect(statSync(file).mode & 0o777).toBe(0o600);
+    // Windows cannot express POSIX permissions; the file is private by location there.
+    if (process.platform !== "win32") {
+      expect(statSync(file).mode & 0o777).toBe(0o600);
+    }
     expect(await loadSubscriptionAccounts(file, "copilot")).toEqual([saved]);
   });
 

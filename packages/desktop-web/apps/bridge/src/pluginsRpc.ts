@@ -127,8 +127,19 @@ export function makePluginHandlers(model: BridgeModel): Record<string, AnyHandle
     [WS_METHODS.neolixPluginsList]: () =>
       fromPromise("neolix.plugins.list", async () => {
         // The daemon's wire type uses `unknown` for JSON payloads; the contracts use `Json`.
-        const plugins = (await client.listPlugins()) as unknown as NeolixPlugin[];
-        return { plugins: await Promise.all(plugins.map(withManifestContributions)) };
+        const [plugins, daemonConfig] = await Promise.all([
+          client.listPlugins(),
+          Promise.resolve()
+            .then(() => client.getDaemonConfig())
+            .catch(() => null),
+        ]);
+        const withContributions = await Promise.all(
+          (plugins as unknown as NeolixPlugin[]).map(withManifestContributions),
+        );
+        return {
+          plugins: withContributions,
+          ...(daemonConfig ? { pluginsEnabled: daemonConfig.config.pluginsEnabled === true } : {}),
+        };
       }),
 
     [WS_METHODS.neolixPluginsBuiltin]: () =>

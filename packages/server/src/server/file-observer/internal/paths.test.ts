@@ -7,14 +7,14 @@ import { createObserverPaths } from "./paths.js";
 // character that sorts below the separator (POSIX "/" = 0x2F, so "-" and "."
 // qualify) lands between them, so the single backward look collapse()
 // relies on misses the real parent and keeps a redundant descendant scope.
-// This is this repo's own layout: packages/app, packages/app-web,
-// packages/app/src.
+// This is this repo's own layout: packages/server, packages/server-web,
+// packages/server/src.
 describe("collapse", () => {
   test("drops a redundant descendant but keeps a sibling whose name extends the parent's", () => {
     const paths = createObserverPaths("linux");
-    const parent = "/repo/packages/app";
-    const sibling = "/repo/packages/app-web";
-    const descendant = "/repo/packages/app/src";
+    const parent = "/repo/packages/server";
+    const sibling = "/repo/packages/server-web";
+    const descendant = "/repo/packages/server/src";
 
     expect(paths.collapse([parent, sibling, descendant]).sort()).toEqual([parent, sibling].sort());
   });
@@ -33,9 +33,9 @@ describe("collapse", () => {
   test("collapses win32 paths case-insensitively even with mismatched casing", () => {
     const paths = createObserverPaths("win32");
     const sep = win32.sep;
-    const parent = `C:${sep}repo${sep}packages${sep}app`;
-    const sibling = `C:${sep}repo${sep}packages${sep}APP-web`;
-    const descendant = `c:${sep}repo${sep}packages${sep}app${sep}src`;
+    const parent = `C:${sep}repo${sep}packages${sep}server`;
+    const sibling = `C:${sep}repo${sep}packages${sep}SERVER-web`;
+    const descendant = `c:${sep}repo${sep}packages${sep}server${sep}src`;
 
     expect(paths.collapse([parent, sibling, descendant]).sort()).toEqual([parent, sibling].sort());
   });

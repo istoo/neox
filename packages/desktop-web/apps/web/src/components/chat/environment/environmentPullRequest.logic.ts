@@ -65,6 +65,23 @@ export function summarizePullRequestChecks(
   return { label: t("chat:prChecksAllPassed"), tone: "success" };
 }
 
+/**
+ * The check's elapsed time. A running check's elapsed time means "still going", so it is
+ * labelled to avoid reading as a finished duration.
+ */
+export function formatPullRequestCheckDuration(
+  check: Pick<PullRequestCheck | GitPullRequestCheck, "status" | "duration">,
+  translate: typeof t = t,
+): string | null {
+  const duration = check.duration?.trim();
+  if (!duration) {
+    return null;
+  }
+  return check.status === "pending"
+    ? translate("chat:prCheckRunningDuration", { value0: duration })
+    : duration;
+}
+
 export const PULL_REQUEST_CHECK_STATUS_LABEL_KEYS: Record<GitPullRequestCheck["status"], string> = {
   pending: "chat:prCheckStatusRunning",
   success: "chat:prCheckStatusSucceeded",

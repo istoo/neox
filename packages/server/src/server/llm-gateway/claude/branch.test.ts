@@ -17,7 +17,7 @@ const bridges: ClaudeBridge[] = [];
 
 afterEach(async () => {
   for (const bridge of bridges.splice(0)) {
-    bridge.abortAll();
+    void bridge.abortAll();
   }
   for (const dir of dirs.splice(0)) {
     await rm(dir, { recursive: true, force: true });

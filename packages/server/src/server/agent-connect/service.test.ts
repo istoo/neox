@@ -11,6 +11,7 @@ import {
   sharedAgentConnectService,
 } from "./service.js";
 import type { AgentConnectDriver, ConnectEnvironment } from "./drivers.js";
+import { tomlString } from "./config-files.js";
 
 function gateway(): GatewayConfig {
   return {
@@ -179,7 +180,7 @@ describe("AgentConnectService", () => {
     expect(written.match(/^model = "gpt-5"$/m)).toBeNull();
     // Codex's picker reads the gateway's models from the catalog the file names.
     const catalogPath = path.join(home, ".codex", "neolix-codex-models.json");
-    expect(written).toContain(`model_catalog_json = "${catalogPath}"`);
+    expect(written).toContain(`model_catalog_json = ${tomlString(catalogPath)}`);
     const catalog = JSON.parse(await fs.readFile(catalogPath, "utf8")) as {
       models: { slug: string; base_instructions: string }[];
     };
@@ -586,8 +587,16 @@ describe("AgentConnectService", () => {
       },
     });
     const restarted = await connect.restartStale({ provider: "codex", kind: "daemon" });
-    expect(restarted.error).toBeNull();
-    expect(calls).toEqual(["codex app-server daemon restart"]);
+    // Codex daemons are not managed on Windows, so there is nothing Neolix may restart.
+    if (process.platform === "win32") {
+      expect(restarted.error).toBe(
+        "Reopen that copy of the agent yourself: Neox cannot restart it.",
+      );
+      expect(calls).toEqual([]);
+    } else {
+      expect(restarted.error).toBeNull();
+      expect(calls).toEqual(["codex app-server daemon restart"]);
+    }
 
     const cli = await service().restartStale({ provider: "codex", kind: "cli" });
     expect(cli.error).toBe("Reopen that copy of the agent yourself: Neox cannot restart it.");

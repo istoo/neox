@@ -7,7 +7,7 @@ import {
   type ComputerFrameHeader,
 } from "@synara/contracts";
 
-export const COMPUTER_FRAME_WS_PATH = "/ws/computer-frames";
+export const COMPUTER_FRAME_WS_PATH = "/rpc/computer-frames";
 export const COMPUTER_FRAME_WS_COMPUTER_ID_PARAM = "computerId";
 export const COMPUTER_FRAME_RESYNC_MESSAGE = "computer.frame.resync";
 

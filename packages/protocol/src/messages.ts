@@ -1964,6 +1964,53 @@ export const DaemonHandlesDumpResponseSchema = z.object({
     .passthrough(),
 });
 
+/**
+ * The main event loop's health over the daemon's sampling window. Delay percentiles describe
+ * whether the loop that serves every agent and terminal stream is keeping up; process CPU
+ * alone cannot show that.
+ */
+export const DaemonRuntimeStatusRequestSchema = z.object({
+  type: z.literal("daemon.runtime.get_status.request"),
+  requestId: z.string(),
+});
+
+export const DaemonRuntimeStatusResponseSchema = z.object({
+  type: z.literal("daemon.runtime.get_status.response"),
+  payload: z
+    .object({
+      requestId: z.string(),
+      /** Length of the current sampling window. */
+      sampleWindowMs: z.number().nonnegative(),
+      /** Event-loop samples taken in this window. */
+      sampleCount: z.number().int().nonnegative(),
+      delayP50Ms: z.number().nonnegative(),
+      delayP99Ms: z.number().nonnegative(),
+      delayMaxMs: z.number().nonnegative(),
+      /** Share of the window the event loop spent active, 0..1. */
+      utilization: z.number().min(0).max(1),
+      /** Completed windows whose longest delay reached the stall threshold. */
+      stallWindowCount: z.number().int().nonnegative(),
+      /** The longest stall since the daemon started. */
+      maxStallMs: z.number().nonnegative(),
+      lastStall: z
+        .object({
+          durationMs: z.number().nonnegative(),
+          ageMs: z.number().nonnegative(),
+        })
+        .nullable(),
+      uptimeSeconds: z.number().nonnegative(),
+      memory: z.object({
+        rss: z.number().int().nonnegative(),
+        heapTotal: z.number().int().nonnegative(),
+        heapUsed: z.number().int().nonnegative(),
+        external: z.number().int().nonnegative(),
+        arrayBuffers: z.number().int().nonnegative(),
+      }),
+      agentCount: z.number().int().nonnegative(),
+    })
+    .passthrough(),
+});
+
 export const PluginCatalogGetRequestSchema = z.object({
   type: z.literal("plugin.catalog.get.request"),
   requestId: z.string(),
@@ -2621,6 +2668,11 @@ export const SessionsExternalListRequestSchema = z.object({
   agent: z.string().optional(),
   /** Read each session's per-day activity, over this many days (0 is all). */
   activityDays: z.number().int().nonnegative().optional(),
+  /**
+   * List from the parse cache and file headers, and finish reading the files in
+   * the background. A caller that omits it gets the whole list as before.
+   */
+  fast: z.boolean().optional(),
   requestId: z.string(),
 });
 
@@ -2636,6 +2688,8 @@ export const SessionsExternalListResponseSchema = z.object({
     home: z.string(),
     recording: z.boolean(),
     recorded: z.boolean(),
+    /** Rows from headers while their files are still being read in full. */
+    partial: z.boolean().optional(),
     error: z.string().nullable(),
   }),
 });
@@ -6469,6 +6523,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   DaemonHeapSnapshotRequestSchema,
   DaemonCpuProfileRequestSchema,
   DaemonHandlesDumpRequestSchema,
+  DaemonRuntimeStatusRequestSchema,
   PluginCatalogGetRequestSchema,
   PluginListRequestSchema,
   PluginLogsGetRequestSchema,
@@ -6900,6 +6955,12 @@ export const ServerInfoStatusPayloadSchema = z
         daemonStatusRpc: z.boolean().optional(),
         // COMPAT(daemonPaths): added in v0.16.0, remove gate after 2027-11-06.
         daemonPaths: z.boolean().optional(),
+        // COMPAT(daemonWorktreesRoot): added in v0.17.0, remove gate after 2027-05-14.
+        /** `daemon.get_status` carries the resolved `worktreesRoot`. */
+        daemonWorktreesRoot: z.boolean().optional(),
+        // COMPAT(daemonRuntimeStatus): added in v0.17.0, remove gate after 2027-05-14.
+        /** `daemon.runtime.get_status` answers with event-loop and process metrics. */
+        daemonRuntimeStatus: z.boolean().optional(),
         // COMPAT(wslAgents): added in v0.16.0, remove gate after 2027-11-06.
         /** The host can look for agents inside WSL distros; Windows hosts only. */
         wslAgents: z.boolean().optional(),
@@ -6975,6 +7036,8 @@ export const ServerInfoStatusPayloadSchema = z
         speechSettings: z.boolean().optional(),
         // Hosts the external session browser for Settings → Use → Sessions.
         externalSessions: z.boolean().optional(),
+        // Answers `sessions.external.list` from headers with `partial` while files are read.
+        externalSessionsProgress: z.boolean().optional(),
         // Hosts `sessions.terminals.list` and `sessions.open_in_terminal`.
         sessionTerminal: z.boolean().optional(),
         // COMPAT(relayConfig): added in v0.2.6, remove gate after 2027-01-31.
@@ -8446,6 +8509,9 @@ export const DaemonGetStatusResponseSchema = z.object({
       // COMPAT(daemonPaths): added in v0.16.0, remove gate after 2027-11-06.
       /** The daemon's log file; absent when it writes none. */
       logPath: z.string().optional(),
+      // COMPAT(daemonWorktreesRoot): added in v0.17.0, remove gate after 2027-05-14.
+      /** The resolved worktree base, including a custom `worktrees.root`. */
+      worktreesRoot: z.string().optional(),
       relay: z
         .object({
           enabled: z.boolean(),
@@ -10736,6 +10802,7 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   DaemonHeapSnapshotResponseSchema,
   DaemonCpuProfileResponseSchema,
   DaemonHandlesDumpResponseSchema,
+  DaemonRuntimeStatusResponseSchema,
   GetDaemonConfigResponseMessageSchema,
   SetDaemonConfigResponseMessageSchema,
   ReadProjectConfigResponseMessageSchema,
@@ -11001,6 +11068,8 @@ export type ListProviderFeaturesResponseMessage = z.infer<
 >;
 export type ListAvailableProvidersResponse = z.infer<typeof ListAvailableProvidersResponseSchema>;
 export type DaemonGetStatusResponse = z.infer<typeof DaemonGetStatusResponseSchema>;
+export type DaemonRuntimeStatusRequest = z.infer<typeof DaemonRuntimeStatusRequestSchema>;
+export type DaemonRuntimeStatusResponse = z.infer<typeof DaemonRuntimeStatusResponseSchema>;
 export type DaemonGetPairingOfferResponse = z.infer<typeof DaemonGetPairingOfferResponseSchema>;
 export type DaemonConfigReloadResponse = z.infer<typeof DaemonConfigReloadResponseSchema>;
 export type DaemonWebPage = z.infer<typeof DaemonWebPageSchema>;

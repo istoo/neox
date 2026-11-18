@@ -26,6 +26,7 @@ import { readSpeechSettings } from "./speech/speech-settings.js";
 import { mergeHostnames, parseHostnamesEnv, type HostnamesConfig } from "./hostnames.js";
 import { resolveGitProcessPolicy } from "../utils/git-process-scheduler.js";
 import { resolveListenAddress } from "./listen-address.js";
+import { webAppCandidates } from "./web-app-paths.js";
 
 export {
   loadPersistedConfig,
@@ -48,7 +49,7 @@ export function resolveBundledWebUiDistDir(input: ResolveBundledWebUiDistDirInpu
   const moduleDir = path.dirname(fileURLToPath(moduleUrl));
 
   if (path.basename(moduleDir) === "server" && path.basename(path.dirname(moduleDir)) === "src") {
-    return path.resolve(moduleDir, "..", "..", "dist", "server", "web-ui");
+    return path.resolve(moduleDir, "..", "..", "dist", "server", "web-app", "web");
   }
 
   if (
@@ -56,16 +57,18 @@ export function resolveBundledWebUiDistDir(input: ResolveBundledWebUiDistDirInpu
     path.basename(path.dirname(moduleDir)) === "server" &&
     path.basename(path.dirname(path.dirname(moduleDir))) === "dist"
   ) {
-    const appDistDir = input.resourcesPath ? path.join(input.resourcesPath, "app-dist") : null;
+    const packagedDistDir = input.resourcesPath
+      ? path.join(input.resourcesPath, "desktop-web", "web")
+      : null;
 
-    if (appDistDir && existsSync(appDistDir)) {
-      return appDistDir;
+    if (packagedDistDir && existsSync(packagedDistDir)) {
+      return packagedDistDir;
     }
 
-    return path.resolve(moduleDir, "..", "web-ui");
+    return path.resolve(moduleDir, "..", "web-app", "web");
   }
 
-  return path.resolve(moduleDir, "web-ui");
+  return path.resolve(moduleDir, "web-app", "web");
 }
 
 const processResourcesPath = "resourcesPath" in process ? process.resourcesPath : undefined;
@@ -629,6 +632,16 @@ export function resolveConfigFromPersisted(
     relayPublicUseTls: relay.publicUseTls,
     serviceProxy: resolveServiceProxyConfig(env, persisted),
     webUi: resolveWebUiConfig(neolixHome, env, cli, persisted),
+    // `NEOLIX_WEB_APP=0` keeps the desktop web app off this port.
+    webApp:
+      parseBooleanEnv(env.NEOLIX_WEB_APP) === false
+        ? null
+        : webAppCandidates({
+            env,
+            ...(typeof processResourcesPath === "string"
+              ? { resourcesPath: processResourcesPath }
+              : {}),
+          }),
     auth: resolveAuthConfig(env, persisted),
     openai,
     speech,
@@ -673,6 +686,9 @@ export function resolveReloadableConfig(
     builtinFeatureConfig: persisted.builtinFeatureConfig,
     relayEnabled: relay.enabled,
     relayRequireProtectedSecurity: relay.requireProtectedSecurity,
+    // createInitialRelayConfig treats an empty endpoint as "relay cannot run",
+    // so a reload that drops it silently keeps the previous enabled state.
+    relayEndpoint: relay.endpoint,
     idleRuntimeCleanup: persisted.agents?.idleRuntimeCleanup ?? true,
     ...resolveRestartRecoveryConfig(persisted.agents),
     providerCatalogRefreshTimeoutMs: persisted.agents?.catalogRefreshTimeoutMs,

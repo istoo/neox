@@ -105,11 +105,24 @@ import type {
   NeolixAgentInstallRunResult,
 } from "./neolixHost";
 import type {
+  NeolixSubagentDetachInput,
+  NeolixSubagentDetachResult,
   NeolixSubagentTimelineInput,
   NeolixSubagentTimelineResult,
   NeolixSubagentsListInput,
   NeolixSubagentsListResult,
 } from "./neolixSubagents";
+import type {
+  NeolixAgentAttentionClearInput,
+  NeolixAttentionClearResult,
+  NeolixWorkspaceAttentionClearInput,
+} from "./neolixAttention";
+import type {
+  WorkspaceSetupEvent,
+  WorkspaceSetupRunInput,
+  WorkspaceSetupRunResult,
+  WorkspaceSetupSubscribeInput,
+} from "./neolixWorkspaceSetup";
 import type {
   NeolixArchivedWorkspacesListResult,
   NeolixWorkspaceArchiveInput,
@@ -238,6 +251,10 @@ import type {
   GitInitInput,
   GitListBranchesInput,
   GitListBranchesResult,
+  GitListCommitsInput,
+  GitListCommitsResult,
+  GitCommitDiffInput,
+  GitCommitDiffResult,
   GitListRecentCommitsInput,
   GitListRecentCommitsResult,
   GitPullInput,
@@ -274,6 +291,8 @@ import type {
   GitHubProjectProvisionInput,
   GitHubProjectProvisionProgressEvent,
   GitHubProjectProvisionResult,
+  GitHubRepositorySearchInput,
+  GitHubRepositorySearchResult,
 } from "./githubProjectProvisioning";
 import type {
   PullRequestActionInput,
@@ -282,6 +301,9 @@ import type {
   PullRequestDetail,
   PullRequestDetailInput,
   PullRequestDiffResult,
+  PullRequestPipelineInput,
+  PullRequestPipelineResult,
+  PullRequestSetAutoMergeInput,
   PullRequestSetPinnedInput,
   PullRequestSetPinnedResult,
 } from "./pullRequests";
@@ -876,6 +898,11 @@ interface BrowserControlMethods {
   closeTab: (input: BrowserTabInput) => Promise<ThreadBrowserState>;
   selectTab: (input: BrowserTabInput) => Promise<ThreadBrowserState>;
   openDevTools: (input: BrowserTabInput) => Promise<void>;
+  /**
+   * Runs one agent browser-automation command against a registered webview in this
+   * window. Absent on shells that predate agent-driven browser control.
+   */
+  executeAutomationCommand?: (request: Record<string, unknown>) => Promise<unknown>;
   onState: (listener: (state: ThreadBrowserState) => void) => () => void;
 }
 
@@ -1147,13 +1174,6 @@ export type DesktopDiagnosticIssue = typeof DesktopDiagnosticIssue.Type;
 export const DESKTOP_DIAGNOSTIC_ISSUE_PREFIX = "SYNARA_DIAGNOSTIC_ISSUE ";
 export type DesktopDiagnosticReportStatus = "queued" | "sent" | "unavailable";
 
-/** Which renderer the desktop shell loads; a change takes effect on relaunch. */
-export interface DesktopUiModeState {
-  readonly mode: "native" | "web";
-  /** False when `NEOLIX_DESKTOP_UI` pins the renderer for this launch. */
-  readonly selectable: boolean;
-}
-
 export interface DesktopBridge {
   productAnalytics?: DesktopProductAnalyticsBridge;
   /** Mirrors the renderer language onto native menus and startup dialogs; absent on older builds. */
@@ -1230,15 +1250,6 @@ export interface DesktopBridge {
     getState: () => Promise<DesktopCustomTitleBarState>;
     setPreference: (enabled: boolean) => Promise<DesktopCustomTitleBarState>;
     relaunch: () => Promise<void>;
-  };
-  /**
-   * The File → Desktop UI switch, mirrored so Settings can offer it. Setting a
-   * different mode saves the choice and relaunches the app. Absent on builds
-   * that predate it.
-   */
-  uiMode?: {
-    getState: () => Promise<DesktopUiModeState>;
-    setMode: (mode: "native" | "web") => Promise<void>;
   };
   /**
    * Keep the computer awake while remote access is allowed and it runs on AC
@@ -1474,6 +1485,9 @@ export interface NativeApi {
     onProvisionProgress: (
       callback: (event: GitHubProjectProvisionProgressEvent) => void,
     ) => () => void;
+    searchGitHubRepositories: (
+      input: GitHubRepositorySearchInput,
+    ) => Promise<GitHubRepositorySearchResult>;
   };
   filesystem: {
     browse: (input: FilesystemBrowseInput) => Promise<FilesystemBrowseResult>;
@@ -1493,6 +1507,8 @@ export interface NativeApi {
     githubRepository: (input: GitHubRepositoryInput) => Promise<GitHubRepositoryResult>;
     listBranches: (input: GitListBranchesInput) => Promise<GitListBranchesResult>;
     listRecentCommits: (input: GitListRecentCommitsInput) => Promise<GitListRecentCommitsResult>;
+    listCommits: (input: GitListCommitsInput) => Promise<GitListCommitsResult>;
+    commitDiff: (input: GitCommitDiffInput) => Promise<GitCommitDiffResult>;
     createWorktree: (input: GitCreateWorktreeInput) => Promise<GitCreateWorktreeResult>;
     createDetachedWorktree: (
       input: GitCreateDetachedWorktreeInput,
@@ -1545,8 +1561,10 @@ export interface NativeApi {
   };
   pullRequests: {
     detail: (input: PullRequestDetailInput) => Promise<PullRequestDetail>;
+    pipeline: (input: PullRequestPipelineInput) => Promise<PullRequestPipelineResult>;
     diff: (input: PullRequestDetailInput) => Promise<PullRequestDiffResult>;
     action: (input: PullRequestActionInput) => Promise<PullRequestActionResult>;
+    setAutoMerge: (input: PullRequestSetAutoMergeInput) => Promise<PullRequestActionResult>;
     comment: (input: PullRequestCommentInput) => Promise<PullRequestActionResult>;
     setPinned: (input: PullRequestSetPinnedInput) => Promise<PullRequestSetPinnedResult>;
     getAutoFix: (input: PullRequestAutoFixGetInput) => Promise<PullRequestAutoFixListResult>;
@@ -1689,6 +1707,13 @@ export interface NativeApi {
     subagents: {
       list: (input: NeolixSubagentsListInput) => Promise<NeolixSubagentsListResult>;
       timeline: (input: NeolixSubagentTimelineInput) => Promise<NeolixSubagentTimelineResult>;
+      detach: (input: NeolixSubagentDetachInput) => Promise<NeolixSubagentDetachResult>;
+    };
+    attention: {
+      clearAgent: (input: NeolixAgentAttentionClearInput) => Promise<NeolixAttentionClearResult>;
+      clearWorkspace: (
+        input: NeolixWorkspaceAttentionClearInput,
+      ) => Promise<NeolixAttentionClearResult>;
     };
     workspaces: {
       list: () => Promise<NeolixWorkspacesListResult>;
@@ -1714,6 +1739,14 @@ export interface NativeApi {
       ) => Promise<NeolixWorkspaceRecoveryResult>;
       restore: (input: NeolixWorkspaceRecoveryInput) => Promise<NeolixWorkspaceRestoreResult>;
       listArchived: () => Promise<NeolixArchivedWorkspacesListResult>;
+    };
+    /** Live worktree setup output for one workspace, streamed from the host. */
+    workspaceSetup: {
+      subscribe: (
+        input: WorkspaceSetupSubscribeInput,
+        listener: (event: WorkspaceSetupEvent) => void,
+      ) => () => void;
+      run: (input: WorkspaceSetupRunInput) => Promise<WorkspaceSetupRunResult>;
     };
   };
   orchestration: {

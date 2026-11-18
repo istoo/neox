@@ -35,10 +35,10 @@ export class ExternalSessionsSession {
     msg: Extract<SessionInboundMessage, { type: "sessions.external.list.request" }>,
   ): Promise<void> {
     try {
-      const list = await this.options.service.list(
-        msg.agent,
-        msg.activityDays === undefined ? {} : { activityDays: msg.activityDays },
-      );
+      const list = await this.options.service.list(msg.agent, {
+        ...(msg.activityDays === undefined ? {} : { activityDays: msg.activityDays }),
+        ...(msg.fast === true ? { fast: true } : {}),
+      });
       this.options.emit({
         type: "sessions.external.list.response",
         payload: { requestId: msg.requestId, ...list, error: null },

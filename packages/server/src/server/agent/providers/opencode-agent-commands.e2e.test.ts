@@ -1,3 +1,4 @@
+import os from "node:os";
 import { describe, test, expect, beforeEach, afterEach } from "vitest";
 import { createDaemonTestContext, type DaemonTestContext } from "../../test-utils/index.js";
 import { getFullAccessConfig } from "../../daemon-e2e/agent-configs.js";
@@ -16,7 +17,7 @@ describe("opencode agent commands E2E", () => {
   test("lists available slash commands for an opencode agent", async () => {
     const agent = await ctx.client.createAgent({
       ...getFullAccessConfig("opencode"),
-      cwd: "/tmp",
+      cwd: os.tmpdir(),
       title: "OpenCode Commands Test Agent",
     });
 
@@ -40,7 +41,7 @@ describe("opencode agent commands E2E", () => {
   test("listing commands resumes an explicitly closed agent", async () => {
     const agent = await ctx.client.createAgent({
       ...getFullAccessConfig("opencode"),
-      cwd: "/tmp",
+      cwd: os.tmpdir(),
       title: "Closed OpenCode Commands Test Agent",
     });
 
@@ -57,7 +58,7 @@ describe("opencode agent commands E2E", () => {
   test("sendMessage executes a slash command without arguments", async () => {
     const agent = await ctx.client.createAgent({
       ...getFullAccessConfig("opencode"),
-      cwd: "/tmp",
+      cwd: os.tmpdir(),
       title: "OpenCode Slash Command No Args",
     });
 
@@ -74,7 +75,7 @@ describe("opencode agent commands E2E", () => {
   test("sendMessage executes a slash command with arguments", async () => {
     const agent = await ctx.client.createAgent({
       ...getFullAccessConfig("opencode"),
-      cwd: "/tmp",
+      cwd: os.tmpdir(),
       title: "OpenCode Slash Command With Args",
     });
 
@@ -91,7 +92,7 @@ describe("opencode agent commands E2E", () => {
   test("sendMessage keeps unknown slash input as plain prompt text", async () => {
     const agent = await ctx.client.createAgent({
       ...getFullAccessConfig("opencode"),
-      cwd: "/tmp",
+      cwd: os.tmpdir(),
       title: "OpenCode Slash Fallback",
     });
 

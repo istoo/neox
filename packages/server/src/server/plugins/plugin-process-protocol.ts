@@ -137,6 +137,7 @@ export type PluginProcessRequest =
   | {
       type: "middleware.request";
       requestId: string;
+      requestKey?: string;
       providerId: string;
       protocol: string;
       model: string;
@@ -146,6 +147,7 @@ export type PluginProcessRequest =
   | {
       type: "middleware.response";
       requestId: string;
+      requestKey?: string;
       providerId: string;
       model: string;
       accountId: string;
@@ -161,6 +163,7 @@ export type PluginProcessRequest =
   | {
       type: "middleware.provider";
       requestId: string;
+      requestKey?: string;
       providerId: string;
       protocol: string;
       model: string;
@@ -170,6 +173,7 @@ export type PluginProcessRequest =
   | {
       type: "middleware.account";
       requestId: string;
+      requestKey?: string;
       providerId: string;
       protocol: string;
       model: string;
@@ -178,10 +182,20 @@ export type PluginProcessRequest =
   | {
       type: "middleware.event";
       requestId: string;
+      requestKey?: string;
       providerId: string;
       model: string;
       accountId: string;
       event: unknown;
+    }
+  | {
+      type: "middleware.headers";
+      requestId: string;
+      requestKey?: string;
+      providerId: string;
+      protocol: string;
+      model: string;
+      accountId: string | null;
     }
   | {
       type: "strategy.order";
@@ -253,7 +267,7 @@ export type PluginProcessMessage =
       settings?: Array<{ id: string; title?: string; schema?: Record<string, unknown> }>;
     }
   | { type: "result"; requestId: string; output: unknown }
-  | { type: "error"; requestId: string; error: string }
+  | { type: "error"; requestId: string; error: string; cause?: string }
   | { type: "fatal"; error: string }
   | { type: "subscription.event"; subscriptionId: string; event: unknown }
   | { type: "subscription.closed"; subscriptionId: string; error?: string }
@@ -337,6 +351,8 @@ const subscriptionProviderMetadataSchema = z
       )
       .min(1),
     options: z.record(z.string(), z.unknown()).optional(),
+    /** The plugin implements `auth.checkin`. */
+    checkin: z.literal(true).optional(),
   })
   .strict();
 const providerConnectRequestSchema = z
@@ -524,6 +540,7 @@ export const PluginProcessRequestSchema: z.ZodType<PluginProcessRequest> = z.dis
       .object({
         type: z.literal("middleware.request"),
         requestId: z.string(),
+        requestKey: z.string().optional(),
         providerId: z.string(),
         protocol: z.string(),
         model: z.string(),
@@ -535,6 +552,7 @@ export const PluginProcessRequestSchema: z.ZodType<PluginProcessRequest> = z.dis
       .object({
         type: z.literal("middleware.response"),
         requestId: z.string(),
+        requestKey: z.string().optional(),
         providerId: z.string(),
         model: z.string(),
         accountId: z.string(),
@@ -554,6 +572,7 @@ export const PluginProcessRequestSchema: z.ZodType<PluginProcessRequest> = z.dis
       .object({
         type: z.literal("middleware.provider"),
         requestId: z.string(),
+        requestKey: z.string().optional(),
         providerId: z.string(),
         protocol: z.string(),
         model: z.string(),
@@ -565,6 +584,7 @@ export const PluginProcessRequestSchema: z.ZodType<PluginProcessRequest> = z.dis
       .object({
         type: z.literal("middleware.account"),
         requestId: z.string(),
+        requestKey: z.string().optional(),
         providerId: z.string(),
         protocol: z.string(),
         model: z.string(),
@@ -575,10 +595,22 @@ export const PluginProcessRequestSchema: z.ZodType<PluginProcessRequest> = z.dis
       .object({
         type: z.literal("middleware.event"),
         requestId: z.string(),
+        requestKey: z.string().optional(),
         providerId: z.string(),
         model: z.string(),
         accountId: z.string(),
         event: z.unknown(),
+      })
+      .strict(),
+    z
+      .object({
+        type: z.literal("middleware.headers"),
+        requestId: z.string(),
+        requestKey: z.string().optional(),
+        providerId: z.string(),
+        protocol: z.string(),
+        model: z.string(),
+        accountId: z.string().nullable(),
       })
       .strict(),
     z
@@ -701,7 +733,13 @@ export const PluginProcessMessageSchema: z.ZodType<PluginProcessMessage> = z.dis
       .object({ type: z.literal("result"), requestId: z.string().min(1), output: z.unknown() })
       .strict(),
     z
-      .object({ type: z.literal("error"), requestId: z.string().min(1), error: z.string() })
+      .object({
+        type: z.literal("error"),
+        requestId: z.string().min(1),
+        error: z.string(),
+        // Optional so a daemon parses errors from a plugin that predates the cause chain.
+        cause: z.string().optional(),
+      })
       .strict(),
     z.object({ type: z.literal("fatal"), error: z.string() }).strict(),
     z

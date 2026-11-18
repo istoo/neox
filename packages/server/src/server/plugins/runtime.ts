@@ -69,6 +69,7 @@ const GATEWAY_USAGE_TIMEOUT_MS = 250;
 const GATEWAY_STRATEGY_TIMEOUT_MS = 250;
 
 export interface GatewayMiddlewareInput {
+  requestKey?: string;
   providerId: string;
   protocol: string;
   model: string;
@@ -76,7 +77,13 @@ export interface GatewayMiddlewareInput {
   body: Record<string, unknown>;
 }
 
+export interface GatewayMiddlewareRequestResult {
+  body: Record<string, unknown>;
+  reject?: { status: number; message: string };
+}
+
 export interface GatewayMiddlewareResponseInput {
+  requestKey?: string;
   providerId: string;
   model: string;
   accountId: string;
@@ -86,6 +93,7 @@ export interface GatewayMiddlewareResponseInput {
 }
 
 export interface GatewayMiddlewareProviderInput {
+  requestKey?: string;
   providerId: string;
   protocol: string;
   model: string;
@@ -94,6 +102,7 @@ export interface GatewayMiddlewareProviderInput {
 }
 
 export interface GatewayMiddlewareAccountInput {
+  requestKey?: string;
   providerId: string;
   protocol: string;
   model: string;
@@ -101,10 +110,19 @@ export interface GatewayMiddlewareAccountInput {
 }
 
 export interface GatewayMiddlewareEventInput {
+  requestKey?: string;
   providerId: string;
   model: string;
   accountId: string;
   event: unknown;
+}
+
+export interface GatewayMiddlewareHeadersInput {
+  requestKey?: string;
+  providerId: string;
+  protocol: string;
+  model: string;
+  accountId: string | null;
 }
 
 /** One third-party agent a plugin offers to wire to the gateway. */
@@ -340,6 +358,14 @@ function hashClientBundle(clientBundle: string): string {
 
 function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** Rebuild a plugin process's error, keeping the cause it sent alongside the message. */
+function pluginError(message: { error: string; cause?: string }): Error {
+  return new Error(
+    message.error,
+    message.cause === undefined ? undefined : { cause: new Error(message.cause) },
+  );
 }
 
 function jsonTransportValue<Value>(value: Value): Value {
@@ -629,7 +655,7 @@ export class PluginRuntime {
    */
   async runGatewayMiddlewareRequest(
     input: GatewayMiddlewareInput,
-  ): Promise<GatewayMiddlewareInput | null> {
+  ): Promise<GatewayMiddlewareRequestResult | null> {
     let body = input.body;
     let changed = false;
     for (const loaded of this.gatewayMiddlewarePluginsWith("request")) {
@@ -639,6 +665,7 @@ export class PluginRuntime {
           {
             type: "middleware.request",
             requestId: randomUUID(),
+            ...(input.requestKey === undefined ? {} : { requestKey: input.requestKey }),
             providerId: input.providerId,
             protocol: input.protocol,
             model: input.model,
@@ -648,6 +675,18 @@ export class PluginRuntime {
           AbortSignal.timeout(GATEWAY_MIDDLEWARE_TIMEOUT_MS),
         );
         if (!isRecord(output)) continue;
+        if (isRecord(output.reject)) {
+          return {
+            body,
+            reject: {
+              status: typeof output.reject.status === "number" ? output.reject.status : 403,
+              message:
+                typeof output.reject.message === "string"
+                  ? output.reject.message
+                  : "turned away by a gateway middleware",
+            },
+          };
+        }
         const next = isRecord(output.body) ? output.body : body;
         changed ||= next !== body;
         body = next;
@@ -655,7 +694,40 @@ export class PluginRuntime {
         // Fail open: the request goes on with what the last hook left.
       }
     }
-    return changed ? { ...input, body } : null;
+    return changed ? { body } : null;
+  }
+
+  /** Adds the headers every plugin's `onHeaders` hooks give one request. */
+  async runGatewayMiddlewareHeaders(
+    input: GatewayMiddlewareHeadersInput,
+  ): Promise<{ headers: Record<string, string> } | null> {
+    const headers: Record<string, string> = {};
+    let changed = false;
+    for (const loaded of this.gatewayMiddlewarePluginsWith("headers")) {
+      try {
+        const output = await this.request(
+          loaded,
+          {
+            type: "middleware.headers",
+            requestId: randomUUID(),
+            ...(input.requestKey === undefined ? {} : { requestKey: input.requestKey }),
+            providerId: input.providerId,
+            protocol: input.protocol,
+            model: input.model,
+            accountId: input.accountId,
+          },
+          AbortSignal.timeout(GATEWAY_MIDDLEWARE_TIMEOUT_MS),
+        );
+        if (!isRecord(output)) continue;
+        const added = stringRecord(output.headers);
+        if (added === null) continue;
+        Object.assign(headers, added);
+        changed = true;
+      } catch {
+        // Fail open: the request goes on without the headers that failed.
+      }
+    }
+    return changed ? { headers } : null;
   }
 
   /** Runs gateway response hooks; null keeps the vendor's answer as it is. */
@@ -673,6 +745,7 @@ export class PluginRuntime {
           {
             type: "middleware.response",
             requestId: randomUUID(),
+            ...(input.requestKey === undefined ? {} : { requestKey: input.requestKey }),
             providerId: input.providerId,
             model: input.model,
             accountId: input.accountId,
@@ -711,6 +784,7 @@ export class PluginRuntime {
           {
             type: "middleware.provider",
             requestId: randomUUID(),
+            ...(input.requestKey === undefined ? {} : { requestKey: input.requestKey }),
             providerId: input.providerId,
             protocol: input.protocol,
             model: input.model,
@@ -739,6 +813,7 @@ export class PluginRuntime {
           {
             type: "middleware.account",
             requestId: randomUUID(),
+            ...(input.requestKey === undefined ? {} : { requestKey: input.requestKey }),
             providerId: input.providerId,
             protocol: input.protocol,
             model: input.model,
@@ -771,6 +846,7 @@ export class PluginRuntime {
           {
             type: "middleware.event",
             requestId: randomUUID(),
+            ...(input.requestKey === undefined ? {} : { requestKey: input.requestKey }),
             providerId: input.providerId,
             model: input.model,
             accountId: input.accountId,
@@ -1728,7 +1804,7 @@ export class PluginRuntime {
     loaded.pending.delete(message.requestId);
     clearTimeout(pending.timeout);
     if (message.type === "result") pending.resolve(message.output);
-    else pending.reject(new Error(message.error));
+    else pending.reject(pluginError(message));
   }
 
   private handleProviderMessage(loaded: LoadedPlugin, message: PluginProcessMessage): void {

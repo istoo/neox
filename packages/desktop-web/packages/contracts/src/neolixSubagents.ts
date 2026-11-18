@@ -60,3 +60,13 @@ export const NeolixSubagentTimelineResult = Schema.Struct({
   hasNewer: Schema.Boolean,
 });
 export type NeolixSubagentTimelineResult = typeof NeolixSubagentTimelineResult.Type;
+
+/** Turn a child agent into a standalone agent: the daemon clears its parent link. */
+export const NeolixSubagentDetachInput = Schema.Struct({
+  /** A Synara thread id is the Neox agent id. */
+  agentId: TrimmedNonEmptyString,
+});
+export type NeolixSubagentDetachInput = typeof NeolixSubagentDetachInput.Type;
+
+export const NeolixSubagentDetachResult = Schema.Struct({});
+export type NeolixSubagentDetachResult = typeof NeolixSubagentDetachResult.Type;

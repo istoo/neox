@@ -15,6 +15,7 @@ import {
 
 import { DEFAULT_RESOLVED_KEYBINDINGS } from "./keybindings.ts";
 import { defaultModelId } from "./providerRpc.ts";
+import { bridgeError } from "./rpcErrors.ts";
 import type { DaemonClient } from "./neolix.ts";
 import { deriveProviderSettingsFromDaemon, OPT_IN_DRIVERS } from "./providerConfig.ts";
 import {
@@ -51,19 +52,77 @@ function platformArch(): ExecutionEnvironmentDescriptor["platform"]["arch"] {
   return process.arch === "arm64" ? "arm64" : process.arch === "x64" ? "x64" : "other";
 }
 
+/**
+ * A daemon's stable identity. `serverId` survives port changes and reconnects, unlike the
+ * endpoint the bridge dials; the endpoint is only a transport address.
+ */
+export function environmentIdFor(client: DaemonClient, fallback: string): string {
+  const serverId = client.getLastServerInfoMessage()?.serverId?.trim();
+  return serverId && serverId.length > 0 ? serverId : fallback;
+}
+
+/** The pre-0.16.5 scope key, derived from the address. Read only to migrate stored state. */
+export function legacyEnvironmentId(daemonHost: string): string {
+  return `neolix-${daemonHost.replace(/[^A-Za-z0-9]/g, "-")}`;
+}
+
+/** The release channel a version string belongs to; null when the version says nothing. */
+export function channelFromVersion(
+  version: string | null | undefined,
+): ExecutionEnvironmentDescriptor["channel"] | null {
+  const trimmed = version?.trim() ?? "";
+  if (!trimmed) return null;
+  // A version that is not semver says nothing about the channel; only a parseable release
+  // with no pre-release suffix is stable.
+  const match = /^\d+\.\d+\.\d+(?:-([0-9A-Za-z.-]+))?$/.exec(trimmed);
+  if (!match) return null;
+  const prerelease = match[1]?.toLowerCase();
+  if (!prerelease) return "stable";
+  if (prerelease.startsWith("beta")) return "beta";
+  if (prerelease.startsWith("canary")) return "canary";
+  if (prerelease.startsWith("dev")) return "dev";
+  return null;
+}
+
+function featureEnabled(features: unknown, name: string): boolean {
+  return (
+    typeof features === "object" &&
+    features !== null &&
+    (features as Record<string, unknown>)[name] === true
+  );
+}
+
+export interface EnvironmentDescriptorInput {
+  readonly environmentId: string;
+  /** The daemon's own version from `server_info`; null before it arrives. */
+  readonly serverVersion?: string | null | undefined;
+  /** `server_info.features`, the daemon's capability flags. */
+  readonly features?: unknown;
+  readonly label?: string | undefined;
+  readonly hostname?: string | null | undefined;
+  readonly platform?: ExecutionEnvironmentDescriptor["platform"] | undefined;
+}
+
 export function environmentDescriptor(
-  serverId: string,
-  options: { readonly label?: string | undefined } = {},
+  input: EnvironmentDescriptorInput,
 ): ExecutionEnvironmentDescriptor {
+  const version = input.serverVersion?.trim() || null;
+  const channel = channelFromVersion(version);
+  // The bridge holds the outbound host sessions, so remote surfaces are real. Neox has no
+  // account directory behind repository identity, and a daemon that cannot list or route
+  // hosts cannot offer remote connections at all.
+  const remoteConnections =
+    featureEnabled(input.features, "connectedHosts") &&
+    featureEnabled(input.features, "hostMultiplexing");
   return {
-    environmentId: serverId as ExecutionEnvironmentDescriptor["environmentId"],
-    channel: "dev",
-    label: options.label?.trim() || os.hostname() || "Neox",
-    platform: { os: platformOs(), arch: platformArch() },
-    serverVersion: "neolix-bridge-0.0.0",
-    // The bridge is the shell that holds the outbound sessions, so the front end may
-    // offer its native multi-host surfaces. There is no account directory behind them.
-    capabilities: { repositoryIdentity: false, remoteConnections: true, remoteResources: true },
+    environmentId: input.environmentId as ExecutionEnvironmentDescriptor["environmentId"],
+    ...(channel ? { channel } : {}),
+    label: input.label?.trim() || input.hostname?.trim() || os.hostname() || "Neox",
+    platform: input.platform ?? { os: platformOs(), arch: platformArch() },
+    // A daemon that has not sent server_info yet has no version to report; "unknown" is
+    // honest, where the previous bridge build string was not.
+    serverVersion: version ?? "unknown",
+    capabilities: { repositoryIdentity: false, remoteConnections, remoteResources: true },
   } as ExecutionEnvironmentDescriptor;
 }
 
@@ -153,20 +212,34 @@ export interface KeybindingsConfigSource {
   readonly issues: readonly ServerConfigIssue[];
 }
 
+export interface HostPaths {
+  /** The host's working directory: the daemon's home folder, or this machine's for the controller. */
+  readonly cwd: string;
+  /** The host's home folder when it reports one. */
+  readonly homeDir?: string | undefined;
+  /** The daemon's worktree base; `<home>/worktrees` unless the daemon configured one. */
+  readonly worktreesDir: string;
+}
+
+export interface ServerConfigPaths extends HostPaths {
+  readonly keybindings: KeybindingsConfigSource;
+}
+
 export async function serverConfig(
   client: DaemonClient,
   directory: ProviderDirectory,
-  cwd: string,
-  keybindings?: KeybindingsConfigSource,
+  paths: ServerConfigPaths,
 ): Promise<ServerConfig> {
   return {
-    cwd,
-    homeDir: os.homedir(),
-    worktreesDir: `${os.homedir()}/.neox/worktrees`,
-    keybindingsConfigPath: keybindings?.path ?? `${os.homedir()}/.neox/keybindings.json`,
-    keybindings: keybindings?.resolved ?? DEFAULT_RESOLVED_KEYBINDINGS,
+    cwd: paths.cwd,
+    ...(paths.homeDir ? { homeDir: paths.homeDir } : {}),
+    worktreesDir: paths.worktreesDir,
+    // Bridge-local: the shortcut editor writes this file through the bridge, so the path is
+    // the bridge's own, not a synthesized `~/.neox` on the control machine.
+    keybindingsConfigPath: paths.keybindings.path,
+    keybindings: paths.keybindings.resolved,
     defaultKeybindings: DEFAULT_RESOLVED_KEYBINDINGS,
-    issues: keybindings ? [...keybindings.issues] : [],
+    issues: [...paths.keybindings.issues],
     providers: await providerStatuses(client, directory),
     availableEditors: [],
   } as ServerConfig;
@@ -257,17 +330,39 @@ export async function serverSettings(
   } as ServerSettingsView;
 }
 
-export function runtimeStatus(): ServerRuntimeStatus {
+/**
+ * The daemon's real event-loop window. The capability is advertised only when the daemon
+ * serves the metrics RPC, so an older host's client takes its update-server path; a direct
+ * call here fails with the same instruction rather than inventing zeros.
+ */
+export async function runtimeStatus(client: DaemonClient): Promise<ServerRuntimeStatus> {
+  if (client.getLastServerInfoMessage()?.features?.daemonRuntimeStatus !== true) {
+    throw bridgeError("host.update-required", "Update the host to read runtime status.");
+  }
+  const status = await client.getDaemonRuntimeStatus();
   return {
     available: true,
-    sampleWindowMs: 0,
-    sampleCount: 0,
-    delayP50Ms: 0,
-    delayP99Ms: 0,
-    delayMaxMs: 0,
-    utilization: 0,
-    stallWindowCount: 0,
-    maxStallMs: 0,
-    lastStall: null,
+    sampleWindowMs: status.sampleWindowMs,
+    sampleCount: status.sampleCount,
+    delayP50Ms: status.delayP50Ms,
+    delayP99Ms: status.delayP99Ms,
+    delayMaxMs: status.delayMaxMs,
+    utilization: status.utilization,
+    stallWindowCount: status.stallWindowCount,
+    maxStallMs: status.maxStallMs,
+    lastStall: status.lastStall,
   } as ServerRuntimeStatus;
+}
+
+/**
+ * The daemon's resolved worktree base, including a custom `worktrees.root`. Older daemons
+ * only ever had the documented default, so that is the one answer they can give.
+ */
+export async function worktreesDirFor(client: DaemonClient, fallbackDir: string): Promise<string> {
+  // COMPAT(daemonWorktreesRoot): added in v0.17.0, remove after 2027-05-14 once the daemon
+  // floor serves `daemon.get_status.worktreesRoot`.
+  if (client.getLastServerInfoMessage()?.features?.daemonWorktreesRoot !== true) return fallbackDir;
+  const status = await client.getDaemonStatus();
+  const root = status.worktreesRoot?.trim();
+  return root && root.length > 0 ? root : fallbackDir;
 }

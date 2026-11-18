@@ -14,6 +14,10 @@ import { PluginRuntime } from "./runtime.js";
 import { resolveDaemonVersion } from "../daemon-version.js";
 import type { PluginSessionSocket } from "./session-socket.js";
 
+// Every case here forks plugin subprocesses. Use the package config's budget so a runner-level
+// default (5s) cannot time them out when the machine is loaded.
+vi.setConfig({ testTimeout: 30_000 });
+
 const temporaryDirectories: string[] = [];
 
 function hasCompletedAgentTurn(events: readonly AgentStreamEvent[]): boolean {
@@ -112,6 +116,61 @@ function sha256(text: string | undefined): string {
   return createHash("sha256")
     .update(text ?? "")
     .digest("hex");
+}
+
+/** A child that advertises one usage source and fails its fetch with the given payload. */
+function createUsageFailureChild(failure: { error: string; cause?: string }) {
+  const listeners = new Map<string, Array<(message: never) => void>>();
+  const emit = (event: string, message: unknown) => {
+    for (const listener of listeners.get(event) ?? []) listener(message as never);
+  };
+  return {
+    stdout: new PassThrough(),
+    stderr: new PassThrough(),
+    connected: true,
+    killed: false,
+    send(message: { type: string; requestId?: string }, callback?: (error: Error | null) => void) {
+      callback?.(null);
+      if (message.type === "initialize") {
+        queueMicrotask(() =>
+          emit("message", {
+            type: "ready",
+            methods: [],
+            providers: [],
+            usageSources: [{ id: "quota", label: "Quota" }],
+          }),
+        );
+      }
+      if (message.type === "usage.fetch") {
+        queueMicrotask(() =>
+          emit("message", { type: "error", requestId: message.requestId, ...failure }),
+        );
+      }
+      if (message.type === "shutdown") {
+        this.connected = false;
+        queueMicrotask(() => emit("close", null));
+      }
+      return true;
+    },
+    kill() {
+      this.killed = true;
+      this.connected = false;
+      queueMicrotask(() => emit("close", null));
+      return true;
+    },
+    disconnect() {
+      this.connected = false;
+    },
+    on(event: string, listener: (message: never) => void) {
+      const registered = listeners.get(event) ?? [];
+      registered.push(listener);
+      listeners.set(event, registered);
+      return this;
+    },
+    emitMessage(message: unknown) {
+      emit("message", message);
+    },
+  };
 }
 
 function createTestRuntime(
@@ -853,6 +912,30 @@ export default function contribute(server: any) { server.registerProvider(provid
       { stream: "stdout", message: "[neolix] Stopping plugin" },
       { stream: "stdout", message: "[neolix] Plugin stopped" },
     ]);
+  });
+
+  it("rebuilds a plugin failure with the cause the child sent", async () => {
+    const directory = await createPlugin(
+      "usage-failure",
+      `export default function contribute() { return () => undefined; }`,
+    );
+    const child = createUsageFailureChild({
+      error: "fetch failed: getaddrinfo ENOTFOUND api.x.ai",
+      cause: "getaddrinfo ENOTFOUND api.x.ai",
+    });
+    const runtime = createTestRuntime({ spawnChild: () => child });
+    try {
+      await runtime.startPlugin("usage-failure", directory);
+      const error = await runtime
+        .fetchUsage("usage-failure", "quota", {})
+        .catch((cause: unknown) => cause);
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toBe("fetch failed: getaddrinfo ENOTFOUND api.x.ai");
+      expect((error as Error).cause).toBeInstanceOf(Error);
+      expect(((error as Error).cause as Error).message).toBe("getaddrinfo ENOTFOUND api.x.ai");
+    } finally {
+      await runtime.stopAll();
+    }
   });
 
   it("frames stdout and stderr, normalizes CRLF, and flushes final fragments once", async () => {
@@ -2166,11 +2249,15 @@ export default function contribute(server) {
           { type: "api", label: "API key" },
           { type: "oauth", label: "Device" },
         ],
+        checkin: true,
       },
     ]);
     expect(runtime.allSubscriptionProviders()).toMatchObject([
-      { pluginId: "subscription-provider", id: "qoder" },
+      { pluginId: "subscription-provider", id: "qoder", checkin: true },
     ]);
+    await expect(
+      runtime.subscriptionCheckin("subscription-provider", "qoder", "a1"),
+    ).resolves.toEqual({ outcome: "done", accountId: "a1" });
     await expect(
       runtime.subscriptionModels("subscription-provider", "qoder", "a1"),
     ).resolves.toEqual([{ id: "m1", name: "M1" }]);
@@ -2246,13 +2333,7 @@ export default function contribute(server) {
         accountId: "a1",
         body: { a: 1 },
       }),
-    ).resolves.toEqual({
-      providerId: "qoder",
-      protocol: "anthropic",
-      model: "m1",
-      accountId: "a1",
-      body: { a: 1, rewritten: true },
-    });
+    ).resolves.toEqual({ body: { a: 1, rewritten: true } });
     await expect(
       runtime.runGatewayMiddlewareResponse({
         providerId: "qoder",
@@ -2398,8 +2479,7 @@ export default function contribute(server) {
 const examplesDirectory = fileURLToPath(
   new URL("../../../../../plugin-examples/", import.meta.url),
 );
-// The Markdown example owns npm preparation in the real app fixture:
-// packages/app/e2e/browser/plugin-file-panel-examples.spec.ts.
+// The Markdown example owns npm preparation in the real app fixture.
 const examples = (await readdir(examplesDirectory, { withFileTypes: true }))
   .filter((entry) => entry.isDirectory() && entry.name !== "markdown-panel")
   .map((entry) => entry.name);

@@ -8,7 +8,7 @@ import {
 } from "@synara/contracts";
 
 /** Encoded device frames use a dedicated, uncompressed WebSocket connection. */
-export const DEVICE_FRAME_WS_PATH = "/ws/device-frames";
+export const DEVICE_FRAME_WS_PATH = "/rpc/device-frames";
 export const DEVICE_FRAME_WS_UDID_PARAM = "udid";
 export const DEVICE_FRAME_RESYNC_MESSAGE = "device.frame.resync";
 

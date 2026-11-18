@@ -21,6 +21,7 @@ import { ChatBubbleIcon, HammerIcon, LinkIcon, LoaderIcon } from "~/lib/icons";
 import { cn } from "~/lib/utils";
 import { SendToAgentMenuItems, type GitHubItemSendTarget } from "./GitHubItemAgentActions";
 import { copyPullRequestLink } from "./PullRequestConfirmActionDialog";
+import type { PullRequestAutoMergeActions } from "./pullRequestAutoMerge.logic";
 import { PR_STATE_PRESENTATION_ICONS } from "./pullRequestStatePresentation";
 import { useTranslation } from "~/i18n";
 
@@ -205,11 +206,14 @@ export function PullRequestActionMenuItems({
   mergeMethods,
   selectedMergeMethod,
   mergeBlocker,
+  autoMergeActions,
   preparingThread,
   sendTargets,
   askPending,
   onStateChange,
   onMergeMethodChange,
+  onEnableAutoMerge,
+  onDisableAutoMerge,
   onSendToAgent,
   onAsk,
   onFixFindings,
@@ -226,11 +230,15 @@ export function PullRequestActionMenuItems({
   mergeMethods: ReadonlyArray<PullRequestMergeMethod>;
   selectedMergeMethod: PullRequestMergeMethod;
   mergeBlocker: string | null;
+  /** Auto-merge entries the forge can run right now. */
+  autoMergeActions: PullRequestAutoMergeActions;
   preparingThread: PreparingThreadAction;
   sendTargets: ReadonlyArray<GitHubItemSendTarget>;
   askPending: boolean;
   onStateChange: (next: "draft" | "ready") => void;
   onMergeMethodChange: (method: PullRequestMergeMethod) => void;
+  onEnableAutoMerge: (method: PullRequestMergeMethod) => void;
+  onDisableAutoMerge: () => void;
   onSendToAgent: (projectId: ProjectId) => void;
   /** The host's side chat; absent hides Ask. */
   onAsk: (() => void) | undefined;
@@ -272,6 +280,33 @@ export function PullRequestActionMenuItems({
           </MenuRadioGroup>
           <MenuSeparator />
         </>
+      ) : null}
+      {open && !detail.isDraft && mergeBlocker === null && autoMergeActions.disable ? (
+        <>
+          <MenuItem disabled={actionPending} onClick={onDisableAutoMerge}>
+            <MergeIcon className={MENU_ICON_CLASS_NAME} />
+            <span>{t("git:autoMergeDisable")}</span>
+          </MenuItem>
+          <MenuSeparator />
+        </>
+      ) : null}
+      {open && !detail.isDraft && mergeBlocker === null && autoMergeActions.enableMethods.length > 0
+        ? autoMergeActions.enableMethods.map((method) => (
+            <MenuItem
+              key={method}
+              disabled={actionPending}
+              onClick={() => onEnableAutoMerge(method)}
+            >
+              <MergeIcon className={MENU_ICON_CLASS_NAME} />
+              <span>{t("git:autoMergeEnable", { value0: method })}</span>
+            </MenuItem>
+          ))
+        : null}
+      {open &&
+      !detail.isDraft &&
+      mergeBlocker === null &&
+      autoMergeActions.enableMethods.length > 0 ? (
+        <MenuSeparator />
       ) : null}
       {host === "dock" ? (
         <>

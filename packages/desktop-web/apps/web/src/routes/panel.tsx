@@ -8,9 +8,24 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
 import { isAutomationRunThread } from "@synara/shared/automationMode";
 import { isSidechatThread } from "@synara/shared/sidechatThread";
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 
 import { APP_DISPLAY_NAME } from "~/branding";
+import {
+  AgentConnectModelSelect,
+  AgentConnectStatusLine,
+} from "~/components/agentConnect/AgentConnectControls";
+import {
+  agentLabel,
+  buildRows,
+  isConnectBlocked,
+  modelWhenToggling,
+  orderAgentRows,
+  splitHiddenRows,
+} from "~/components/settings/agentConnect/agentConnect.logic";
+import { Switch } from "~/components/ui/switch";
+import { toastManager } from "~/components/ui/toast";
+import { useAgentConnect } from "~/hooks/useAgentConnect";
 import { resolveThreadStatusPill } from "~/components/Sidebar.logic";
 import { GatewayAllowancesPane } from "~/components/settings/gateway/GatewayAllowancesPane";
 import { GatewayRoutingPane } from "~/components/settings/gateway/GatewayRoutingPane";
@@ -87,6 +102,99 @@ function openPanelThread(threadId: string): void {
   void window.neolixDesktop?.panel?.openThread?.(threadId);
 }
 
+/** The gateway wiring of each installed agent, above the running ones. */
+function AgentConnectList() {
+  const { t } = useTranslation();
+  const connect = useAgentConnect();
+  const [savingProvider, setSavingProvider] = useState<string | null>(null);
+  const models = connect.snapshot?.models ?? [];
+  const rows = useMemo(() => {
+    const ordered = orderAgentRows(
+      buildRows(connect.snapshot?.entries ?? []),
+      connect.snapshot?.order,
+    );
+    return splitHiddenRows(ordered, connect.snapshot?.hidden).shown;
+  }, [connect.snapshot]);
+
+  const run = useCallback(
+    async (provider: string, action: () => Promise<{ error: string | null } | null>) => {
+      setSavingProvider(provider);
+      try {
+        const next = await action();
+        if (next?.error) {
+          toastManager.add({
+            type: "error",
+            title: t("settings:agentConnect_updateFailed"),
+            description: next.error,
+          });
+        }
+      } catch (error) {
+        toastManager.add({
+          type: "error",
+          title: t("settings:agentConnect_updateFailed"),
+          description: error instanceof Error ? error.message : String(error),
+        });
+      }
+      setSavingProvider(null);
+    },
+    [t],
+  );
+
+  if (connect.isLoading && connect.snapshot === null) {
+    return (
+      <p className="px-3 py-2 text-ui-sm text-muted-foreground">
+        {t("settings:agentConnect_loading")}
+      </p>
+    );
+  }
+  if (connect.error !== null && connect.snapshot === null) {
+    return <p className="px-3 py-2 text-ui-sm text-destructive">{connect.error.message}</p>;
+  }
+  if (rows.length === 0) return null;
+
+  return (
+    <div className="shrink-0 border-b border-border">
+      {rows.map((row) => {
+        const label = agentLabel(row.entry, t);
+        const saving = savingProvider === row.provider;
+        const blocked = isConnectBlocked(row.entry, models, saving);
+        return (
+          <div key={row.provider} className="flex items-center gap-2 px-3 py-1.5">
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-ui-sm text-foreground">{label}</p>
+              <AgentConnectStatusLine entry={row.entry} label={label} />
+            </div>
+            <AgentConnectModelSelect
+              entry={row.entry}
+              models={models}
+              label={label}
+              disabled={blocked}
+              triggerClassName="w-28"
+              onSelectModel={(model) =>
+                void run(row.provider, () => connect.setConnected(row.provider, true, model))
+              }
+            />
+            <Switch
+              checked={row.entry.connected}
+              disabled={blocked}
+              aria-label={t("settings:agentConnect_connectSwitch", { name: label })}
+              onCheckedChange={(checked) =>
+                void run(row.provider, () =>
+                  connect.setConnected(
+                    row.provider,
+                    Boolean(checked),
+                    modelWhenToggling(row.entry),
+                  ),
+                )
+              }
+            />
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function AgentsTab() {
   const { t } = useTranslation();
   const [summariesSelector] = useState(() => createSidebarThreadSummariesSelector());
@@ -119,23 +227,25 @@ function AgentsTab() {
 
   const openThread = openPanelThread;
 
-  if (threads.length === 0) {
-    return (
-      <p className="px-4 py-8 text-center text-ui-sm text-muted-foreground">
-        {t("common:noResults")}
-      </p>
-    );
-  }
   return (
-    <div className="flex flex-col gap-0.5 overflow-y-auto py-1.5">
-      {threads.map((summary) => (
-        <AgentRow
-          key={summary.id}
-          summary={summary}
-          projectName={projectNameById.get(summary.projectId) ?? ""}
-          onOpen={openThread}
-        />
-      ))}
+    <div className="flex h-full min-h-0 flex-col">
+      <AgentConnectList />
+      {threads.length === 0 ? (
+        <p className="px-4 py-8 text-center text-ui-sm text-muted-foreground">
+          {t("common:noResults")}
+        </p>
+      ) : (
+        <div className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto py-1.5">
+          {threads.map((summary) => (
+            <AgentRow
+              key={summary.id}
+              summary={summary}
+              projectName={projectNameById.get(summary.projectId) ?? ""}
+              onOpen={openThread}
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 }

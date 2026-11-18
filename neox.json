@@ -1,29 +1,15 @@
 {
   "worktree": {
-    "setup": [
-      "npm ci",
-      "node ./scripts/seed-ios-native-cache.mjs",
-      "node ./scripts/seed-worktree-dev-state.mjs",
-      "npm run build:server",
-      "npm run build --workspace=@neolix/expo-two-way-audio"
-    ]
+    "setup": ["npm ci", "node ./scripts/seed-worktree-dev-state.mjs", "npm run build:server"]
   },
   "scripts": {
     "daemon": {
       "type": "service",
       "command": "NEOLIX_DEV_MANAGED_HOME=1 NEOLIX_DEV_ROOT=\"${NEOLIX_WORKTREE_PATH:-$PWD}\" NEOLIX_HOME=\"${NEOLIX_WORKTREE_PATH:-$PWD}/.dev/neox-home\" NEOLIX_SKIP_DEV_SERVER_BUILD=1 NEOLIX_LISTEN=0.0.0.0:${NEOLIX_PORT:-6768} ./scripts/dev-daemon.sh"
     },
-    "app": {
-      "type": "service",
-      "command": "NEOLIX_DEV_MANAGED_HOME=1 NEOLIX_DEV_ROOT=\"${NEOLIX_WORKTREE_PATH:-$PWD}\" NEOLIX_HOME=\"${NEOLIX_WORKTREE_PATH:-$PWD}/.dev/neox-home\" NEOLIX_LISTEN=0.0.0.0:${NEOLIX_SERVICE_DAEMON_PORT:-6768} NEOLIX_DEV_DAEMON_ENDPOINT=localhost:${NEOLIX_SERVICE_DAEMON_PORT:-6768} EXPO_PORT=${NEOLIX_PORT:-} ./scripts/dev-app.sh"
-    },
     "desktop": {
       "type": "service",
-      "command": "NEOLIX_DEV_MANAGED_HOME=1 NEOLIX_DEV_ROOT=\"${NEOLIX_WORKTREE_PATH:-$PWD}\" NEOLIX_HOME=\"${NEOLIX_WORKTREE_PATH:-$PWD}/.dev/neox-home\" NEOLIX_LISTEN=0.0.0.0:${NEOLIX_SERVICE_DAEMON_PORT:-6768} NEOLIX_DEV_DAEMON_ENDPOINT=localhost:${NEOLIX_SERVICE_DAEMON_PORT:-6768} EXPO_PORT=${NEOLIX_PORT:-} exec ./packages/desktop/scripts/dev.sh"
-    },
-    "ios-simulator": {
-      "type": "service",
-      "command": "NEOLIX_DEV_MANAGED_HOME=1 NEOLIX_DEV_ROOT=\"$PWD\" NEOLIX_HOME=\"$PWD/.dev/neox-home\" NEOLIX_LISTEN=0.0.0.0:${NEOLIX_SERVICE_DAEMON_PORT} NEOLIX_DEV_DAEMON_ENDPOINT=localhost:${NEOLIX_SERVICE_DAEMON_PORT} ./scripts/neolix-ios-simulator-service.sh"
+      "command": "NEOLIX_DEV_MANAGED_HOME=1 NEOLIX_DEV_ROOT=\"${NEOLIX_WORKTREE_PATH:-$PWD}\" NEOLIX_HOME=\"${NEOLIX_WORKTREE_PATH:-$PWD}/.dev/neox-home\" NEOLIX_LISTEN=0.0.0.0:${NEOLIX_SERVICE_DAEMON_PORT:-6768} NEOLIX_DEV_DAEMON_ENDPOINT=localhost:${NEOLIX_SERVICE_DAEMON_PORT:-6768} exec ./packages/desktop/scripts/dev.sh"
     },
     "typecheck": {
       "command": "npm run typecheck"

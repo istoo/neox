@@ -214,7 +214,10 @@ describe("renewCodexSignIn", () => {
     };
     expect(kept.tokens.refresh_token).toBe("rotated");
     expect(kept.tokens.access_token).not.toBe("");
-    expect(statSync(join(home, "auth.json")).mode & 0o777).toBe(0o600);
+    // Windows cannot express POSIX permissions; the file is private by location there.
+    if (process.platform !== "win32") {
+      expect(statSync(join(home, "auth.json")).mode & 0o777).toBe(0o600);
+    }
   });
 
   it("leaves an expired sign-in to Codex when its provider is left alone", async () => {

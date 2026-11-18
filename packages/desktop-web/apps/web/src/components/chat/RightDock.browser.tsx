@@ -43,6 +43,38 @@ function renderDock(content: ReactNode) {
   return render(<QueryClientProvider client={client}>{content}</QueryClientProvider>);
 }
 
+it("disables a launcher row that reports why it cannot open", async () => {
+  await page.viewport(1280, 800);
+  const { createDefaultRightDockState } = await import("../../rightDockStore.logic");
+  const { TerminalIcon } = await import("~/lib/icons");
+  const reason = "Send a message first to create this chat's workspace.";
+  const screen = await renderDock(
+    <div style={{ display: "flex", width: 1000, height: 600 }}>
+      <div style={{ flex: 1 }}>Chat</div>
+      <RightDock
+        state={{ ...createDefaultRightDockState(), open: true }}
+        minWidth={300}
+        defaultWidth="500px"
+        shouldAcceptWidth={() => true}
+        addMenuKinds={[]}
+        launcherItems={[
+          { kind: "terminal", label: "Terminal", Icon: TerminalIcon, disabledReason: reason },
+        ]}
+        onClosePane={() => {}}
+        onCollapse={() => {}}
+        onOpenChange={() => {}}
+        onAddPane={() => {}}
+        renderPane={() => <div>Panel content</div>}
+      />
+    </div>,
+  );
+  const terminal = screen.getByRole("button", { name: "Open Terminal" });
+  await expect.element(terminal).toBeDisabled();
+  await expect.element(terminal).toHaveAttribute("title", reason);
+  await terminal.click({ force: true });
+  await screen.unmount();
+});
+
 it.each(["browser", "terminal"] as const)(
   "remembers the resized %s dock across thread switches, collapse and remount",
   async (kind) => {

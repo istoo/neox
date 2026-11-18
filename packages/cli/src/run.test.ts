@@ -20,10 +20,25 @@ async function runCliWithClosedStdout(
     await new Promise((resolve) => setTimeout(resolve, 100));
     process.stderr.write("still running\\n");
   `;
-  const child = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "-e", script], {
-    cwd: path.dirname(fileURLToPath(import.meta.url)),
-    stdio: ["ignore", "pipe", "pipe"],
-  });
+  const child = spawn(
+    process.execPath,
+    [
+      // Node 25+ warns that tsx's module.register() is deprecated; the child's
+      // stderr is the assertion surface.
+      "--disable-warning=DEP0205",
+      // node:sqlite still announces itself as experimental on Node 22.
+      "--disable-warning=ExperimentalWarning",
+      "--import",
+      "tsx",
+      "--input-type=module",
+      "-e",
+      script,
+    ],
+    {
+      cwd: path.dirname(fileURLToPath(import.meta.url)),
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+  );
   child.stdout.destroy();
   let stderr = "";
   child.stderr.setEncoding("utf8");

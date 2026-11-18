@@ -7,7 +7,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 
-import type { ConfirmDialogOptions } from "@synara/contracts";
+import type { ConfirmDialogOptions, NeolixHostUpdateProgressPhase } from "@synara/contracts";
 
 import { useAppSettings } from "~/appSettings";
 import { ProviderIcon } from "~/components/ProviderIcon";
@@ -36,12 +36,16 @@ import {
   type NeolixWebPagePatch,
 } from "~/lib/neolixHostApi";
 import { ensureNativeApi } from "~/nativeApi";
+import { onNeolixHostUpdateProgress } from "~/wsNativeApi";
 import { isProviderKind } from "~/providerOrdering";
 import { cn } from "~/lib/utils";
 import { restartHostAndAwaitReplacement } from "~/lib/hostRestart";
 import { speechModelDisplayLabel } from "~/lib/speechModelLabel";
 import { localizeNetworkError } from "~/lib/errorLocalization";
 
+import { useBuiltinFeatures } from "~/hooks/useBuiltinFeatures";
+
+import { AgentSkillsSettingsPanel } from "./AgentSkillsSettingsPanel";
 import { DesktopDaemonLifecycleSection } from "./DesktopDaemonSection";
 
 import {
@@ -77,6 +81,14 @@ const SPEECH_MODEL_STATUS_KEYS: Record<string, string> = {
   downloading: "settings:host_modelStatus_downloading",
   extracting: "settings:host_modelStatus_extracting",
   failed: "settings:host_modelStatus_failed",
+};
+
+/** The daemon names a phase; the button shows the phase instead of a generic "Updating…". */
+const DAEMON_UPDATE_PHASE_KEYS: Record<NeolixHostUpdateProgressPhase, string> = {
+  starting: "settings:host_updatePhaseStarting",
+  downloading: "settings:host_updatePhaseDownloading",
+  installing: "settings:host_updatePhaseInstalling",
+  complete: "settings:host_updatePhaseComplete",
 };
 
 /** The daemon reports a raw status id; an unknown future id is shown as-is. */
@@ -176,7 +188,16 @@ export function HostDaemonSettingsPanel({ active }: { readonly active: boolean }
   const { t } = useTranslation();
   const { config, isLoading, error, saving, patch } = useHostConfig(active);
   const statusQuery = useHostStatus(active);
+  // myna gates the Browser tools opt-in with Neolix tools behind the `tools` switch.
+  const toolsOn = useBuiltinFeatures().isEnabled("tools");
   const [busy, setBusy] = useState<"restart" | "update" | null>(null);
+  const [updatePhase, setUpdatePhase] = useState<NeolixHostUpdateProgressPhase | null>(null);
+
+  // The daemon reports phases while it downloads and installs; the bridge forwards them.
+  useEffect(() => {
+    if (!active) return;
+    return onNeolixHostUpdateProgress((progress) => setUpdatePhase(progress.phase));
+  }, [active]);
 
   const restart = useCallback(async () => {
     const confirmed = await confirmAction(t("settings:host_restartConfirm"), {
@@ -208,14 +229,15 @@ export function HostDaemonSettingsPanel({ active }: { readonly active: boolean }
   }, [statusQuery, t]);
 
   // debt: the daemon emits `daemon.update.progress` (starting/downloading/installing),
-  // but the bridge has no stream RPC for it, so this button shows one "updating" state
-  // and the result. Add a progress stream when the update gets slow enough to matter.
+  // and the bridge forwards it through `subscribeUpdateProgress`; the button names the
+  // phase while the request runs and the result carries the failure reason.
   const update = useCallback(async () => {
     const confirmed = await confirmAction(t("settings:host_updateConfirm"), {
       confirmLabel: t("settings:host_update"),
     });
     if (!confirmed) return;
     setBusy("update");
+    setUpdatePhase(null);
     const result = await updateHost().catch((cause: unknown) => {
       toastManager.add({
         type: "error",
@@ -244,6 +266,7 @@ export function HostDaemonSettingsPanel({ active }: { readonly active: boolean }
       });
     }
     setBusy(null);
+    setUpdatePhase(null);
   }, [statusQuery, t]);
 
   if (!active) return null;
@@ -315,7 +338,11 @@ export function HostDaemonSettingsPanel({ active }: { readonly active: boolean }
               disabled={busy !== null}
               onClick={() => void update()}
             >
-              {busy === "update" ? t("settings:host_updating") : t("settings:host_update")}
+              {busy === "update"
+                ? updatePhase
+                  ? t(DAEMON_UPDATE_PHASE_KEYS[updatePhase])
+                  : t("settings:host_updating")
+                : t("settings:host_update")}
             </Button>
           }
         />
@@ -359,6 +386,21 @@ export function HostDaemonSettingsPanel({ active }: { readonly active: boolean }
           onSave={(value) => patch({ resumePrompt: value })}
         />
       </SettingsSection>
+
+      {toolsOn ? (
+        <SettingsSection title={t("settings:browserTools")}>
+          <BooleanHostRow
+            id="setting-browser-tools"
+            title={t("settings:browserTools")}
+            description={t("settings:browserToolsDescription")}
+            value={config?.browserTools?.enabled === true}
+            disabled={config === undefined}
+            onCheckedChange={(checked) => patch({ browserTools: { enabled: checked } })}
+          />
+        </SettingsSection>
+      ) : null}
+
+      <AgentSkillsSettingsPanel active={active} />
 
       <DesktopDaemonLifecycleSection active={active} />
     </div>

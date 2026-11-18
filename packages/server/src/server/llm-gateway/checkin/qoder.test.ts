@@ -196,7 +196,7 @@ describe("checkQoder", () => {
       }),
     });
     expect(called).toEqual({
-      file: "/fake/runtime-info",
+      file: path.resolve("/fake/runtime-info"),
       args: ["3", "--account-stdin"],
       stdin: '{"account":"u1"}\n',
       timeoutMs: 20_000,

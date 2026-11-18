@@ -128,7 +128,7 @@ async function listArchivedWorkspaces(model: BridgeModel) {
   );
 }
 
-async function resolveWorkspaceId(
+export async function resolveWorkspaceId(
   model: BridgeModel,
   target: NeolixWorkspaceTarget,
 ): Promise<string> {

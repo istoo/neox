@@ -222,7 +222,7 @@ class WorkspaceStatus {
   // (stamped at creation); the subdir cwd is cosmetic, ownership is the id.
   hasWorkingTerminalInSubdirectory(changedAt: number): void {
     this.terminals.push({
-      cwd: `${this.workspace.cwd}/packages/app`,
+      cwd: `${this.workspace.cwd}/packages/server`,
       workspaceId: this.workspace.workspaceId,
       activity: { state: "working", changedAt },
     });

@@ -6,7 +6,9 @@
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 
+import { useBuiltinFeatures } from "~/hooks/useBuiltinFeatures";
 import { neolixGatewayApi } from "~/lib/neolixGatewayApi";
+import { PluginSlotPanels } from "~/plugins/PluginSlotPanels";
 import type {
   GatewayAccount,
   GatewayConfig,
@@ -38,6 +40,7 @@ import {
   ProviderClaudeMode,
   ProviderCountFree,
   ProviderExtraBody,
+  ProviderHeaderPassThrough,
   ProviderHeaders,
   ProviderModelPricing,
   ProviderRateWindows,
@@ -929,6 +932,7 @@ function ProviderEditor({
           {t("gateway:provider_advanced")}
         </div>
         <ProviderHeaders provider={provider} edit={edit} />
+        <ProviderHeaderPassThrough provider={provider} edit={edit} />
         <ProviderExtraBody provider={provider} edit={edit} />
         <ProviderRateWindows provider={provider} edit={edit} />
         <ProviderCountFree provider={provider} edit={edit} />
@@ -985,6 +989,11 @@ function ProviderEditor({
       </div>
 
       <ProviderClaudeMode provider={provider} config={config} apply={apply} />
+
+      <PluginSlotPanels
+        slot="provider"
+        provider={{ id: provider.id, name: provider.label ?? provider.id }}
+      />
     </div>
   );
 }
@@ -999,6 +1008,9 @@ function AccountEditor({
   onRemove: () => void;
 }) {
   const { t } = useTranslation();
+  const { isEnabled } = useBuiltinFeatures();
+  const rotationOn = isEnabled("rotation");
+  const budgetOn = isEnabled("budget");
   return (
     <div className="mt-2 rounded-md border border-[color:var(--color-border)] p-2">
       <div className="grid gap-2 sm:grid-cols-3">
@@ -1030,25 +1042,29 @@ function AccountEditor({
             })
           }
         />
-        <GatewayNumberField
-          label={t("gateway:priority")}
-          value={account.priority}
-          onChange={(value) =>
-            onChange((draft) => {
-              draft.priority = value;
-            })
-          }
-        />
-        <GatewayNumberField
-          label={t("gateway:weight")}
-          value={account.weight}
-          min={0}
-          onChange={(value) =>
-            onChange((draft) => {
-              draft.weight = value;
-            })
-          }
-        />
+        {rotationOn ? (
+          <>
+            <GatewayNumberField
+              label={t("gateway:priority")}
+              value={account.priority}
+              onChange={(value) =>
+                onChange((draft) => {
+                  draft.priority = value;
+                })
+              }
+            />
+            <GatewayNumberField
+              label={t("gateway:weight")}
+              value={account.weight}
+              min={0}
+              onChange={(value) =>
+                onChange((draft) => {
+                  draft.weight = value;
+                })
+              }
+            />
+          </>
+        ) : null}
         <GatewayNumberField
           label={t("gateway:max_rpm")}
           value={account.maxRpm}
@@ -1069,16 +1085,18 @@ function AccountEditor({
             })
           }
         />
-        <GatewayNumberField
-          label={t("gateway:monthly_usd")}
-          value={account.monthlyUsd}
-          min={0}
-          onChange={(value) =>
-            onChange((draft) => {
-              draft.monthlyUsd = value;
-            })
-          }
-        />
+        {budgetOn ? (
+          <GatewayNumberField
+            label={t("gateway:monthly_usd")}
+            value={account.monthlyUsd}
+            min={0}
+            onChange={(value) =>
+              onChange((draft) => {
+                draft.monthlyUsd = value;
+              })
+            }
+          />
+        ) : null}
         <GatewayNumberField
           label={t("gateway:tokens_5h")}
           value={account.quota?.tokens5h}

@@ -34,9 +34,9 @@ describe("path equivalence", () => {
   });
 
   test("checks Windows root containment case-insensitively", () => {
-    expect(
-      isPathInsideRoot("C:\\Neox\\node_modules", "c:/neolix/node_modules/@neolix/server"),
-    ).toBe(true);
+    expect(isPathInsideRoot("C:\\Neox\\node_modules", "c:/neox/node_modules/@neolix/server")).toBe(
+      true,
+    );
     expect(isPathInsideRoot("C:\\Neox\\node_modules", "C:\\Neox\\node_modules-other")).toBe(false);
   });
 

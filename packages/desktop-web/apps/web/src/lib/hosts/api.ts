@@ -21,27 +21,8 @@ import type {
 import { ensureNativeApi, readNativeApi } from "~/nativeApi";
 import type { HostReachability } from "./reachability";
 
-/**
- * What the app knows about the machine it is running on, as an account entity.
- *
- * `organizationMemberCount` exists for exactly one decision (ADR 0002): a host
- * that auto-registers at sign-in must not become discoverable to a *team*
- * without the owner saying so. It is nullable because the count comes from the
- * identity provider and a provider outage must not be allowed to answer the
- * question — see `shouldPromptForDiscoverability`, which fails closed.
- */
-export interface HostEnrollment {
-  /** The locally-bundled host's account row, or null when this shell has none. */
-  readonly host: AccountHost | null;
-  /** Members of the workspace the host was registered into; null when unknown. */
-  readonly organizationMemberCount: number | null;
-  /**
-   * Whether the owner has already answered the discoverability prompt for this
-   * host. Persisted with the host, not the client, so a second device does not
-   * re-ask a question already answered.
-   */
-  readonly discoverabilityAcknowledged: boolean;
-}
+export type { HostEnrollment } from "@synara/client-runtime/enrollment";
+import type { HostEnrollment } from "@synara/client-runtime/enrollment";
 
 /**
  * The account-side operations the remote-access UI needs.

@@ -9,6 +9,7 @@ import { useCallback, useMemo, useState } from "react";
 import { logoutCurrentBrowserSession } from "~/authLogout";
 import { APP_VERSION } from "~/branding";
 import { resolveAndPersistPreferredEditor } from "~/editorPreferences";
+import { openExternalLink } from "~/lib/linkChips";
 import { DisclosureChevron } from "~/components/ui/DisclosureChevron";
 import { DisclosureRegion } from "~/components/ui/DisclosureRegion";
 import { Button } from "~/components/ui/button";
@@ -20,9 +21,19 @@ import { NEOLIX_BROWSER_AUTH_ENABLED, NEOLIX_FEATURE_TOUR_ENABLED } from "~/neol
 import { SETTINGS_INSET_LIST_CLASS_NAME } from "~/settingsPanelStyles";
 import { useStore } from "~/store";
 import { createAllThreadsMessagelessSelector, createThreadShellsSelector } from "~/storeSelectors";
+import { DesktopCommandLineSettingsRow } from "./DesktopSystemSettingsSection";
+import {
+  AboutCommunityRow,
+  AboutRemoteAccessRows,
+  AboutThirdPartyLicensesRow,
+  AboutUninstallRow,
+} from "./AboutSettingsRows";
 import { useSettingsRestoreSignal } from "./SettingControls";
 import { SettingsRow, SettingsSection } from "./SettingsPanelPrimitives";
 import { useTranslation } from "~/i18n";
+
+/** Neox's source, release notes and documentation live here. */
+const NEOX_WEBSITE_URL = "https://github.com/istoo/neox";
 
 export function AdvancedSettingsPanel(props: {
   active: boolean;
@@ -272,6 +283,26 @@ export function AdvancedSettingsPanel(props: {
             }
           />
         ) : null}
+        <DesktopCommandLineSettingsRow active={props.active} />
+        <AboutRemoteAccessRows active={props.active} />
+        <SettingsRow
+          id="setting-website"
+          title="settings:advanced_website"
+          description="settings:advanced_websiteDescription"
+          status={
+            <span className="break-all font-mono text-ui-sm text-foreground">
+              github.com/istoo/neox
+            </span>
+          }
+          control={
+            <Button size="xs" variant="outline" onClick={() => openExternalLink(NEOX_WEBSITE_URL)}>
+              {t("settings:host_reveal")}
+            </Button>
+          }
+        />
+        <AboutThirdPartyLicensesRow active={props.active} />
+        <AboutCommunityRow active={props.active} />
+        <AboutUninstallRow active={props.active} />
       </SettingsSection>
     </div>
   );

@@ -63,6 +63,7 @@ test("rapid fire messages then single wait", async () => {
 
   // Send 3 messages without waiting - tests that waitForFinish
   // finds the idle AFTER the last running state
+  await ctx.client.subscribeAgentTimeline(agent.id, () => {}).ready;
   collector.clear();
   await ctx.client.sendMessage(agent.id, "Say 'one'");
   await ctx.client.sendMessage(agent.id, "Say 'two'");

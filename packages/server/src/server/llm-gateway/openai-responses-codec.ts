@@ -11,6 +11,7 @@ import {
   readBoolean,
   readNumber,
   readString,
+  type IrCitation,
   type IrEvent,
   type IrImagePart,
   type IrMessage,
@@ -28,7 +29,7 @@ import {
   sealThinking,
   thinkingOfReasoningItem,
 } from "./claude-seal.js";
-import { searchItem } from "./search-events.js";
+import { searchItem, urlCitationAnnotations } from "./search-events.js";
 import { signCallId, unsignCallId } from "./gemini-signature.js";
 import { takeReasoning } from "./reasoning-carry.js";
 
@@ -557,17 +558,25 @@ function buildResponsesResponseBody(
       output.push(reasoningItem(part.text, part.signature, `rs_${randomUUID()}`));
     }
   }
-  const text = response.parts
-    .filter((part): part is { type: "text"; text: string } => part.type === "text")
-    .map((part) => part.text)
-    .join("");
+  const textParts = response.parts.filter(
+    (part): part is Extract<IrPart, { type: "text" }> => part.type === "text",
+  );
+  const text = textParts.map((part) => part.text).join("");
+  // The pages a cited line names are output_text annotations, as OpenAI's
+  // own web search reports them.
+  const annotations: Record<string, unknown>[] = [];
+  let offset = 0;
+  for (const part of textParts) {
+    annotations.push(...urlCitationAnnotations(part.text, part.citations ?? [], offset));
+    offset += part.text.length;
+  }
   if (text.length > 0 || !response.parts.some((part) => part.type === "tool_call")) {
     output.push({
       id: `msg_${randomUUID()}`,
       type: "message",
       role: "assistant",
       status: "completed",
-      content: [{ type: "output_text", text, annotations: [] }],
+      content: [{ type: "output_text", text, annotations }],
     });
   }
   for (const part of response.parts) {
@@ -708,6 +717,8 @@ class ResponsesStreamEncoder implements StreamEncoder {
   private reasoningDone: Record<string, unknown> | null = null;
   private readonly searchDone: Record<string, unknown>[] = [];
   private readonly reasoningItems: Record<string, unknown>[] = [];
+  /** The pages the streamed text cites, as output_text annotations. */
+  private readonly annotations: Record<string, unknown>[] = [];
   private textIndex = 0;
 
   constructor(requestedModel: string) {
@@ -734,7 +745,7 @@ class ResponsesStreamEncoder implements StreamEncoder {
   public push(event: IrEvent): string {
     switch (event.type) {
       case "text_delta":
-        return this.closeReasoning() + this.textDelta(event.text);
+        return this.closeReasoning() + this.textDelta(event.text, event.citations ?? []);
       case "tool_call_start":
         return this.closeReasoning() + this.toolStart(event.id, event.name, event.signature);
       case "tool_args_delta": {
@@ -921,10 +932,11 @@ class ResponsesStreamEncoder implements StreamEncoder {
     );
   }
 
-  private textDelta(text: string): string {
+  private textDelta(text: string, citations: ReadonlyArray<IrCitation>): string {
     if (text.length === 0) {
       return "";
     }
+    const said = this.text.length;
     this.text += text;
     let output = "";
     if (this.textItemId === null) {
@@ -951,6 +963,19 @@ class ResponsesStreamEncoder implements StreamEncoder {
         part: { type: "output_text", text: "", annotations: [] },
       });
     }
+    const annotations = urlCitationAnnotations(text, citations, said);
+    let annotated = "";
+    for (const annotation of annotations) {
+      annotated += this.event("response.output_text.annotation.added", {
+        type: "response.output_text.annotation.added",
+        item_id: this.textItemId,
+        output_index: this.textIndex,
+        content_index: 0,
+        annotation_index: this.annotations.length,
+        annotation,
+      });
+      this.annotations.push(annotation);
+    }
     return (
       output +
       this.event("response.output_text.delta", {
@@ -960,7 +985,8 @@ class ResponsesStreamEncoder implements StreamEncoder {
         content_index: 0,
         delta: text,
         logprobs: [],
-      })
+      }) +
+      annotated
     );
   }
 
@@ -999,7 +1025,7 @@ class ResponsesStreamEncoder implements StreamEncoder {
         type: "message",
         role: "assistant",
         status: "completed",
-        content: [{ type: "output_text", text: this.text, annotations: [] }],
+        content: [{ type: "output_text", text: this.text, annotations: this.annotations }],
       };
       events += this.event("response.output_text.done", {
         type: "response.output_text.done",
@@ -1014,7 +1040,7 @@ class ResponsesStreamEncoder implements StreamEncoder {
         item_id: this.textItemId,
         output_index: this.textIndex,
         content_index: 0,
-        part: { type: "output_text", text: this.text, annotations: [] },
+        part: { type: "output_text", text: this.text, annotations: this.annotations },
       });
       events += this.event("response.output_item.done", {
         type: "response.output_item.done",

@@ -11,7 +11,7 @@
 import { realpathSync, statSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
-import type { IrEvent, IrRequest } from "./ir.js";
+import type { IrEvent, IrPart, IrRequest, IrResponse } from "./ir.js";
 
 type Json = Record<string, unknown>;
 
@@ -555,6 +555,11 @@ function openCodeHost(host: string): boolean {
  * provider.go:2091 — a user in the URL is stripped, as `openCodeAt` does).
  */
 export function openCodeProvider(provider: { baseUrl: string; preset?: string }): boolean {
+  // A provider added from OpenCode's preset is Zen even when a relay or a
+  // custom domain hides its host.
+  if (provider.preset === "opencode-zen" || provider.preset === "opencode-go") {
+    return true;
+  }
   try {
     return openCodeHost(new URL(provider.baseUrl).hostname);
   } catch {
@@ -668,6 +673,8 @@ export function openCodeEnvironment(
   const start = localDir(dir === "" ? home : dir, home);
   const repo = openCodeRepository(start);
   const workspace = repo.isRepo ? repo.root : start;
+  const tempPath =
+    platform === "win32" ? path.win32.join(temp, "opencode") : path.posix.join(temp, "opencode");
   return [
     "Here is some useful information about the environment you are running in:",
     "<env>",
@@ -675,7 +682,7 @@ export function openCodeEnvironment(
     `  Workspace root folder: ${workspace}`,
     `  Is directory a git repo: ${repo.isRepo ? "yes" : "no"}`,
     `  Platform: ${platform}`,
-    `  Prefer ${path.join(temp, "opencode")} over generic system temporary directories such as /tmp; it is pre-created and approved for external access.`,
+    `  Prefer ${tempPath} over generic system temporary directories such as /tmp; it is pre-created and approved for external access.`,
     "</env>",
   ].join("\n");
 }
@@ -801,5 +808,44 @@ export class ZenReply {
       return out;
     }
     return [event];
+  }
+
+  /**
+   * The same shaping for a reply that came whole: a stub's call is left
+   * out, a core tool goes back under the client's name, and a turn that
+   * called nothing but a stub ends with its note instead of a tool call.
+   */
+  public whole(response: IrResponse): IrResponse {
+    const parts: IrPart[] = [];
+    let calls = 0;
+    let stubbed = false;
+    let said = false;
+    for (const part of response.parts) {
+      if (part.type === "tool_call") {
+        if (this.tools.stubs.has(part.name)) {
+          stubbed = true;
+          continue;
+        }
+        calls += 1;
+        const own = this.tools.back.get(part.name);
+        parts.push(own === undefined ? part : { ...part, name: own });
+        continue;
+      }
+      if (part.type === "text" && part.text !== "") {
+        said = true;
+      }
+      parts.push(part);
+    }
+    if (stubbed && calls === 0 && !said) {
+      parts.push({ type: "text", text: ZEN_STUB_NOTE });
+    }
+    return {
+      ...response,
+      parts,
+      stopReason:
+        response.stopReason === "tool_use" && stubbed && calls === 0
+          ? "end_turn"
+          : response.stopReason,
+    };
   }
 }

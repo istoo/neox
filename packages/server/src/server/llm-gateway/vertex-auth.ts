@@ -1,7 +1,7 @@
 import { createSign } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { isAbsolute, join, relative, sep } from "node:path";
+import { isAbsolute, posix, relative, sep, win32 } from "node:path";
 import { fetchThroughProxy } from "./proxy-fetch.js";
 
 /**
@@ -325,7 +325,12 @@ export async function vertexCredentialsFile(
   if (fromEnv !== "") {
     return fromEnv;
   }
-  return join(await gcloudDir(options), "application_default_credentials.json");
+  return pathsFor(options).join(await gcloudDir(options), "application_default_credentials.json");
+}
+
+/** The path flavor of the platform a call is for, not this machine's. */
+function pathsFor(options: VertexAuthOptions): typeof posix {
+  return (options.platform ?? process.platform) === "win32" ? win32 : posix;
 }
 
 /** The folder gcloud keeps its files in (`vertex.go:434-446`). */
@@ -334,10 +339,11 @@ async function gcloudDir(options: VertexAuthOptions): Promise<string> {
   if (configured !== "") {
     return configured;
   }
+  const paths = pathsFor(options);
   if ((options.platform ?? process.platform) === "win32") {
-    return join((options.env ?? process.env).APPDATA ?? "", "gcloud");
+    return paths.join((options.env ?? process.env).APPDATA ?? "", "gcloud");
   }
-  return join(options.home ?? homedir(), ".config", "gcloud");
+  return paths.join(options.home ?? homedir(), ".config", "gcloud");
 }
 
 /**
@@ -351,7 +357,7 @@ async function vertexEnvPath(name: string, options: VertexAuthOptions): Promise<
     return "";
   }
   const path = await homePath(value, options);
-  if (path === value && !isAbsolute(path)) {
+  if (path === value && !pathsFor(options).isAbsolute(path)) {
     throw new Error(
       `${name} is "${value}", not a full path: give the whole path, unset it, or give the provider a credentials file`,
     );
@@ -368,7 +374,7 @@ async function homePath(path: string, options: VertexAuthOptions): Promise<strin
   if (rest !== "" && rest[0] !== "/" && rest[0] !== "\\") {
     return path;
   }
-  return join(options.home ?? homedir(), rest);
+  return pathsFor(options).join(options.home ?? homedir(), rest);
 }
 
 function startsWithHome(path: string): boolean {

@@ -1791,8 +1791,9 @@ const frame = useRef<HtmlFrameHandle>(null);
 />;
 ```
 
-`HtmlFrame` requires Neox 0.15.0 or later. The myna plugin converter uses it to render converted
-`magpie.page` and `magpie.panels`, with the page's own `window.myna` object on top of the bridge.
+`HtmlFrame` requires Neox 0.15.0 or later. The myna plugin converter does not use it: it declares a
+sandboxed web view instead, which desktop web renders without running a client bundle. Use
+`HtmlFrame` for an HTML surface you write yourself.
 
 ### Version requirement and examples
 

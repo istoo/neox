@@ -1,6 +1,9 @@
 import type { AccountHost } from "@synara/contracts";
 import { describe, expect, it } from "vitest";
 
+// The standalone entry installs this at startup; tests import the modules directly.
+import "./clientRuntime.node.ts";
+
 import {
   HostRegistry,
   LOCAL_HOST_ID,
@@ -70,7 +73,7 @@ describe("multihost identity", () => {
   });
 
   it("keeps the ws path inside the prefix the renderer accepts", () => {
-    expect(wsPathForHost(remoteHostId("reg-1"))).toBe("/ws/remote/neolix-host-reg-1");
+    expect(wsPathForHost(remoteHostId("reg-1"))).toBe("/rpc/remote/neolix-host-reg-1");
   });
 
   it("builds an HTTP base only for directly reachable targets", () => {
@@ -101,10 +104,38 @@ describe("HostRegistry directory", () => {
     });
     expect(remote).toMatchObject({
       name: "Studio mini",
-      environmentId: "neolix-host-reg-1",
+      // The daemon's stable serverId, not the registration id or its address.
+      environmentId: "srv-remote",
       kind: "ssh-managed",
       endpoints: [{ url: "tcp://192.168.1.20:6768", transport: "lan" }],
     });
+  });
+
+  it("keeps the same environment id when the host's address changes", async () => {
+    const first = registryWith();
+    const second = registryWith({
+      listHosts: async () => ({
+        self: { serverId: "srv-local", label: "This computer" },
+        hosts: [{ ...row, targetDescription: "tcp://192.168.1.99:6800" }],
+      }),
+    });
+    const [firstHosts, secondHosts] = await Promise.all([
+      first.registry.hosts(),
+      second.registry.hosts(),
+    ]);
+    expect(firstHosts[1]?.environmentId).toBe("srv-remote");
+    expect(secondHosts[1]?.environmentId).toBe("srv-remote");
+  });
+
+  it("falls back to the registration id until the daemon reports a server id", async () => {
+    const { registry } = registryWith({
+      listHosts: async () => ({
+        self: { serverId: "srv-local", label: "This computer" },
+        hosts: [{ ...row, serverId: null }],
+      }),
+    });
+    const hosts = await registry.hosts();
+    expect(hosts[1]?.environmentId).toBe("neolix-host-reg-1");
   });
 
   it("falls back to the target description when a registration has no label", async () => {
@@ -148,7 +179,7 @@ describe("HostRegistry directory", () => {
     const { registry } = registryWith();
     const connections = await registry.connections();
     expect(connections.pairedHosts).toEqual([
-      { hostId: "neolix-host-reg-1", environmentId: "neolix-host-reg-1" },
+      { hostId: "neolix-host-reg-1", environmentId: "srv-remote" },
     ]);
     expect(connections.connections).toEqual([]);
   });

@@ -290,9 +290,9 @@ test("daemon bootstrap migrates cwd-only legacy agents before same-cwd workspace
   try {
     await client.connect();
     expect(await legacyAgentWorkspaceId(client)).toBe(LEGACY_OWNER_WORKSPACE);
-    expect(await statusByWorkspaceId(client)).toEqual(
-      new Map([[LEGACY_OWNER_WORKSPACE, "running"]]),
-    );
+    // Startup recovery repairs a persisted "running" status to "closed": no
+    // provider session is live, and resume-on-startup is opt-in for this daemon.
+    expect(await statusByWorkspaceId(client)).toEqual(new Map([[LEGACY_OWNER_WORKSPACE, "done"]]));
 
     const created = await client.createWorkspace({
       source: { kind: "directory", path: cwd, projectId: "prj_legacy_agent" },
@@ -304,8 +304,8 @@ test("daemon bootstrap migrates cwd-only legacy agents before same-cwd workspace
     }
 
     // The migrated legacy agent stays owned by LEGACY_OWNER. The freshly created
-    // same-cwd workspace owns nothing, so its status is done — status is per id,
-    // never shared across same-cwd workspaces.
+    // same-cwd workspace owns nothing, so both statuses are done — status is per
+    // id, never shared across same-cwd workspaces.
     expect(await legacyAgentWorkspaceId(client)).toBe(LEGACY_OWNER_WORKSPACE);
     expect(await agentIdsOwnedByWorkspace(client, LEGACY_OWNER_WORKSPACE)).toEqual([
       "legacy-cwd-only-agent",
@@ -313,7 +313,7 @@ test("daemon bootstrap migrates cwd-only legacy agents before same-cwd workspace
     expect(await agentIdsOwnedByWorkspace(client, createdWorkspaceId)).toEqual([]);
     expect(await statusByWorkspaceId(client)).toEqual(
       new Map([
-        [LEGACY_OWNER_WORKSPACE, "running"],
+        [LEGACY_OWNER_WORKSPACE, "done"],
         [createdWorkspaceId, "done"],
       ]),
     );
@@ -415,6 +415,8 @@ test("create_agent_request with workspaceId does not retitle an existing workspa
   const cwd = mkdtempSync(path.join(tmpdir(), "neolix-agent-submit-title-"));
   const daemon = await createTestNeolixDaemon({
     agentClients: { mock: new MockLoadTestAgentClient() },
+    // The mock provider ships with the dev provider definitions.
+    isDev: true,
   });
   const client = new DaemonClient({
     url: `ws://127.0.0.1:${daemon.port}/ws`,
@@ -458,6 +460,8 @@ test("creating another same-cwd local workspace keeps running status on the owni
   const cwd = mkdtempSync(path.join(tmpdir(), "neolix-running-same-cwd-create-"));
   const daemon = await createTestNeolixDaemon({
     agentClients: { mock: new MockLoadTestAgentClient() },
+    // The mock provider ships with the dev provider definitions.
+    isDev: true,
   });
   const client = new DaemonClient({
     url: `ws://127.0.0.1:${daemon.port}/ws`,

@@ -225,6 +225,30 @@ describe("vendor shaping", () => {
       { type: "stop", reason: "end_turn" },
     ]);
   });
+
+  it("shapes a Zen reply that came whole the same way", () => {
+    const reply = new ZenReply({
+      back: new Map([["read", "Read"]]),
+      stubs: new Set(["shell"]),
+    });
+    const named = reply.whole({
+      id: "m",
+      parts: [{ type: "tool_call", id: "1", name: "read", arguments: "{}" }],
+      stopReason: "tool_use",
+      usage: { inputTokens: 1, outputTokens: 1 },
+    });
+    expect(named.parts).toEqual([{ type: "tool_call", id: "1", name: "Read", arguments: "{}" }]);
+    expect(named.stopReason).toBe("tool_use");
+
+    const stubbed = new ZenReply({ back: new Map(), stubs: new Set(["shell"]) }).whole({
+      id: "m",
+      parts: [{ type: "tool_call", id: "2", name: "shell", arguments: "{}" }],
+      stopReason: "tool_use",
+      usage: { inputTokens: 1, outputTokens: 1 },
+    });
+    expect(stubbed.parts).toEqual([{ type: "text", text: ZEN_STUB_NOTE }]);
+    expect(stubbed.stopReason).toBe("end_turn");
+  });
 });
 
 describe("clinePinBody", () => {

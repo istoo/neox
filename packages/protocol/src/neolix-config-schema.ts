@@ -99,6 +99,8 @@ export const NeolixConfigSchema = NeolixConfigRawSchema.extend({
 export const NeolixConfigRevisionSchema = z.object({
   mtimeMs: z.number(),
   size: z.number(),
+  /** Content hash; absent on tokens minted by daemons before it existed. */
+  digest: z.string().optional(),
 });
 
 export const ProjectConfigRpcErrorSchema = z.discriminatedUnion("code", [

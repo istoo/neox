@@ -25,7 +25,7 @@ describe("pairingRpc", () => {
       }),
     };
     const model = { client } as unknown as BridgeModel;
-    const handlers = makePairingHandlers(model);
+    const handlers = makePairingHandlers(model, { environmentId: "srv-local" });
     const result = await run<HostsEnrollmentResult>(handlers[WS_METHODS.hostsEnrollment], {});
     const encoded = encode(HostsEnrollmentResult, result) as HostsEnrollmentResult;
     expect(encoded).toMatchObject({
@@ -33,6 +33,7 @@ describe("pairingRpc", () => {
       discoverabilityAcknowledged: true,
       host: {
         id: "neolix-local-daemon",
+        environmentId: "srv-local",
         name: "This computer",
         kind: "local",
         linked: true,
@@ -42,7 +43,7 @@ describe("pairingRpc", () => {
   });
 
   it("omits the endpoint when the daemon has no offer URL", () => {
-    const host = localHostFromPairingOffer({ url: "   " });
+    const host = localHostFromPairingOffer({ url: "   " }, { environmentId: "srv-local" });
     const encoded = encode(HostsEnrollmentResult, {
       host,
       organizationMemberCount: null,

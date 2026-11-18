@@ -5,7 +5,15 @@
 
 import { QueryClient } from "@tanstack/react-query";
 import { createMemoryHistory, createRouter } from "@tanstack/react-router";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+// Neox redirects the Inbox route to "/" because it has no GitHub backend. This
+// suite is about pathname commitment across the route tree, so keep the route
+// reachable (its components are never rendered here).
+vi.mock("~/neolixFeatures", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("~/neolixFeatures")>()),
+  NEOLIX_PULL_REQUESTS_INBOX_ENABLED: true,
+}));
 
 import { routeTree } from "../routeTree.gen";
 import { resolveCommittedPathname } from "./useCommittedPathname";

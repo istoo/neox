@@ -1,7 +1,7 @@
 import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, test } from "vitest";
 import pino from "pino";
 import {
   DaemonSession,
@@ -9,6 +9,7 @@ import {
   type DaemonSessionHost,
 } from "./daemon-session.js";
 import type { DaemonWebSocketRuntimeDiagnosticSnapshot } from "./diagnostics.js";
+import type { DaemonRuntimeStatusSnapshot } from "../../runtime-status.js";
 import type { ProviderAvailability } from "../../agent/agent-manager.js";
 import type { HubRelationshipManagement } from "../../hub/relationship-controller.js";
 import type { SessionOutboundMessage } from "../../messages.js";
@@ -42,6 +43,7 @@ function makeSubsystem(overrides: {
   daemonRuntimeConfig?: DaemonRuntimeConfig;
   listProviderAvailability?: () => Promise<ProviderAvailability[]>;
   getWebSocketRuntimeMetrics?: () => DaemonWebSocketRuntimeDiagnosticSnapshot | null;
+  getDaemonRuntimeStatus?: () => DaemonRuntimeStatusSnapshot | null;
   hubRelationships?: HubRelationshipManagement;
   reloadConfig?: () => Promise<DaemonConfigReloadResult>;
 }) {
@@ -64,6 +66,7 @@ function makeSubsystem(overrides: {
     listWorkspaces: async () => [],
     listProviderAvailability: overrides.listProviderAvailability ?? (async () => []),
     getWebSocketRuntimeMetrics: overrides.getWebSocketRuntimeMetrics,
+    getDaemonRuntimeStatus: overrides.getDaemonRuntimeStatus,
     hubRelationships: overrides.hubRelationships,
     reloadConfig:
       overrides.reloadConfig ??
@@ -78,6 +81,16 @@ function makeSubsystem(overrides: {
 }
 
 describe("DaemonSession", () => {
+  const originalContainer = process.env.NEOLIX_CONTAINER;
+
+  beforeAll(() => {
+    process.env.NEOLIX_CONTAINER = "0";
+  });
+
+  afterAll(() => {
+    restoreEnv("NEOLIX_CONTAINER", originalContainer);
+  });
+
   test("config reload returns the daemon-owned classification", async () => {
     const { subsystem, emitted } = makeSubsystem({
       reloadConfig: async () => ({
@@ -266,6 +279,83 @@ describe("DaemonSession", () => {
     }
     expect(status.payload.configDir).toBe(neolixHome);
     expect(status.payload.logPath).toBe(join(neolixHome, "daemon.log"));
+  });
+
+  test("status reports the daemon's resolved worktree base", async () => {
+    const { subsystem, emitted } = makeSubsystem({
+      daemonRuntimeConfig: {
+        listen: "127.0.0.1:6767",
+        worktreesRoot: "/srv/custom-worktrees",
+        getRelayConfig: () => null,
+      },
+    });
+
+    await subsystem.handleGetStatusRequest({ type: "daemon.get_status.request", requestId: "s-4" });
+
+    expect(emitted[0]).toMatchObject({
+      type: "daemon.get_status.response",
+      payload: { requestId: "s-4", worktreesRoot: "/srv/custom-worktrees" },
+    });
+  });
+
+  test("runtime status reports the sampled window with live process and agent counts", async () => {
+    const tracked: DaemonRuntimeStatusSnapshot = {
+      sampleWindowMs: 12_000,
+      sampleCount: 1_193,
+      delayP50Ms: 1.2,
+      delayP99Ms: 8.4,
+      delayMaxMs: 14.1,
+      utilization: 0.42,
+      stallWindowCount: 1,
+      maxStallMs: 640,
+      lastStall: { durationMs: 640, ageMs: 2_500 },
+    };
+    const { subsystem, emitted } = makeSubsystem({
+      getDaemonRuntimeStatus: () => tracked,
+    });
+
+    await subsystem.handleRuntimeStatusRequest({
+      type: "daemon.runtime.get_status.request",
+      requestId: "runtime-1",
+    });
+
+    expect(emitted[0]).toMatchObject({
+      type: "daemon.runtime.get_status.response",
+      payload: {
+        requestId: "runtime-1",
+        ...tracked,
+        uptimeSeconds: expect.any(Number),
+        memory: {
+          rss: expect.any(Number),
+          heapTotal: expect.any(Number),
+          heapUsed: expect.any(Number),
+          external: expect.any(Number),
+          arrayBuffers: expect.any(Number),
+        },
+        agentCount: 0,
+      },
+    });
+  });
+
+  test("runtime status without a sampler returns a correlated RPC error", async () => {
+    const { subsystem, emitted } = makeSubsystem({ getDaemonRuntimeStatus: () => null });
+
+    await subsystem.handleRuntimeStatusRequest({
+      type: "daemon.runtime.get_status.request",
+      requestId: "runtime-2",
+    });
+
+    expect(emitted).toEqual([
+      {
+        type: "rpc_error",
+        payload: {
+          requestId: "runtime-2",
+          requestType: "daemon.runtime.get_status.request",
+          error: "Runtime status is unavailable",
+          code: "handler_error",
+        },
+      },
+    ]);
   });
 
   test("revealing a log the daemon has not written reports why", async () => {

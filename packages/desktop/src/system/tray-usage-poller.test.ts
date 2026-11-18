@@ -157,6 +157,7 @@ describe("readTrayUsageState", () => {
       { ...SETTINGS, trayUsages: ["zai|a@b.c"], trayNoBird: true },
       "en",
       0,
+      "darwin",
     );
 
     expect(state.label).toBe("Z.ai 62% +3%");
@@ -169,6 +170,7 @@ describe("readTrayUsageState", () => {
       { ...SETTINGS, trayNoBird: true },
       "en",
       0,
+      "darwin",
     );
 
     expect(state.label).toBe("62% +3%");

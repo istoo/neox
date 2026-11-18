@@ -50,6 +50,7 @@ import {
 import { DesktopWindowControls } from "../components/DesktopWindowControls";
 import { RunningChatsQuitCoordinator } from "../components/RunningChatsQuitCoordinator";
 import { DesktopOsIntegrationCoordinator } from "../components/DesktopOsIntegrationCoordinator";
+import { BrowserAutomationCoordinator } from "../components/BrowserAutomationCoordinator";
 import { AppSnapCoordinator } from "../components/AppSnapCoordinator";
 import { AppSnapWelcomeDialog } from "../components/AppSnapWelcomeDialog";
 import { BetaWelcomeDialog } from "../components/BetaWelcomeDialog";
@@ -464,6 +465,7 @@ function RootRouteView() {
           )}
           <GlobalProjectImportDialog />
           <AppSnapCoordinator />
+          <BrowserAutomationCoordinator disabled={isQuickPanelRoute} />
           <DesktopProjectBootstrap />
           <Outlet />
         </AnchoredToastProvider>

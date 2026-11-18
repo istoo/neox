@@ -1,5 +1,11 @@
-import { NEOLIX_HOST_WS_METHODS, WS_METHODS, WsRpcError } from "@synara/contracts";
-import { Effect } from "effect";
+import {
+  NEOLIX_HOST_WS_METHODS,
+  WS_METHODS,
+  WsRpcError,
+  type NeolixHostFeatures,
+  type NeolixHostUpdateProgress,
+} from "@synara/contracts";
+import { Effect, Stream } from "effect";
 import { describe, expect, it } from "vitest";
 
 import type { BridgeModel } from "./model.ts";
@@ -14,6 +20,7 @@ function run<A>(handler: AnyHandler | undefined, payload: unknown = {}): Promise
 
 function makeHarness() {
   const calls: Array<[string, unknown]> = [];
+  const rawMessageListeners = new Set<(message: unknown) => void>();
   const config = {
     autoArchiveAfterMerge: false,
     enableTerminalAgentHooks: true,
@@ -54,6 +61,7 @@ function makeHarness() {
       startedAt: "2026-01-01T00:00:00.000Z",
       listen: "127.0.0.1:6768",
       container: false,
+      publicUrl: "https://neox.example.com",
       configDir: "/home/neolix",
       logPath: "/home/neolix/daemon.log",
     }),
@@ -63,6 +71,13 @@ function makeHarness() {
       return { ok: true };
     },
     getLastServerInfoMessage: () => undefined,
+    subscribeRawMessages: (handler: (message: unknown) => void) => {
+      rawMessageListeners.add(handler);
+      return () => rawMessageListeners.delete(handler);
+    },
+    emitRawMessage: (message: unknown) => {
+      for (const handler of rawMessageListeners) handler(message);
+    },
     restartServer: async (reason: string, _requestId: unknown, options: unknown) => {
       calls.push(["restart", { reason, options }]);
       return { requestId: "r4" };
@@ -102,8 +117,8 @@ function makeHarness() {
       calls.push(["reads", input]);
       return { requestId: "r7", snapshot: { asked: true, all: true, found: [] }, error: null };
     },
-    listExternalSessions: async (agent?: string) => {
-      calls.push(["sessions", agent]);
+    listExternalSessions: async (agent?: string, options?: { fast?: boolean }) => {
+      calls.push(["sessions", { agent, options }]);
       return {
         agents: [{ agent: "codex", name: "Codex" }],
         agent: agent ?? "codex",
@@ -131,6 +146,7 @@ function makeHarness() {
         home: "/home",
         recording: false,
         recorded: false,
+        ...(options?.fast === true ? { partial: true } : {}),
         error: null,
       };
     },
@@ -315,6 +331,7 @@ describe("hostRpc lifecycle", () => {
       serverId: string;
       pid: number;
       listen: string | null;
+      publicUrl?: string | null;
       home?: string | null;
       logPath?: string | null;
     }>(handlers[NEOLIX_HOST_WS_METHODS.getStatus]);
@@ -322,9 +339,22 @@ describe("hostRpc lifecycle", () => {
       serverId: "srv-1",
       pid: 42,
       listen: "127.0.0.1:6768",
+      publicUrl: "https://neox.example.com",
       home: "/home/neolix",
       logPath: "/home/neolix/daemon.log",
     });
+  });
+
+  it("serves the generated third-party license list", async () => {
+    const { handlers } = makeHarness();
+    const result = await run<{ notices: string }>(
+      handlers[NEOLIX_HOST_WS_METHODS.getThirdPartyNotices],
+    );
+    expect(result.notices).toContain("Neox third-party notices");
+    expect(result.notices).toContain("third-party packages");
+    // The web app ships its own frontend dependencies; About must list them too.
+    expect(result.notices).toMatch(/^mermaid \d/m);
+    expect(result.notices).toMatch(/^monaco-editor \d/m);
   });
 
   it("forwards the daemon's diagnostics report", async () => {
@@ -440,6 +470,25 @@ describe("hostRpc speech and sessions", () => {
       id: "s1",
     });
     expect(calls).toContainEqual(["open", { agent: "codex", id: "s1" }]);
+  });
+
+  it("asks a daemon with the progress capability for the header-first list", async () => {
+    const { handlers, calls, model } = makeHarness();
+    (model.client as unknown as { getLastServerInfoMessage: unknown }).getLastServerInfoMessage =
+      () => ({ features: { externalSessionsProgress: true } });
+    const listed = await run<{ partial?: boolean }>(
+      handlers[NEOLIX_HOST_WS_METHODS.listExternalSessions],
+      { agent: "codex", fast: true },
+    );
+    expect(listed.partial).toBe(true);
+    expect(calls).toContainEqual(["sessions", { agent: "codex", options: { fast: true } }]);
+
+    const older = makeHarness();
+    await run(older.handlers[NEOLIX_HOST_WS_METHODS.listExternalSessions], {
+      agent: "codex",
+      fast: true,
+    });
+    expect(older.calls).toContainEqual(["sessions", { agent: "codex", options: undefined }]);
   });
 
   it("deletes, restores and purges provider sessions", async () => {
@@ -617,5 +666,95 @@ describe("hostRpc sync and gateway", () => {
     await expect(
       run(handlers[NEOLIX_HOST_WS_METHODS.getProviderDiagnostic], { provider: "claudeAgent" }),
     ).resolves.toMatchObject({ provider: "claudeAgent" });
+  });
+
+  it("reports the connected daemon's feature flags", async () => {
+    const { model } = makeHarness();
+    model.client.getLastServerInfoMessage = () =>
+      ({
+        serverId: "srv-1",
+        version: "0.15.0",
+        features: { sync: true, agentDetach: false, unknownFlag: "not-a-flag" },
+      }) as unknown as ReturnType<typeof model.client.getLastServerInfoMessage>;
+    const handlers = makeHostHandlers(model);
+    // Only booleans are capability flags; other values never cross the wire as features.
+    await expect(run(handlers[NEOLIX_HOST_WS_METHODS.getFeatures])).resolves.toEqual({
+      serverVersion: "0.15.0",
+      features: { sync: true, agentDetach: false },
+    });
+  });
+
+  it("re-announces the flags when a new server_info arrives", async () => {
+    const { model } = makeHarness();
+    let info = {
+      serverId: "srv-1",
+      version: "0.15.0",
+      features: { sync: false },
+    };
+    model.client.getLastServerInfoMessage = () =>
+      info as unknown as ReturnType<typeof model.client.getLastServerInfoMessage>;
+    const handlers = makeHostHandlers(model);
+    const stream = handlers[NEOLIX_HOST_WS_METHODS.subscribeFeatures]!(
+      {},
+      {},
+    ) as unknown as Stream.Stream<NeolixHostFeatures>;
+
+    const emitted = await Effect.runPromise(
+      Effect.gen(function* () {
+        setTimeout(() => {
+          info = { serverId: "srv-1", version: "0.16.0", features: { sync: true } };
+          (model.client as unknown as { emitRawMessage(message: unknown): void }).emitRawMessage({
+            type: "status",
+            payload: { status: "server_info", serverId: "srv-1", version: "0.16.0" },
+          });
+        }, 0);
+        return Array.from(yield* Stream.runCollect(Stream.take(stream, 2)));
+      }),
+    );
+
+    expect(emitted).toEqual([
+      { serverVersion: "0.15.0", features: { sync: false } },
+      { serverVersion: "0.16.0", features: { sync: true } },
+    ]);
+  });
+
+  it("reports no flags before the daemon's server_info arrives", async () => {
+    const { model } = makeHarness();
+    const handlers = makeHostHandlers(model);
+    await expect(run(handlers[NEOLIX_HOST_WS_METHODS.getFeatures])).resolves.toEqual({
+      serverVersion: null,
+      features: {},
+    });
+  });
+
+  it("forwards daemon update phases while an update runs", async () => {
+    const { model } = makeHarness();
+    const handlers = makeHostHandlers(model);
+    const stream = handlers[NEOLIX_HOST_WS_METHODS.subscribeUpdateProgress]!(
+      {},
+      {},
+    ) as unknown as Stream.Stream<NeolixHostUpdateProgress>;
+
+    const emitted = await Effect.runPromise(
+      Effect.gen(function* () {
+        setTimeout(() => {
+          const emit = (model.client as unknown as { emitRawMessage(message: unknown): void })
+            .emitRawMessage;
+          emit({
+            type: "daemon.update.progress",
+            payload: { requestId: "update-1", phase: "starting" },
+          });
+          // Another message type must not leak into the progress stream.
+          emit({ type: "status", payload: { status: "server_info" } });
+          emit({
+            type: "daemon.update.progress",
+            payload: { requestId: "update-1", phase: "downloading" },
+          });
+        }, 10);
+        return Array.from(yield* Stream.runCollect(Stream.take(stream, 2)));
+      }),
+    );
+
+    expect(emitted).toEqual([{ phase: "starting" }, { phase: "downloading" }]);
   });
 });

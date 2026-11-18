@@ -15,6 +15,9 @@ const api = vi.hoisted(() => ({
     open: vi.fn(async (input: TerminalOpenInput) => ({ ...input, status: "running" })),
     write: vi.fn(async () => {}),
   },
+  projects: {
+    runDevServer: vi.fn(),
+  },
 }));
 vi.mock("../../nativeApi", () => ({ readNativeApi: () => api, ensureNativeApi: () => api }));
 
@@ -23,6 +26,82 @@ afterEach(() => {
   useRightDockStore.setState({ dockStateByThreadId: {} });
   vi.clearAllMocks();
   api.terminal.close.mockReset();
+});
+
+it("starts a service action through the workspace runtime so it receives a port", async () => {
+  const project = makeProject();
+  const thread = makeThread({ projectId: project.id });
+  const setThreadError = vi.fn();
+  const queryClient = new QueryClient();
+  api.projects.runDevServer.mockResolvedValue({
+    server: {
+      projectId: project.id,
+      command: "web",
+      cwd: project.cwd,
+      pid: null,
+      startedAt: new Date().toISOString(),
+      status: "running",
+      scriptName: "web",
+      terminalId: "daemon-service-terminal",
+    },
+  });
+
+  function ServiceAction() {
+    const { runProjectScript } = useChatProjectScripts({
+      activeThreadId: thread.id,
+      activeThread: thread,
+      activeProject: project,
+      gitCwd: project.cwd,
+      isGroupContainer: false,
+      setThreadError,
+    });
+    return (
+      <button
+        onClick={() =>
+          void runProjectScript(
+            {
+              id: "web",
+              name: "web",
+              command: "pnpm run web",
+              icon: "play",
+              runOnWorktreeCreate: false,
+              type: "service",
+            },
+            { rememberAsLastInvoked: false },
+          )
+        }
+      >
+        Run web
+      </button>
+    );
+  }
+
+  const view = await render(
+    <QueryClientProvider client={queryClient}>
+      <ServiceAction />
+    </QueryClientProvider>,
+  );
+  await page.getByRole("button", { name: "Run web" }).click();
+
+  await expect.poll(() => api.projects.runDevServer.mock.calls.length).toBe(1);
+  expect(api.projects.runDevServer).toHaveBeenCalledWith({
+    projectId: project.id,
+    command: "web",
+    cwd: project.cwd,
+  });
+  await expect.poll(() => api.terminal.open.mock.calls.length).toBe(1);
+  expect(api.terminal.open).toHaveBeenCalledWith(
+    expect.objectContaining({
+      threadId: dockTerminalThreadId(thread.id),
+      cwd: project.cwd,
+      attachToDaemonTerminalId: "daemon-service-terminal",
+    }),
+  );
+  expect(api.terminal.write).not.toHaveBeenCalled();
+  expect(setThreadError).not.toHaveBeenCalled();
+
+  await view.unmount();
+  queryClient.clear();
 });
 
 it.each([

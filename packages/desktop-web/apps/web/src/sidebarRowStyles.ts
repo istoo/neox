@@ -7,6 +7,13 @@
 export const SIDEBAR_ROW_HEIGHT_CLASS_NAME =
   "min-h-[var(--app-density-row-height,1.75rem)] h-[var(--app-density-row-height,1.75rem)]";
 
+/**
+ * A row carrying configured second-line fields needs its natural two-line height;
+ * keeping the fixed row height makes the meta line overlap the next row.
+ */
+export const SIDEBAR_ROW_META_HEIGHT_CLASS_NAME =
+  "has-[[data-slot=sidebar-thread-row-meta]]:h-auto has-[[data-slot=sidebar-thread-row-meta]]:min-h-[var(--app-density-row-height,1.75rem)]";
+
 export const SIDEBAR_ROW_RADIUS_CLASS_NAME = "rounded-md";
 
 export const SIDEBAR_ROW_PADDING_CLASS_NAME = "px-2 py-[var(--app-density-row-padding-y,0.125rem)]";
@@ -65,6 +72,7 @@ export const SIDEBAR_SECTION_LABEL_CLASS_NAME = `text-ui font-normal ${SIDEBAR_S
 export const SIDEBAR_HEADER_ROW_CLASS_NAME = [
   "flex w-full min-w-0 cursor-pointer items-center text-left select-none",
   SIDEBAR_ROW_HEIGHT_CLASS_NAME,
+  SIDEBAR_ROW_META_HEIGHT_CLASS_NAME,
   SIDEBAR_ROW_GAP_CLASS_NAME,
   SIDEBAR_ROW_RADIUS_CLASS_NAME,
   SIDEBAR_ROW_PADDING_CLASS_NAME,
@@ -76,6 +84,7 @@ export const SIDEBAR_HEADER_ROW_CLASS_NAME = [
 export const SIDEBAR_THREAD_ROW_BASE_CLASS_NAME = [
   "w-full translate-x-0 cursor-pointer justify-start text-left select-none",
   SIDEBAR_ROW_HEIGHT_CLASS_NAME,
+  SIDEBAR_ROW_META_HEIGHT_CLASS_NAME,
   SIDEBAR_ROW_RADIUS_CLASS_NAME,
   "pl-8 text-ui-lg",
   SIDEBAR_ROW_FOCUS_CLASS_NAME,

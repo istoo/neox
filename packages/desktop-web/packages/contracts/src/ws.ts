@@ -5,6 +5,10 @@ import {
 } from "./inboxRecaps";
 import { RemoteAgentCall } from "./remoteAgentGateway";
 import { RemoteAccessInput } from "./remotePairing";
+import {
+  BrowserAutomationHostResponseInput,
+  BrowserAutomationHostSubscribeInput,
+} from "./browserAutomationHost";
 import { Schema, Struct } from "effect";
 import { ServerDesktopUpdateInput } from "./desktopUpdate";
 import { EditorDebugStartInput, EditorDebugActionInput, EditorDebugPollInput } from "./editorDebug";
@@ -54,6 +58,7 @@ import {
   AutomationUpdateInput,
 } from "./automation";
 import { TodoCreateInput, TodoDeleteInput, TodoStreamEvent, TodoUpdateInput } from "./todo";
+import { NeolixHostFeatures, NeolixHostUpdateProgress } from "./neolixHost";
 import {
   ProjectAgentConfigureInput,
   ProjectAgentLinkProjectInput,
@@ -128,7 +133,9 @@ import {
   GitMergeLocallyInput,
   GitInitInput,
   GitListBranchesInput,
+  GitListCommitsInput,
   GitListRecentCommitsInput,
+  GitCommitDiffInput,
   GitPullInput,
   GitPullRequestRefInput,
   GitPullRequestSnapshotInput,
@@ -251,6 +258,8 @@ import {
   PullRequestActionInput,
   PullRequestCommentInput,
   PullRequestDetailInput,
+  PullRequestPipelineInput,
+  PullRequestSetAutoMergeInput,
   PullRequestSetPinnedInput,
 } from "./pullRequests";
 import { PullRequestAutoFixGetInput, PullRequestAutoFixSetInput } from "./pullRequestAutoFix";
@@ -272,6 +281,7 @@ import {
 import {
   GitHubProjectProvisionInput,
   GitHubProjectProvisionProgressEvent,
+  GitHubRepositorySearchInput,
 } from "./githubProjectProvisioning";
 
 const HostsEntityId = boundedTrimmedNonEmptyString(256);
@@ -359,6 +369,7 @@ export const WS_METHODS = {
   projectsListDevServers: "projects.listDevServers",
   subscribeProjectDevServerEvents: "projects.subscribeDevServerEvents",
   projectsProvisionFromGitHub: "projects.provisionFromGitHub",
+  projectsSearchGitHubRepositories: "projects.searchGitHubRepositories",
 
   // Studio methods
   studioListThreadOutputs: "studio.listThreadOutputs",
@@ -381,6 +392,8 @@ export const WS_METHODS = {
   gitRunStackedAction: "git.runStackedAction",
   gitListBranches: "git.listBranches",
   gitListRecentCommits: "git.listRecentCommits",
+  gitListCommits: "git.listCommits",
+  gitCommitDiff: "git.commitDiff",
   gitCreateWorktree: "git.createWorktree",
   gitCreateDetachedWorktree: "git.createDetachedWorktree",
   gitRemoveWorktree: "git.removeWorktree",
@@ -408,8 +421,10 @@ export const WS_METHODS = {
   githubInboxIssueDetail: "githubInbox.issueDetail",
   githubInboxIssueComment: "githubInbox.issueComment",
   pullRequestsDetail: "pullRequests.detail",
+  pullRequestsPipeline: "pullRequests.pipeline",
   pullRequestsDiff: "pullRequests.diff",
   pullRequestsAction: "pullRequests.action",
+  pullRequestsSetAutoMerge: "pullRequests.setAutoMerge",
   pullRequestsComment: "pullRequests.comment",
   pullRequestsSetPinned: "pullRequests.setPinned",
   pullRequestsGetAutoFix: "pullRequests.getAutoFix",
@@ -553,6 +568,11 @@ export const WS_METHODS = {
   todoUpdate: "todo.update",
   todoDelete: "todo.delete",
   subscribeTodoEvents: "todo.subscribe",
+
+  // Browser automation host (desktop web renderer as the executor)
+  browserAutomationSubscribe: "browserAutomation.subscribe",
+  browserAutomationRespond: "browserAutomation.respond",
+
   projectAgentGetOverview: "projectAgent.getOverview",
   projectAgentListSummaries: "projectAgent.listSummaries",
   projectAgentConfigure: "projectAgent.configure",
@@ -617,6 +637,7 @@ export const WS_METHODS = {
   // Neolix provider subagents
   neolixSubagentsList: "neolix.subagents.list",
   neolixSubagentsTimeline: "neolix.subagents.timeline",
+  neolixSubagentsDetach: "neolix.subagents.detach",
 
   // Neolix workspace metadata
   neolixWorkspacesList: "neolix.workspaces.list",
@@ -632,6 +653,14 @@ export const WS_METHODS = {
   neolixWorkspacesInspectRecovery: "neolix.workspaces.inspectRecovery",
   neolixWorkspacesRestore: "neolix.workspaces.restore",
   neolixWorkspacesListArchived: "neolix.workspaces.listArchived",
+
+  // Neolix attention marks
+  neolixAttentionClearAgent: "neolix.attention.clearAgent",
+  neolixAttentionClearWorkspace: "neolix.attention.clearWorkspace",
+
+  // Neolix worktree setup observation
+  neolixWorkspaceSetupSubscribe: "neolix.workspaceSetup.subscribe",
+  neolixWorkspaceSetupRun: "neolix.workspaceSetup.run",
 } as const;
 
 // ── Push Event Channels ──────────────────────────────────────────────
@@ -651,6 +680,8 @@ export const WS_CHANNELS = {
   serverProviderStatusesUpdated: "server.providerStatusesUpdated",
   serverKeepAwakeUpdated: "server.keepAwakeUpdated",
   serverSettingsUpdated: "server.settingsUpdated",
+  neolixHostFeatures: "neolix.host.features",
+  neolixHostUpdateProgress: "neolix.host.updateProgress",
 } as const;
 
 // -- Tagged Union of all request body schemas ─────────────────────────
@@ -733,6 +764,7 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.projectsListDevServers, Schema.Struct({})),
   tagRequestBody(WS_METHODS.subscribeProjectDevServerEvents, Schema.Struct({})),
   tagRequestBody(WS_METHODS.projectsProvisionFromGitHub, GitHubProjectProvisionInput),
+  tagRequestBody(WS_METHODS.projectsSearchGitHubRepositories, GitHubRepositorySearchInput),
 
   // Filesystem browse
   // Studio
@@ -777,6 +809,8 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.gitRunStackedAction, GitRunStackedActionInput),
   tagRequestBody(WS_METHODS.gitListBranches, GitListBranchesInput),
   tagRequestBody(WS_METHODS.gitListRecentCommits, GitListRecentCommitsInput),
+  tagRequestBody(WS_METHODS.gitListCommits, GitListCommitsInput),
+  tagRequestBody(WS_METHODS.gitCommitDiff, GitCommitDiffInput),
   tagRequestBody(WS_METHODS.gitCreateWorktree, GitCreateWorktreeInput),
   tagRequestBody(WS_METHODS.gitCreateDetachedWorktree, GitCreateDetachedWorktreeInput),
   tagRequestBody(WS_METHODS.gitRemoveWorktree, GitRemoveWorktreeInput),
@@ -801,8 +835,10 @@ const WebSocketRequestBody = Schema.Union([
 
   // Global pull requests
   tagRequestBody(WS_METHODS.pullRequestsDetail, PullRequestDetailInput),
+  tagRequestBody(WS_METHODS.pullRequestsPipeline, PullRequestPipelineInput),
   tagRequestBody(WS_METHODS.pullRequestsDiff, PullRequestDetailInput),
   tagRequestBody(WS_METHODS.pullRequestsAction, PullRequestActionInput),
+  tagRequestBody(WS_METHODS.pullRequestsSetAutoMerge, PullRequestSetAutoMergeInput),
   tagRequestBody(WS_METHODS.pullRequestsComment, PullRequestCommentInput),
   tagRequestBody(WS_METHODS.pullRequestsSetPinned, PullRequestSetPinnedInput),
   tagRequestBody(WS_METHODS.pullRequestsGetAutoFix, PullRequestAutoFixGetInput),
@@ -946,6 +982,11 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.todoUpdate, TodoUpdateInput),
   tagRequestBody(WS_METHODS.todoDelete, TodoDeleteInput),
   tagRequestBody(WS_METHODS.subscribeTodoEvents, Schema.Struct({})),
+
+  // Browser automation host
+  tagRequestBody(WS_METHODS.browserAutomationSubscribe, BrowserAutomationHostSubscribeInput),
+  tagRequestBody(WS_METHODS.browserAutomationRespond, BrowserAutomationHostResponseInput),
+
   tagRequestBody(WS_METHODS.projectAgentGetOverview, ProjectAgentGetOverviewInput),
   tagRequestBody(WS_METHODS.projectAgentListSummaries, ProjectAgentListSummariesInput),
   tagRequestBody(WS_METHODS.projectAgentConfigure, ProjectAgentConfigureInput),
@@ -1025,6 +1066,8 @@ export interface WsPushPayloadByChannel {
   readonly [WS_CHANNELS.serverProviderStatusesUpdated]: typeof ServerProviderStatusesUpdatedPayload.Type;
   readonly [WS_CHANNELS.serverKeepAwakeUpdated]: typeof ServerKeepAwakeUpdatedPayload.Type;
   readonly [WS_CHANNELS.serverSettingsUpdated]: typeof ServerSettingsUpdatedPayload.Type;
+  readonly [WS_CHANNELS.neolixHostFeatures]: NeolixHostFeatures;
+  readonly [WS_CHANNELS.neolixHostUpdateProgress]: NeolixHostUpdateProgress;
   readonly [WS_CHANNELS.automationEvent]: typeof AutomationStreamEvent.Type;
   readonly [WS_CHANNELS.todoEvent]: typeof TodoStreamEvent.Type;
   readonly [WS_CHANNELS.projectAgentEvent]: typeof ProjectAgentStreamEvent.Type;
@@ -1074,6 +1117,14 @@ export const WsPushServerSettingsUpdated = makeWsPushSchema(
 export const WsPushServerKeepAwakeUpdated = makeWsPushSchema(
   WS_CHANNELS.serverKeepAwakeUpdated,
   ServerKeepAwakeUpdatedPayload,
+);
+export const WsPushNeolixHostFeatures = makeWsPushSchema(
+  WS_CHANNELS.neolixHostFeatures,
+  NeolixHostFeatures,
+);
+export const WsPushNeolixHostUpdateProgress = makeWsPushSchema(
+  WS_CHANNELS.neolixHostUpdateProgress,
+  NeolixHostUpdateProgress,
 );
 export const WsPushAutomationEvent = makeWsPushSchema(
   WS_CHANNELS.automationEvent,
@@ -1126,6 +1177,8 @@ export const WsPushChannelSchema = Schema.Literals([
   WS_CHANNELS.serverProviderStatusesUpdated,
   WS_CHANNELS.serverKeepAwakeUpdated,
   WS_CHANNELS.serverSettingsUpdated,
+  WS_CHANNELS.neolixHostFeatures,
+  WS_CHANNELS.neolixHostUpdateProgress,
   WS_CHANNELS.automationEvent,
   WS_CHANNELS.todoEvent,
   WS_CHANNELS.projectAgentEvent,
@@ -1146,6 +1199,8 @@ export const WsPush = Schema.Union([
   WsPushServerProviderStatusesUpdated,
   WsPushServerKeepAwakeUpdated,
   WsPushServerSettingsUpdated,
+  WsPushNeolixHostFeatures,
+  WsPushNeolixHostUpdateProgress,
   WsPushAutomationEvent,
   WsPushTodoEvent,
   WsPushProjectAgentEvent,

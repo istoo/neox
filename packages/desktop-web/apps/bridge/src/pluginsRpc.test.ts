@@ -22,10 +22,18 @@ afterEach(async () => {
   await Promise.all(dirs.splice(0).map((dir) => fs.rm(dir, { recursive: true, force: true })));
 });
 
-function makeHandlers(plugin: typeof PLUGIN & { settings?: unknown } = PLUGIN) {
+function makeHandlers(
+  plugin: typeof PLUGIN & { settings?: unknown; contributions?: unknown } = PLUGIN,
+  daemonConfig?: { pluginsEnabled?: boolean },
+) {
   const calls: Array<[string, unknown]> = [];
   const client = {
     listPlugins: async () => [plugin],
+    ...(daemonConfig
+      ? {
+          getDaemonConfig: async () => ({ requestId: "config", config: daemonConfig }),
+        }
+      : {}),
     listBuiltinPlugins: async () => ["claude-usage-source"],
     getPluginMarket: async () => ({
       registry: { name: "Neox", url: "https://plugins.example.com" },
@@ -91,6 +99,13 @@ describe("pluginsRpc", () => {
     await expect(
       Effect.runPromise(handlers[WS_METHODS.neolixPluginsBuiltin]!(undefined, undefined) as never),
     ).resolves.toEqual({ plugins: ["claude-usage-source"] });
+  });
+
+  it("reports the daemon's global plugin switch", async () => {
+    const { handlers } = makeHandlers(PLUGIN, { pluginsEnabled: false });
+    await expect(
+      Effect.runPromise(handlers[WS_METHODS.neolixPluginsList]!(undefined, undefined) as never),
+    ).resolves.toEqual({ plugins: [PLUGIN], pluginsEnabled: false });
   });
 
   it("passes daemon settings descriptors through to the web host", async () => {
@@ -258,6 +273,41 @@ describe("pluginsRpc", () => {
       handlers[WS_METHODS.neolixPluginsList]!(undefined, undefined) as never,
     )) as { plugins: Array<{ settingsScreens?: unknown }> };
     expect(result.plugins[0]?.settingsScreens).toEqual(screens);
+  });
+
+  it("passes a sidebar entry's replaced built-in page through to the web host", async () => {
+    const contributions = {
+      sidebarItems: [
+        {
+          id: "main",
+          title: "Notes",
+          section: "header",
+          view: "main",
+          replaces: "sessions",
+        },
+      ],
+    };
+    const { handlers } = makeHandlers({ ...PLUGIN, contributions });
+
+    const result = (await Effect.runPromise(
+      handlers[WS_METHODS.neolixPluginsList]!(undefined, undefined) as never,
+    )) as { plugins: Array<{ contributions?: unknown }> };
+    expect(result.plugins[0]?.contributions).toEqual(contributions);
+  });
+
+  it("passes slot panels through to the web host", async () => {
+    const contributions = {
+      panels: [
+        { id: "usage-strip", slot: "usage", title: "Usage", view: "main", height: 240 },
+        { id: "provider-strip", slot: "provider", view: "main" },
+      ],
+    };
+    const { handlers } = makeHandlers({ ...PLUGIN, contributions });
+
+    const result = (await Effect.runPromise(
+      handlers[WS_METHODS.neolixPluginsList]!(undefined, undefined) as never,
+    )) as { plugins: Array<{ contributions?: unknown }> };
+    expect(result.plugins[0]?.contributions).toEqual(contributions);
   });
 
   it("attaches panel and row-action contributions declared in the plugin manifest", async () => {

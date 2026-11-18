@@ -7,10 +7,14 @@ import { useTranslation } from "~/i18n";
 // Layer: Environment panel section
 
 import type { ProjectScript, ResolvedKeybindingsConfig } from "@synara/contracts";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
+import { Button } from "~/components/ui/button";
 import { IconButton } from "~/components/ui/icon-button";
 import { PlusIcon, SettingsIcon } from "~/lib/icons";
+import { isServiceProjectScript, projectScriptPortText } from "~/projectScripts";
+
+import { Textarea } from "../../ui/textarea";
 
 import {
   ProjectActionDialog,
@@ -28,18 +32,29 @@ export interface EnvironmentActionsSectionProps {
   readonly scripts: readonly ProjectScript[];
   readonly keybindings: ResolvedKeybindingsConfig;
   readonly onRunScript: (script: ProjectScript) => void;
+  /** Why actions cannot run yet; undefined when they are available. */
+  readonly runDisabledReason?: string | undefined;
   readonly onAddScript: (input: NewProjectScriptInput) => Promise<void> | void;
   readonly onUpdateScript: (scriptId: string, input: NewProjectScriptInput) => Promise<void> | void;
   readonly onDeleteScript: (scriptId: string) => Promise<void> | void;
+  /** `neox.json` worktree lifecycle commands; omitted on non-project threads. */
+  readonly worktree?: { readonly setup: string; readonly teardown: string };
+  readonly onSaveWorktree?: (input: {
+    readonly setup: string;
+    readonly teardown: string;
+  }) => Promise<void> | void;
 }
 
 export function EnvironmentActionsSection({
   scripts,
   keybindings,
   onRunScript,
+  runDisabledReason,
   onAddScript,
   onUpdateScript,
   onDeleteScript,
+  worktree,
+  onSaveWorktree,
 }: EnvironmentActionsSectionProps) {
   const { t } = useTranslation();
 
@@ -101,6 +116,15 @@ export function EnvironmentActionsSection({
                         {t("workspace:projectActionSetup")}
                       </span>
                     ) : null}
+                    {isServiceProjectScript(script) ? (
+                      <span className="text-[var(--color-text-foreground-secondary)]">
+                        {projectScriptPortText(script)
+                          ? t("workspace:scripts_serviceWithPort", {
+                              port: projectScriptPortText(script),
+                            })
+                          : t("workspace:scripts_service")}
+                      </span>
+                    ) : null}
                     <span
                       aria-hidden
                       className="hidden w-7 group-focus-within/action:block group-hover/action:block sm:w-6"
@@ -108,6 +132,8 @@ export function EnvironmentActionsSection({
                   </>
                 }
                 aria-label={t("workspace:run", { value0: script.name })}
+                disabled={runDisabledReason !== undefined}
+                title={runDisabledReason}
                 onClick={() => onRunScript(script)}
               />
               <IconButton
@@ -132,6 +158,79 @@ export function EnvironmentActionsSection({
         onSave={handleSave}
         onDelete={onDeleteScript}
       />
+      {worktree && onSaveWorktree ? (
+        <WorktreeLifecycleSection worktree={worktree} onSave={onSaveWorktree} />
+      ) : null}
+    </>
+  );
+}
+
+/**
+ * Setup runs after a worktree is created; teardown runs before it is removed. Both are
+ * passed straight through to `neox.json`, matching the app's project settings screen.
+ */
+function WorktreeLifecycleSection(props: {
+  worktree: { readonly setup: string; readonly teardown: string };
+  onSave: (input: { readonly setup: string; readonly teardown: string }) => Promise<void> | void;
+}) {
+  const { t } = useTranslation();
+  const [setup, setSetup] = useState(props.worktree.setup);
+  const [teardown, setTeardown] = useState(props.worktree.teardown);
+  const [saving, setSaving] = useState(false);
+
+  // The project shell re-reads after a save; follow it without clobbering an in-progress edit
+  // when the incoming values are the ones this form just submitted.
+  useEffect(() => {
+    setSetup(props.worktree.setup);
+    setTeardown(props.worktree.teardown);
+  }, [props.worktree.setup, props.worktree.teardown]);
+
+  const save = useCallback(async () => {
+    setSaving(true);
+    try {
+      await props.onSave({ setup, teardown });
+    } finally {
+      setSaving(false);
+    }
+  }, [props.onSave, setup, teardown]);
+
+  return (
+    <>
+      <EnvironmentSectionDivider />
+      <EnvironmentCollapsibleSection
+        label={t("workspace:projectWorktreeLifecycle")}
+        defaultOpen={false}
+      >
+        <div className="flex flex-col gap-2 px-2 pb-2">
+          <label className="flex flex-col gap-1 text-ui-sm leading-snug">
+            <span className="text-[var(--color-text-foreground-secondary)]">
+              {t("workspace:worktreeSetupCommand")}
+            </span>
+            <Textarea
+              aria-label={t("workspace:worktreeSetupCommand")}
+              placeholder="npm install"
+              value={setup}
+              onChange={(event) => setSetup(event.target.value)}
+            />
+          </label>
+          <label className="flex flex-col gap-1 text-ui-sm leading-snug">
+            <span className="text-[var(--color-text-foreground-secondary)]">
+              {t("workspace:worktreeTeardownCommand")}
+            </span>
+            <Textarea
+              aria-label={t("workspace:worktreeTeardownCommand")}
+              placeholder="docker compose down"
+              value={teardown}
+              onChange={(event) => setTeardown(event.target.value)}
+            />
+          </label>
+          <div className="flex justify-end">
+            <Button size="sm" disabled={saving} onClick={() => void save()}>
+              {saving ? t("workspace:savingProjectSetup") : t("workspace:saveProjectSetup")}
+            </Button>
+          </div>
+        </div>
+      </EnvironmentCollapsibleSection>
     </>
   );
 }

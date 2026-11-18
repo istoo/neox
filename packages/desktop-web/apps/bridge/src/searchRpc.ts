@@ -120,9 +120,11 @@ export async function searchThreads(
           limit: 0,
           projection: "projected",
         });
-        const bySeq = new Map(timeline.entries.map((entry) => [entry.seqStart, entry]));
+        // Search locations carry the projected entry's seqEnd. A streaming reply is
+        // merged from many rows, so seqStart and seqEnd differ for the entry we need.
+        const byEndSeq = new Map(timeline.entries.map((entry) => [entry.seqEnd, entry]));
         for (const location of hit.locations) {
-          const text = timelineText(bySeq.get(location.seq));
+          const text = timelineText(byEndSeq.get(location.seq));
           if (text && matchesQuery(text, query)) {
             excerpt = excerptAround(text, query);
             break;

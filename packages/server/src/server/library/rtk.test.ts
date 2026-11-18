@@ -52,7 +52,7 @@ describe("rtk install plan", () => {
     await writeFile(other, "#!/bin/sh\n");
     await chmod(other, 0o755);
     const notBottled = await rtkInstallPlan(
-      { PATH: `${otherBin}:${bin}`, HOME: root } as NodeJS.ProcessEnv,
+      { PATH: `${otherBin}${path.delimiter}${bin}`, HOME: root } as NodeJS.ProcessEnv,
       {
         platform: "darwin",
         run: runner("==> rtk: stable 1.1.0\n"),

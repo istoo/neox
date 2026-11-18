@@ -10,6 +10,7 @@ import {
   isProviderFileEditWorkLogEntry,
   markAwaitingApprovalWorkEntries,
   omitRoutedSubagentWorkEntries,
+  parseUserInputQuestions,
   type WorkLogEntry,
 } from "./workLog";
 import type { ChatMessage } from "./types";
@@ -7118,5 +7119,44 @@ describe("deriveTimelineEntries coordinator check-in suppression", () => {
         "ordinary-reply",
       ]),
     );
+  });
+});
+
+describe("parseUserInputQuestions", () => {
+  it("keeps an option's provider preview and drops blank ones", () => {
+    const questions = parseUserInputQuestions({
+      questions: [
+        {
+          id: "layout",
+          header: "layout",
+          question: "Which layout?",
+          options: [
+            { label: "Stacked", description: "Stacked cards", preview: "| a | b |\n| - | - |" },
+            { label: "Inline", description: "Inline chips", preview: "   " },
+          ],
+        },
+      ],
+    });
+
+    expect(questions?.[0]?.options).toEqual([
+      { label: "Stacked", description: "Stacked cards", preview: "| a | b |\n| - | - |" },
+      { label: "Inline", description: "Inline chips" },
+    ]);
+  });
+
+  it("preserves a code preview's indentation and trailing blank lines", () => {
+    const preview = "  if (ready) {\n    run();\n  }\n\n";
+    const questions = parseUserInputQuestions({
+      questions: [
+        {
+          id: "rollout",
+          header: "rollout",
+          question: "Which rollout?",
+          options: [{ label: "Flag", description: "Feature flag", preview }],
+        },
+      ],
+    });
+
+    expect(questions?.[0]?.options[0]?.preview).toBe(preview);
   });
 });

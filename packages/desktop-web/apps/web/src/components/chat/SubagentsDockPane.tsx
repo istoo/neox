@@ -10,18 +10,31 @@
 // Exports: SubagentsDockPane, SubagentsList (the presentational list it renders)
 
 import type { NeolixSubagent, ThreadId } from "@synara/contracts";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import { useState } from "react";
+import { type ReactNode, useState } from "react";
 
 import { ensureNativeApi, readNativeApi } from "~/nativeApi";
 
+import {
+  AlertDialog,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogPopup,
+  AlertDialogTitle,
+} from "~/components/ui/alert-dialog";
+import { Button } from "~/components/ui/button";
 import { DisclosureRegion } from "~/components/ui/DisclosureRegion";
 import { DisclosureChevron } from "~/components/ui/DisclosureChevron";
 import { IconButton } from "~/components/ui/icon-button";
+import { toastManager } from "~/components/ui/toast";
 import { stripDiffSearchParams } from "~/diffRouteSearch";
+import { HostUpdateNotice } from "~/components/hosts/HostUpdateNotice";
+import { useHostFeatures } from "~/hooks/useHostFeatures";
 import { useNowMs } from "~/hooks/useNowMs";
-import { BackgroundTrayIcon, BackToParentIcon, StopIcon } from "~/lib/icons";
+import { HOST_FEATURES } from "~/lib/hostFeatures.logic";
+import { BackgroundTrayIcon, BackToParentIcon, DeviceDetachIcon, StopIcon } from "~/lib/icons";
 import { formatRelativeTimeAgo } from "~/lib/relativeTime";
 import { subagentStatusTextToneClassName } from "~/lib/subagentPresentation";
 import { cn } from "~/lib/utils";
@@ -39,6 +52,7 @@ import { PanelStateMessage } from "./PanelStateMessage";
 import { SubagentAvatar } from "./SubagentAvatar";
 import { useSubagentRunControls } from "./useSubagentRunControls";
 import { type SubagentParentRow, useThreadSubagentRoster } from "./useSubagentStripSource";
+import { requestDetachSubagent, resolveDetachSubagentLabel } from "./subagentDetach.logic";
 import { useTranslation, t } from "~/i18n";
 
 // Done rows shown before "Show more"; active rows always render.
@@ -79,23 +93,32 @@ function ListHeading({ label, count }: { label: string; count: number }) {
 function ActiveSubagentRow({
   item,
   nowMs,
+  isManaged,
   onOpen,
   onBackground,
   onStop,
+  onDetach,
 }: {
   item: EnvironmentSubagentRosterItem;
   nowMs: number;
+  /** A real Neox child agent: it has its own thread, not a provider task handle. */
+  isManaged: boolean;
   onOpen: (threadId: ThreadId) => void;
   onBackground: (item: EnvironmentSubagentRosterItem) => void;
   onStop: (item: EnvironmentSubagentRosterItem) => void;
+  /** Absent on a host without `agentDetach`: the action is not offered at all. */
+  onDetach?: ((item: EnvironmentSubagentRosterItem) => void) | undefined;
 }) {
   const { t } = useTranslation();
 
   const elapsedMs = environmentSubagentElapsedMs(item, nowMs);
   const meta = formatEnvironmentSubagentMeta(item);
-  const showBackground = item.isActive && !item.isBackground;
-  const showStop = item.isActive;
-  const actionCount = Number(showBackground) + Number(showStop);
+  // Provider task controls (Ctrl+B / targeted interrupt) address a Task tool_use id.
+  // A managed child has none; its row only offers the lifecycle gesture.
+  const showBackground = item.isActive && !item.isBackground && !isManaged;
+  const showStop = item.isActive && !isManaged;
+  const canDetach = onDetach !== undefined && isManaged;
+  const actionCount = Number(showBackground) + Number(showStop) + Number(canDetach);
 
   // The actions overlay the first line instead of nesting inside the row (a button cannot
   // contain a button); on hover the time gives way to a spacer that reserves their slot.
@@ -125,7 +148,7 @@ function ActiveSubagentRow({
                   aria-hidden
                   className={cn(
                     "hidden shrink-0 group-focus-within/subagent:block group-hover/subagent:block",
-                    actionCount === 2 ? "w-12" : "w-6",
+                    actionCount === 3 ? "w-[4.5rem]" : actionCount === 2 ? "w-12" : "w-6",
                   )}
                 />
               ) : null}
@@ -172,6 +195,15 @@ function ActiveSubagentRow({
               <StopIcon className="size-3.5" />
             </IconButton>
           ) : null}
+          {canDetach ? (
+            <IconButton
+              label={t("chat:detachSubagentAria", { value0: item.primaryLabel })}
+              tooltip={t("chat:detachSubagent")}
+              onClick={() => onDetach?.(item)}
+            >
+              <DeviceDetachIcon className="size-3.5" />
+            </IconButton>
+          ) : null}
         </div>
       ) : null}
     </div>
@@ -181,11 +213,17 @@ function ActiveSubagentRow({
 function DoneSubagentRow({
   item,
   nowMs,
+  isManaged,
   onOpen,
+  onDetach,
 }: {
   item: EnvironmentSubagentRosterItem;
   nowMs: number;
+  /** A real Neox child agent: detach clears its parent label. */
+  isManaged: boolean;
   onOpen: (threadId: ThreadId) => void;
+  /** Absent on a host without `agentDetach`: no detach control, and no request to make. */
+  onDetach?: ((item: EnvironmentSubagentRosterItem) => void) | undefined;
 }) {
   const { t, formatLocale } = useTranslation();
 
@@ -194,46 +232,66 @@ function DoneSubagentRow({
     item.statusKind === "failed" || item.statusKind === "stopped" ? item.statusLabel : null;
   const finishedAgo = finishedAgoLabel(item, nowMs, t, formatLocale);
   return (
-    <EnvironmentRow
-      compact
-      icon={<SubagentAvatar seed={item.key} accentColor={item.accentColor} className="size-5" />}
-      label={
-        <span className="flex min-w-0 flex-col">
-          <span className="flex min-w-0 items-baseline gap-2">
-            <span className="min-w-0 truncate">{item.primaryLabel}</span>
-            {outcome ? (
-              <span
-                className={cn(
-                  "shrink-0 text-ui-sm",
-                  subagentStatusTextToneClassName(item.statusKind),
-                )}
-              >
-                {outcome}
+    <div className="group/subagent relative">
+      <EnvironmentRow
+        compact
+        icon={<SubagentAvatar seed={item.key} accentColor={item.accentColor} className="size-5" />}
+        label={
+          <span className="flex min-w-0 flex-col">
+            <span className="flex min-w-0 items-baseline gap-2">
+              <span className="min-w-0 truncate">{item.primaryLabel}</span>
+              {outcome ? (
+                <span
+                  className={cn(
+                    "shrink-0 text-ui-sm",
+                    subagentStatusTextToneClassName(item.statusKind),
+                  )}
+                >
+                  {outcome}
+                </span>
+              ) : null}
+            </span>
+            {item.modelLabel ? (
+              <span className={cn("truncate text-ui-sm", SECONDARY_TEXT_CLASS_NAME)}>
+                {item.modelLabel}
               </span>
             ) : null}
           </span>
-          {item.modelLabel ? (
-            <span className={cn("truncate text-ui-sm", SECONDARY_TEXT_CLASS_NAME)}>
-              {item.modelLabel}
+        }
+        trailing={
+          finishedAgo ? (
+            <span
+              className={cn(
+                "text-ui-sm group-focus-within/subagent:hidden group-hover/subagent:hidden",
+                SECONDARY_TEXT_CLASS_NAME,
+              )}
+            >
+              {finishedAgo}
             </span>
-          ) : null}
-        </span>
-      }
-      trailing={
-        finishedAgo ? (
-          <span className={cn("text-ui-sm", SECONDARY_TEXT_CLASS_NAME)}>{finishedAgo}</span>
-        ) : null
-      }
-      className={cn(item.isViewed && "bg-[var(--color-background-elevated-secondary)]")}
-      title={rowTooltip(item)}
-      aria-label={t("chat:openSubagent", {
-        value0: item.fullLabel,
-        value1: item.statusLabel ? ` (${item.statusLabel})` : "",
-      })}
-      aria-current={item.isViewed ? "page" : undefined}
-      data-testid="subagents-pane-done-row"
-      onClick={() => onOpen(item.threadId)}
-    />
+          ) : null
+        }
+        className={cn(item.isViewed && "bg-[var(--color-background-elevated-secondary)]")}
+        title={rowTooltip(item)}
+        aria-label={t("chat:openSubagent", {
+          value0: item.fullLabel,
+          value1: item.statusLabel ? ` (${item.statusLabel})` : "",
+        })}
+        aria-current={item.isViewed ? "page" : undefined}
+        data-testid="subagents-pane-done-row"
+        onClick={() => onOpen(item.threadId)}
+      />
+      {onDetach && isManaged ? (
+        <div className="pointer-events-none invisible absolute top-0.5 right-2 flex items-center opacity-0 transition-opacity group-focus-within/subagent:pointer-events-auto group-focus-within/subagent:visible group-focus-within/subagent:opacity-100 group-hover/subagent:pointer-events-auto group-hover/subagent:visible group-hover/subagent:opacity-100">
+          <IconButton
+            label={t("chat:detachSubagentAria", { value0: item.primaryLabel })}
+            tooltip={t("chat:detachSubagent")}
+            onClick={() => onDetach(item)}
+          >
+            <DeviceDetachIcon className="size-3.5" />
+          </IconButton>
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -284,21 +342,31 @@ export function SubagentsList({
   roster,
   parent,
   providerSubagents: providerSubagentsProp,
+  managedThreadIds,
   nowMs,
   onOpen,
   onBackground,
   onStop,
+  onDetach,
+  notice,
 }: {
   roster: EnvironmentSubagentRoster;
   parent: SubagentParentRow | null;
   providerSubagents?: ReadonlyArray<NeolixSubagent>;
+  /** Rows backed by a real Neox child agent; only these accept a detach request. */
+  managedThreadIds?: ReadonlySet<ThreadId> | undefined;
   nowMs: number;
   onOpen: (threadId: ThreadId) => void;
   onBackground: (item: EnvironmentSubagentRosterItem) => void;
   onStop: (item: EnvironmentSubagentRosterItem) => void;
+  onDetach?: ((item: EnvironmentSubagentRosterItem) => void) | undefined;
+  /** A capability note shown above the rows, when a host cannot offer an action. */
+  notice?: ReactNode | undefined;
 }) {
   const providerSubagents = providerSubagentsProp ?? [];
   const { t } = useTranslation();
+  const isManaged = (item: EnvironmentSubagentRosterItem) =>
+    managedThreadIds?.has(item.threadId) === true;
 
   const [showAllDone, setShowAllDone] = useState(false);
   const { active, previous } = roster;
@@ -311,6 +379,7 @@ export function SubagentsList({
       className="flex h-full min-h-0 w-full min-w-0 flex-col gap-0.5 overflow-y-auto px-3 py-4"
       data-testid="subagents-dock-pane"
     >
+      {notice ? <div className="mb-2">{notice}</div> : null}
       {parent ? (
         <EnvironmentRow
           icon={<BackToParentIcon className={ENVIRONMENT_ROW_ICON_CLASS_NAME} aria-hidden />}
@@ -342,9 +411,11 @@ export function SubagentsList({
               key={item.key}
               item={item}
               nowMs={nowMs}
+              isManaged={isManaged(item)}
               onOpen={onOpen}
               onBackground={onBackground}
               onStop={onStop}
+              onDetach={onDetach}
             />
           ))}
         </>
@@ -353,11 +424,25 @@ export function SubagentsList({
         <>
           <ListHeading label={t("git:detail_done")} count={previous.length} />
           {visibleDone.map((item) => (
-            <DoneSubagentRow key={item.key} item={item} nowMs={nowMs} onOpen={onOpen} />
+            <DoneSubagentRow
+              key={item.key}
+              item={item}
+              nowMs={nowMs}
+              isManaged={isManaged(item)}
+              onOpen={onOpen}
+              onDetach={onDetach}
+            />
           ))}
           <DisclosureRegion open={showAllDone}>
             {previous.slice(DONE_VISIBLE_LIMIT).map((item) => (
-              <DoneSubagentRow key={item.key} item={item} nowMs={nowMs} onOpen={onOpen} />
+              <DoneSubagentRow
+                key={item.key}
+                item={item}
+                nowMs={nowMs}
+                isManaged={isManaged(item)}
+                onOpen={onOpen}
+                onDetach={onDetach}
+              />
             ))}
           </DisclosureRegion>
           {previous.length > DONE_VISIBLE_LIMIT ? (
@@ -388,7 +473,11 @@ export function SubagentsDockPane({
   hostThreadId: ThreadId;
   onOpenThread?: (threadId: ThreadId) => void;
 }) {
-  const { roster, source } = useThreadSubagentRoster(hostThreadId);
+  const { roster, source, managedThreadIds } = useThreadSubagentRoster(hostThreadId);
+  const hostFeatures = useHostFeatures();
+  // Detaching is an agent request; an older host has no route for it.
+  const detachAvailable = hostFeatures.isAvailable(HOST_FEATURES.agentDetach);
+  const detachNotice = hostFeatures.featureStatus(HOST_FEATURES.agentDetach) === "unavailable";
   // Provider-native subagents live on the daemon agent, not in the fork's activity stream.
   // The list is a cheap local read, so the open dock polls it instead of trying to infer
   // liveness from the activity stream (provider runs need not emit one).
@@ -406,6 +495,8 @@ export function SubagentsDockPane({
   });
   const { backgroundSubagent, stopSubagent } = useSubagentRunControls(source.stripSourceThreadId);
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const [detachTarget, setDetachTarget] = useState<EnvironmentSubagentRosterItem | null>(null);
   const openRightDockPane = useRightDockStore((store) => store.openPane);
   const nowMs = useNowMs(
     roster.active.length > 0 || roster.previous.some((item) => item.settledAt !== null),
@@ -427,15 +518,75 @@ export function SubagentsDockPane({
     });
   };
 
+  const detachSubagent = (item: EnvironmentSubagentRosterItem) => {
+    setDetachTarget(null);
+    void requestDetachSubagent({
+      // The confirmation dialog is the gate; by the time this runs the user accepted it.
+      confirm: async () => true,
+      detach: async () => {
+        const api = ensureNativeApi();
+        if (!api.neolix) throw new Error("Neox is unavailable on this host.");
+        await api.neolix.subagents.detach({ agentId: item.threadId });
+      },
+      onDetached: () => {
+        toastManager.add({
+          type: "success",
+          title: t("chat:detachSubagentSuccess", { value0: item.primaryLabel }),
+        });
+        void queryClient.invalidateQueries({ queryKey: ["neolix", "subagents", hostThreadId] });
+        openThread(item.threadId);
+      },
+      reportError: (error) => {
+        toastManager.add({
+          type: "error",
+          title: t("chat:detachSubagentFailed"),
+          description: error instanceof Error ? error.message : undefined,
+        });
+      },
+    });
+  };
+
+  const detachLabel =
+    resolveDetachSubagentLabel(detachTarget?.primaryLabel) ?? t("chat:thisSubagent");
+  const detachDialog = (
+    <AlertDialog
+      open={detachTarget !== null}
+      onOpenChange={(next) => !next && setDetachTarget(null)}
+    >
+      <AlertDialogPopup className="max-w-sm">
+        <AlertDialogHeader>
+          <AlertDialogTitle>{t("chat:detachSubagentTitle")}</AlertDialogTitle>
+          <AlertDialogDescription>
+            {t("chat:detachSubagentMessage", { value0: detachLabel })}
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <Button variant="outline" onClick={() => setDetachTarget(null)}>
+            {t("common:form_cancel")}
+          </Button>
+          <Button onClick={() => detachTarget && detachSubagent(detachTarget)}>
+            {t("chat:detachSubagentAction")}
+          </Button>
+        </AlertDialogFooter>
+      </AlertDialogPopup>
+    </AlertDialog>
+  );
+
   return (
-    <SubagentsList
-      roster={roster}
-      parent={source.subagentParentRow}
-      providerSubagents={providerSubagentsQuery.data?.subagents ?? []}
-      nowMs={nowMs}
-      onOpen={openThread}
-      onBackground={(item) => void backgroundSubagent(item)}
-      onStop={(item) => void stopSubagent(item)}
-    />
+    <>
+      <SubagentsList
+        roster={roster}
+        parent={source.subagentParentRow}
+        providerSubagents={providerSubagentsQuery.data?.subagents ?? []}
+        managedThreadIds={managedThreadIds}
+        nowMs={nowMs}
+        onOpen={openThread}
+        onBackground={(item) => void backgroundSubagent(item)}
+        onStop={(item) => void stopSubagent(item)}
+        onDetach={detachAvailable ? setDetachTarget : undefined}
+        notice={detachNotice ? <HostUpdateNotice compact /> : undefined}
+      />
+      {detachDialog}
+    </>
   );
 }

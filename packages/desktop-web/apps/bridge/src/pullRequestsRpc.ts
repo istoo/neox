@@ -13,6 +13,9 @@ import {
   type PullRequestDetailInput,
   type PullRequestDiffResult,
   type PullRequestMergeMethod,
+  type PullRequestPipelineInput,
+  type PullRequestPipelineResult,
+  type PullRequestSetAutoMergeInput,
 } from "@synara/contracts";
 import { Effect } from "effect";
 
@@ -20,6 +23,8 @@ import type { BridgeModel } from "./model.ts";
 import type { DaemonClient } from "./neolix.ts";
 import { renderUnifiedPatch, type NeolixDiffPayload } from "./gitRpc.ts";
 import {
+  forgePipelineId,
+  formatCheckDurationSeconds,
   pullRequestMatchesReference,
   pullRequestNumber,
   referenceNumber,
@@ -28,6 +33,7 @@ import {
   toGitResolvedPullRequest,
   toPullRequestComments,
   toPullRequestDetail,
+  toPullRequestPipeline,
   type NeolixForgeSearchItem,
   type NeolixPrStatus,
   type NeolixPrStatusPayload,
@@ -62,6 +68,45 @@ async function readTimeline(
     repoOwner: owner,
     repoName: name,
   })) as unknown as NeolixPrTimeline;
+}
+
+/**
+ * GitLab reports check status without timing; the per-job durations live in the forge's
+ * check details. The app's PR pane fetches the same route for its pipeline section, so use
+ * it here to fill in each check's elapsed time. Any failure leaves the rows without timing
+ * rather than failing the whole PR surface.
+ */
+async function readCheckDurations(
+  client: DaemonClient,
+  cwd: string,
+  status: NeolixPrStatus,
+): Promise<ReadonlyMap<number, string> | undefined> {
+  const pipelineId = forgePipelineId(status);
+  const changeRequestNumber = pullRequestNumber(status);
+  if (pipelineId === null || changeRequestNumber === null) {
+    return undefined;
+  }
+  try {
+    const payload = await client.checkoutForgeGetCheckDetails({
+      cwd,
+      checkRunId: pipelineId,
+      changeRequestNumber,
+    });
+    const jobs = payload.details?.pipeline?.stages?.flatMap((stage) => stage.jobs ?? []) ?? [];
+    const durations = new Map<number, string>();
+    for (const job of jobs) {
+      if (
+        typeof job.id === "number" &&
+        typeof job.durationSeconds === "number" &&
+        job.durationSeconds > 0
+      ) {
+        durations.set(job.id, formatCheckDurationSeconds(job.durationSeconds));
+      }
+    }
+    return durations.size > 0 ? durations : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function projectContext(
@@ -177,13 +222,51 @@ export function makePullRequestHandlers(model: BridgeModel): Record<string, AnyH
         const input = payload as PullRequestDetailInput;
         const context = projectContext(model, input);
         const status = await requireStatus(client, context.cwd, String(input.number));
-        const timeline = await readTimeline(client, context.cwd, status).catch(() => null);
-        return toPullRequestDetail(status, timeline, {
-          projectId: input.projectId,
-          projectTitle: context.projectTitle,
-          workspaceRoot: context.cwd,
-          repository: context.repository,
-        }) satisfies PullRequestDetail;
+        const [timeline, durationsByCheckRunId] = await Promise.all([
+          readTimeline(client, context.cwd, status).catch(() => null),
+          readCheckDurations(client, context.cwd, status),
+        ]);
+        return toPullRequestDetail(
+          status,
+          timeline,
+          {
+            projectId: input.projectId,
+            projectTitle: context.projectTitle,
+            workspaceRoot: context.cwd,
+            repository: context.repository,
+          },
+          durationsByCheckRunId,
+        ) satisfies PullRequestDetail;
+      }),
+
+    // The forge's check-details route doubles as the pipeline drill-down (the app's
+    // `use-pipeline` uses the same call). The detail already carries the pipeline summary,
+    // so this handler only loads the jobs.
+    [WS_METHODS.pullRequestsPipeline]: (payload) =>
+      fromPromise("pullRequests.pipeline", async () => {
+        const input = payload as PullRequestPipelineInput;
+        try {
+          const details = await client.checkoutForgeGetCheckDetails({
+            cwd: input.cwd,
+            checkRunId: input.pipelineId,
+            changeRequestNumber: input.changeRequestNumber,
+          });
+          if (!details.success) {
+            return {
+              pipeline: null,
+              error: details.error?.message?.trim() || "Could not load pipeline jobs.",
+            } satisfies PullRequestPipelineResult;
+          }
+          return {
+            pipeline: toPullRequestPipeline(details.details?.pipeline),
+            error: null,
+          } satisfies PullRequestPipelineResult;
+        } catch (error) {
+          return {
+            pipeline: null,
+            error: error instanceof Error ? error.message : "Could not load pipeline jobs.",
+          } satisfies PullRequestPipelineResult;
+        }
       }),
 
     [WS_METHODS.pullRequestsDiff]: (payload) =>
@@ -236,6 +319,35 @@ export function makePullRequestHandlers(model: BridgeModel): Record<string, AnyH
         } satisfies PullRequestActionResult;
       }),
 
+    [WS_METHODS.pullRequestsSetAutoMerge]: (payload) =>
+      fromPromise("pullRequests.setAutoMerge", async () => {
+        const input = payload as PullRequestSetAutoMergeInput;
+        const context = projectContext(model, input);
+        await requireStatus(client, context.cwd, String(input.number));
+        const result = (await client.checkoutForgeSetAutoMerge(
+          context.cwd,
+          input.enabled
+            ? { enabled: true, method: input.mergeMethod ?? "merge" }
+            : { enabled: false },
+        )) as unknown as { success: boolean; error: { message: string } | null };
+        if (!result.success || result.error) {
+          throw bridgeError(
+            "pr.auto-merge-failed",
+            result.error?.message ?? "Updating auto-merge failed.",
+            result.error === null || result.error === undefined
+              ? undefined
+              : { detail: result.error.message },
+          );
+        }
+        return {
+          projectId: input.projectId,
+          repository: input.repository,
+          number: input.number,
+          workspaceRoot: context.cwd,
+          mergeOutcome: null,
+        } satisfies PullRequestActionResult;
+      }),
+
     // Neox has no comment, pin, or auto-fix routes for pull requests.
     [WS_METHODS.pullRequestsComment]: () =>
       Effect.fail(notSupported(WS_METHODS.pullRequestsComment)),
@@ -254,10 +366,13 @@ export function makePullRequestHandlers(model: BridgeModel): Record<string, AnyH
       fromPromise("git.pullRequestSnapshot", async () => {
         const input = payload as { cwd: string; reference: string };
         const status = await requireStatus(client, input.cwd, input.reference);
-        const timeline = await readTimeline(client, input.cwd, status).catch(() => null);
+        const [timeline, durationsByCheckRunId] = await Promise.all([
+          readTimeline(client, input.cwd, status).catch(() => null),
+          readCheckDurations(client, input.cwd, status),
+        ]);
         return {
           pullRequest: toGitResolvedPullRequest(status),
-          checks: toGitPullRequestChecks(status),
+          checks: toGitPullRequestChecks(status, durationsByCheckRunId),
           comments: timeline
             ? toPullRequestComments(timeline, new Date().toISOString()).map((comment) => ({
                 id: comment.id,

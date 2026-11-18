@@ -230,7 +230,7 @@ export function parseImportLink(link: string): ImportProvider {
     return fail("not a neolix:// or myna:// link");
   }
   const scheme = url.protocol.replace(/:$/u, "").toLowerCase();
-  if (scheme !== "neox" && scheme !== "myna") {
+  if (scheme !== "neolix" && scheme !== "myna") {
     return fail("not a neolix:// or myna:// link");
   }
   const action = (url.host !== "" ? url.host : url.pathname.replace(/^\/+/u, "")).replace(

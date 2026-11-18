@@ -1011,7 +1011,7 @@ describe("OpenCodeAgentClient adapter smoke tests", () => {
     openCodeClient.appAgentsResponse = {
       data: [
         {
-          name: "neolix-test-custom",
+          name: "neox-test-custom",
           description: "Custom agent defined for Neox integration test",
           mode: "primary",
         },
@@ -1030,9 +1030,9 @@ describe("OpenCodeAgentClient adapter smoke tests", () => {
 
     const modes = await session.getAvailableModes();
 
-    expect(modes.map((mode) => mode.id)).toEqual(["neolix-test-custom"]);
+    expect(modes.map((mode) => mode.id)).toEqual(["neox-test-custom"]);
 
-    const custom = modes.find((mode) => mode.id === "neolix-test-custom");
+    const custom = modes.find((mode) => mode.id === "neox-test-custom");
     expect(custom).toBeDefined();
     expect(custom!.label).toBe("Neox-test-custom");
     expect(custom!.description).toBe("Custom agent defined for Neox integration test");

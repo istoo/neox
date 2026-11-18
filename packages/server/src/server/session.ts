@@ -72,7 +72,11 @@ import {
   resolveStoredAgentUpdatedAt,
   toAgentPersistenceHandle,
 } from "./persistence-hooks.js";
-import { ensureAgentLoaded, ensureUnarchivedAgentLoaded } from "./agent/agent-loading.js";
+import {
+  AgentNotFoundError,
+  ensureAgentLoaded,
+  ensureUnarchivedAgentLoaded,
+} from "./agent/agent-loading.js";
 import {
   sendPromptToAgent,
   waitForAgentRunStartWithTimeout,
@@ -337,6 +341,7 @@ import { AgentConfigSession } from "./session/agent-config/agent-config-session.
 import { ProjectConfigSession } from "./session/project-config/project-config-session.js";
 import { DaemonSession, type DaemonRuntimeConfig } from "./session/daemon/daemon-session.js";
 import type { DaemonWebSocketRuntimeDiagnosticSnapshot } from "./session/daemon/diagnostics.js";
+import type { DaemonRuntimeStatusSnapshot } from "./runtime-status.js";
 import type { HubRelationshipManagement } from "./hub/relationship-controller.js";
 import { HubExecutionController } from "./hub/execution-controller.js";
 import type { HubExecutionAgents } from "./hub/daemon-executions.js";
@@ -763,6 +768,7 @@ export interface SessionOptions {
   daemonVersion?: string;
   daemonRuntimeConfig?: DaemonRuntimeConfig;
   getWebSocketRuntimeMetrics?: () => DaemonWebSocketRuntimeDiagnosticSnapshot | null;
+  getDaemonRuntimeStatus?: () => DaemonRuntimeStatusSnapshot | null;
 }
 
 export type SessionLifecycleIntent =
@@ -1119,6 +1125,7 @@ export class Session {
       daemonVersion,
       daemonRuntimeConfig,
       getWebSocketRuntimeMetrics,
+      getDaemonRuntimeStatus,
     } = options;
     this.browserToolsBroker = options.browserToolsBroker;
     this.clientId = clientId;
@@ -1345,6 +1352,7 @@ export class Session {
       daemonVersion,
       daemonRuntimeConfig,
       getWebSocketRuntimeMetrics,
+      getDaemonRuntimeStatus,
       getObservationMetrics: () => ({
         Registrations: this.delivery.registrationCount,
         "Source registrations": this.delivery.sourceRegistrationCount(),
@@ -1481,7 +1489,9 @@ export class Session {
       // Settings' Detect agents in WSL, off, looks in no distro.
       wslEnabled: () => daemonConfigStore.get().noWslAgents !== true,
       // Claude Science's daemon stays on the gateway once connected.
-      startScienceKeeper: true,
+      // Unit tests run under fake timers; a recurring keeper interval there trips
+      // the timer guard. Production and dev daemons keep the keeper.
+      startScienceKeeper: process.env.NODE_ENV !== "test",
       // A profile saves and restores the library's own assignments.
       library: () => this.libraryService,
       // Each agent's CLI version, as its own CLI reports it.
@@ -4561,6 +4571,9 @@ export class Session {
   ): Promise<void> | undefined {
     const checkin = service.checkin;
     const switches = (): Record<string, boolean> => {
+      if (checkin !== undefined) {
+        return checkin.switches();
+      }
       const config = service.configStore.get().checkin;
       const out: Record<string, boolean> = {};
       const vendors = ["workbuddy", "minimax", "trae", "qoder"] as const;
@@ -5543,6 +5556,8 @@ export class Session {
         return this.daemonSession.handleCpuProfileRequest(msg);
       case "daemon.diagnostics.handles.request":
         return this.daemonSession.handleHandlesDumpRequest(msg);
+      case "daemon.runtime.get_status.request":
+        return this.daemonSession.handleRuntimeStatusRequest(msg);
       case "daemon.update.request":
         return this.daemonSession.handleUpdateRequest(msg);
       case "set_daemon_config_request":
@@ -8724,39 +8739,48 @@ export class Session {
   ): Promise<void> {
     const agentIds = Array.isArray(agentId) ? agentId : [agentId];
 
-    try {
-      await Promise.all(
-        agentIds.map((id) =>
-          ensureAgentLoaded(id, {
+    // A draft thread has no agent record yet. Clearing its attention is a successful no-op,
+    // not an error; each id settles on its own so one stale id cannot keep valid ones from
+    // clearing. The response is emitted either way: without it the client waits out its
+    // full request timeout and the caller's next RPC can look hung behind it.
+    await Promise.all(
+      agentIds.map(async (id) => {
+        try {
+          await ensureAgentLoaded(id, {
             agentManager: this.agentManager,
             agentStorage: this.agentStorage,
             logger: this.sessionLogger,
-          }),
-        ),
-      );
-      await Promise.all(agentIds.map((id) => this.agentManager.clearAgentAttention(id)));
-      if (requestId) {
-        const agents = (
-          await Promise.all(
-            agentIds.map(async (id) => {
-              const agent = this.agentManager.getAgent(id);
-              return agent ? this.buildAgentPayload(agent) : null;
-            }),
-          )
-        ).filter((payload): payload is NonNullable<typeof payload> => payload !== null);
-        this.emit({
-          type: "clear_agent_attention_response",
-          payload: {
-            requestId,
-            agentId,
-            agents,
-          },
-        });
-      }
-    } catch (error) {
-      this.sessionLogger.error({ err: error, agentIds }, "Failed to clear agent attention");
-      // Don't throw - this is not critical
+          });
+          await this.agentManager.clearAgentAttention(id);
+        } catch (error) {
+          if (!(error instanceof AgentNotFoundError)) {
+            this.sessionLogger.error(
+              { err: error, agentId: id },
+              "Failed to clear agent attention",
+            );
+          }
+        }
+      }),
+    );
+    if (!requestId) {
+      return;
     }
+    const agents = (
+      await Promise.all(
+        agentIds.map(async (id) => {
+          const agent = this.agentManager.getAgent(id);
+          return agent ? this.buildAgentPayload(agent) : null;
+        }),
+      )
+    ).filter((payload): payload is NonNullable<typeof payload> => payload !== null);
+    this.emit({
+      type: "clear_agent_attention_response",
+      payload: {
+        requestId,
+        agentId,
+        agents,
+      },
+    });
   }
 
   /**
@@ -13078,6 +13102,7 @@ type DaemonMessage = Extract<
       | "daemon.diagnostics.heap.request"
       | "daemon.diagnostics.cpu.request"
       | "daemon.diagnostics.handles.request"
+      | "daemon.runtime.get_status.request"
       | "daemon.update.request"
       | "set_daemon_config_request";
   }
@@ -13097,6 +13122,7 @@ function isDaemonMessage(message: SessionInboundMessage): message is DaemonMessa
     message.type === "daemon.diagnostics.heap.request" ||
     message.type === "daemon.diagnostics.cpu.request" ||
     message.type === "daemon.diagnostics.handles.request" ||
+    message.type === "daemon.runtime.get_status.request" ||
     message.type === "daemon.update.request" ||
     message.type === "set_daemon_config_request"
   );

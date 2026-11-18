@@ -27,8 +27,11 @@ describe("PluginAccountsStore", () => {
     const dir = await directory();
     const store = new PluginAccountsStore(dir);
     await store.write("qoder", { access: "a" });
-    const info = await stat(path.join(dir, "accounts.json"));
-    expect(info.mode & 0o777).toBe(0o600);
+    // Windows cannot express POSIX permissions; the file is private by location there.
+    if (process.platform !== "win32") {
+      const info = await stat(path.join(dir, "accounts.json"));
+      expect(info.mode & 0o777).toBe(0o600);
+    }
     const saved = JSON.parse(await readFile(path.join(dir, "accounts.json"), "utf8")) as {
       version: number;
     };

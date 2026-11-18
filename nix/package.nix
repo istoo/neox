@@ -1,6 +1,7 @@
 {
   lib,
   stdenv,
+  pkgs,
   buildNpmPackage,
   nodejs_22,
   python3,
@@ -17,6 +18,11 @@
   # The default is read from a sidecar file so the CI auto-updater can replace
   # the hash with a single file write instead of a sed against this source.
   npmDepsHash ? lib.fileContents ./npm-deps.hash,
+  # desktop-web is a separate Bun workspace. Its node_modules come from a
+  # fixed-output derivation (nix/desktop-web-deps.nix); bun itself is pinned
+  # to the release whose lockfile format matches bun.lock.
+  bun ? pkgs.callPackage ./bun-bin.nix { },
+  desktopWebDeps ? pkgs.callPackage ./desktop-web-deps.nix { inherit bun; },
 }:
 
 buildNpmPackage rec {
@@ -31,9 +37,7 @@ buildNpmPackage rec {
         relPath = lib.removePrefix (toString ./..) path;
       in
       # Exclude non-daemon workspace contents (keep package.json for workspace resolution)
-      !(lib.hasPrefix "/packages/app/android" relPath)
-      && !(lib.hasPrefix "/packages/app/ios" relPath)
-      && !(lib.hasPrefix "/packages/website/src" relPath)
+      !(lib.hasPrefix "/packages/website/src" relPath)
       && !(lib.hasPrefix "/packages/website/public" relPath)
       && !(lib.hasPrefix "/packages/desktop/src" relPath)
       && !(lib.hasPrefix "/packages/desktop/src-tauri" relPath)
@@ -50,8 +54,13 @@ buildNpmPackage rec {
       && !(lib.hasPrefix "/docker" relPath)
       # Top-level prose only (README, CHANGELOG, AGENTS...). Deeper markdown is
       # not necessarily documentation: skills/*/SKILL.md is a runtime file the
-      # daemon's trace script copies into the output.
-      && builtins.match "/[^/]+\\.md" relPath == null
+      # daemon's trace script copies into the output. The changelog is prose
+      # too, but apps/web imports it at build time for the what's-new screen.
+      && (
+        builtins.match "/[^/]+\\.md" relPath == null
+        || relPath == "/CHANGELOG.md"
+        || relPath == "/CHANGELOG.zh-CN.md"
+      )
       # Exclude test fixtures and debug files
       && !(lib.hasSuffix ".test.ts" baseName)
       && !(lib.hasSuffix ".e2e.test.ts" baseName)
@@ -75,6 +84,7 @@ buildNpmPackage rec {
   nativeBuildInputs = [
     python3 # for node-gyp (node-pty compilation)
     makeWrapper
+    bun # builds the desktop web app below
   ] ++ lib.optionals stdenv.hostPlatform.isLinux [
     autoPatchelfHook
   ];
@@ -84,8 +94,18 @@ buildNpmPackage rec {
     stdenv.cc.cc.lib # libstdc++ for sherpa-onnx prebuilt binaries
   ];
 
+  # sharp installs its musl variants next to the glibc ones. They are never
+  # loaded on glibc, and their libc has no Nix equivalent to point at.
+  autoPatchelfIgnoreMissingDeps = [ "libc.musl-*" ];
+
   # Don't use the default npm build hook — we need a custom build sequence
   dontNpmBuild = true;
+
+  env = {
+    # The server tsc build and the web app's Vite build outgrow Node's default
+    # old-space limit. Match docker/base/Dockerfile's limit.
+    NODE_OPTIONS = "--max-old-space-size=2560";
+  };
 
   buildPhase = ''
     runHook preBuild
@@ -95,9 +115,19 @@ buildNpmPackage rec {
     # daemon closure by scripts/trace-daemon.mjs.
     npm rebuild node-pty
 
+    # Bun workspace dependencies are not part of npmDeps. The fixed-output
+    # derivation provides the hoisted node_modules tree in one copy.
+    cp -a ${desktopWebDeps}/. packages/desktop-web/
+    # Store-path copies are read-only; npm/Bun build scripts write caches and
+    # generated files under node_modules.
+    chmod -R u+w packages/desktop-web/node_modules packages/desktop-web/apps
+
     # Build all server packages in dependency order (defined in package.json)
     npm run build:server
-    npm run build:daemon-web-ui
+
+    # The web client the daemon serves on its own port. Writes embed.js and the
+    # page to packages/server/dist/server/web-app.
+    node scripts/build-daemon-web-app.mjs
 
     runHook postBuild
   '';
@@ -120,15 +150,26 @@ buildNpmPackage rec {
       cp -a "$path" "$out/lib/neolix/$path"
     done < daemon-files.txt
 
+    # nft reaches the web app only through dynamic imports and filesystem
+    # lookups, so its trace omits these files. Copy the built artifact as one
+    # tree; web-app.ts resolves it beside the server package at runtime.
+    web_app=packages/server/dist/server/web-app
+    if [ ! -f "$web_app/embed.js" ] || [ ! -f "$web_app/web/index.html" ]; then
+      echo "daemon web app was not built ($web_app)" >&2
+      exit 1
+    fi
+    mkdir -p "$out/lib/neolix/packages/server/dist/server"
+    rm -rf "$out/lib/neolix/packages/server/dist/server/web-app"
+    cp -a "$web_app" "$out/lib/neolix/packages/server/dist/server/"
+    test -f "$out/lib/neolix/packages/server/dist/server/web-app/embed.js"
+    test -f "$out/lib/neolix/packages/server/dist/server/web-app/web/index.html"
+
     # Shell hooks invoke the retained CLI bin directly, without a system Node.
     patchShebangs --build "$out/lib/neolix"
 
     # Root package.json lets node resolve the workspace layout when the
     # CLI/server bin starts from $out.
     cp package.json $out/lib/neolix/
-
-    # Web UI Assets
-    cp -r packages/server/dist/server/web-ui $out/lib/neolix/packages/server/dist/server/
 
     # Create wrapper for the server entry point (for systemd / direct use)
     mkdir -p $out/bin

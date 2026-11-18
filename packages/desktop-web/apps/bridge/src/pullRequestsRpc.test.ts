@@ -1,4 +1,4 @@
-import { WS_METHODS } from "@synara/contracts";
+import { WS_METHODS, type PullRequestPipelineResult } from "@synara/contracts";
 import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 
@@ -23,7 +23,7 @@ const STATUS = {
   isMerged: false,
   isDraft: false,
   mergeable: "MERGEABLE" as const,
-  checks: [{ name: "ci", status: "success", url: null }],
+  checks: [{ name: "ci", status: "success", url: null, duration: "1m 4s" }],
   reviewDecision: "APPROVED",
   repoOwner: "neolix",
   repoName: "neolix",
@@ -31,10 +31,29 @@ const STATUS = {
 };
 
 function makeHandlers(
-  overrides: { status?: unknown; timeline?: unknown; searchItems?: unknown[] } = {},
+  overrides: {
+    status?: unknown;
+    timeline?: unknown;
+    searchItems?: unknown[];
+    checkDetails?: unknown;
+    checkDetailsError?: string;
+  } = {},
 ) {
   const calls: Array<[string, unknown]> = [];
   const client = {
+    checkoutForgeGetCheckDetails: async (input: unknown) => {
+      calls.push(["checkoutForgeGetCheckDetails", input]);
+      if (overrides.checkDetailsError) {
+        throw new Error(overrides.checkDetailsError);
+      }
+      return (
+        overrides.checkDetails ?? {
+          success: true,
+          error: null,
+          details: null,
+        }
+      );
+    },
     checkoutPrStatus: async (cwd: string) => {
       calls.push(["checkoutPrStatus", cwd]);
       return { cwd, status: overrides.status ?? STATUS, error: null };
@@ -89,6 +108,10 @@ function makeHandlers(
     checkoutPrMerge: async (cwd: string, input: unknown) => {
       calls.push(["checkoutPrMerge", { cwd, input }]);
       return { success: true, error: null };
+    },
+    checkoutForgeSetAutoMerge: async (cwd: string, input: unknown) => {
+      calls.push(["checkoutForgeSetAutoMerge", { cwd, input }]);
+      return { success: true, enabled: (input as { enabled: boolean }).enabled, error: null };
     },
     searchForge: async (input: unknown) => {
       calls.push(["searchForge", input]);
@@ -151,9 +174,219 @@ describe("pullRequestsRpc", () => {
       workspaceRoot: "/repo",
       mergeStateStatus: "CLEAN",
       comments: [{ id: "c1", body: "Looks good" }],
-      checks: [{ name: "ci", status: "success" }],
+      checks: [{ name: "ci", status: "success", duration: "1m 4s" }],
     });
     expect(calls).toContainEqual(["checkoutPrStatus", "/repo"]);
+  });
+
+  it("keeps each check's forge-formatted duration", async () => {
+    const { handlers } = makeHandlers({
+      status: {
+        ...STATUS,
+        checks: [
+          { name: "build", status: "success", url: "https://example.com/1", duration: "1m 4s" },
+          { name: "lint", status: "pending", url: null, duration: "7m" },
+        ],
+      },
+    });
+    const detail = await run<{ checks: unknown }>(
+      handlers[WS_METHODS.gitPullRequestSnapshot]!({ cwd: "/repo", reference: "42" }, undefined),
+    );
+    expect(detail.checks).toEqual([
+      { name: "build", status: "success", url: "https://example.com/1", duration: "1m 4s" },
+      { name: "lint", status: "pending", url: null, duration: "7m" },
+    ]);
+  });
+
+  it("fills GitLab check durations from the pipeline's job details", async () => {
+    const { handlers, calls } = makeHandlers({
+      status: {
+        ...STATUS,
+        forge: "gitlab",
+        checks: [
+          { name: "build", status: "success", url: "https://gitlab/build/101", checkRunId: 101 },
+          { name: "lint", status: "pending", url: "https://gitlab/build/102", checkRunId: 102 },
+        ],
+        forgeSpecific: { pipelineId: 777 },
+      },
+      checkDetails: {
+        success: true,
+        error: null,
+        details: {
+          pipeline: {
+            id: 777,
+            status: "running",
+            stages: [
+              {
+                name: "verify",
+                status: "running",
+                jobs: [
+                  { id: 101, name: "build", status: "success", durationSeconds: 64 },
+                  { id: 102, name: "lint", status: "running", durationSeconds: 7 },
+                  { id: 103, name: "deploy", status: "skipped", durationSeconds: null },
+                ],
+              },
+            ],
+          },
+        },
+      },
+    });
+    const detail = await run<{ checks: unknown }>(
+      handlers[WS_METHODS.gitPullRequestSnapshot]!({ cwd: "/repo", reference: "42" }, undefined),
+    );
+    expect(detail.checks).toEqual([
+      { name: "build", status: "success", url: "https://gitlab/build/101", duration: "1m 4s" },
+      { name: "lint", status: "pending", url: "https://gitlab/build/102", duration: "7s" },
+    ]);
+    expect(calls).toContainEqual([
+      "checkoutForgeGetCheckDetails",
+      { cwd: "/repo", checkRunId: 777, changeRequestNumber: 42 },
+    ]);
+  });
+
+  it("carries the pipeline summary on the pull request detail", async () => {
+    const { handlers } = makeHandlers({
+      status: {
+        ...STATUS,
+        forge: "gitlab",
+        forgeSpecific: {
+          pipelineId: 777,
+          pipelineStatus: "running",
+          pipelineUrl: "https://gitlab.example/pipelines/777",
+        },
+      },
+    });
+    const detail = await run<{ pipeline: unknown }>(
+      handlers[WS_METHODS.pullRequestsDetail]!(
+        { projectId: "prj_1", repository: "neolix/neolix", number: 42 },
+        undefined,
+      ),
+    );
+    expect(detail.pipeline).toEqual({
+      id: 777,
+      status: "running",
+      url: "https://gitlab.example/pipelines/777",
+    });
+  });
+
+  it("maps the forge pipeline into stage and job groups", async () => {
+    const { handlers } = makeHandlers({
+      status: {
+        ...STATUS,
+        forge: "gitlab",
+        forgeSpecific: {
+          pipelineId: 777,
+          pipelineStatus: "success",
+          pipelineUrl: "https://gitlab.example/pipelines/777",
+        },
+      },
+      checkDetails: {
+        success: true,
+        error: null,
+        details: {
+          pipeline: {
+            id: 777,
+            status: "success",
+            url: "https://gitlab.example/pipelines/777",
+            ref: "main",
+            sha: "abc123",
+            stages: [
+              {
+                name: "verify",
+                status: "success",
+                jobs: [
+                  {
+                    id: 101,
+                    name: "build",
+                    stage: "verify",
+                    status: "success",
+                    url: "https://gitlab.example/jobs/101",
+                    allowFailure: false,
+                    durationSeconds: 64,
+                  },
+                  {
+                    id: 102,
+                    name: "deploy",
+                    stage: "verify",
+                    status: "manual",
+                    url: null,
+                    allowFailure: true,
+                    durationSeconds: null,
+                  },
+                ],
+              },
+            ],
+          },
+        },
+      },
+    });
+    const result = await run<PullRequestPipelineResult>(
+      handlers[WS_METHODS.pullRequestsPipeline]!(
+        { cwd: "/repo", pipelineId: 777, changeRequestNumber: 42 },
+        undefined,
+      ),
+    );
+    expect(result.error).toBeNull();
+    expect(result.pipeline).toEqual({
+      id: 777,
+      status: "success",
+      url: "https://gitlab.example/pipelines/777",
+      ref: "main",
+      sha: "abc123",
+      stages: [
+        {
+          name: "verify",
+          status: "success",
+          jobs: [
+            {
+              id: 101,
+              name: "build",
+              stage: "verify",
+              status: "success",
+              url: "https://gitlab.example/jobs/101",
+              allowFailure: false,
+              durationSeconds: 64,
+            },
+            {
+              id: 102,
+              name: "deploy",
+              stage: "verify",
+              status: "manual",
+              url: null,
+              allowFailure: true,
+              durationSeconds: null,
+            },
+          ],
+        },
+      ],
+    });
+  });
+
+  it("reports no jobs when the forge has no pipeline details", async () => {
+    const { handlers, calls } = makeHandlers();
+    const result = await run<PullRequestPipelineResult>(
+      handlers[WS_METHODS.pullRequestsPipeline]!(
+        { cwd: "/repo", pipelineId: 777, changeRequestNumber: 42 },
+        undefined,
+      ),
+    );
+    expect(result).toEqual({ pipeline: null, error: null });
+    expect(calls).toContainEqual([
+      "checkoutForgeGetCheckDetails",
+      { cwd: "/repo", checkRunId: 777, changeRequestNumber: 42 },
+    ]);
+  });
+
+  it("surfaces the forge error while the summary stays on the detail", async () => {
+    const { handlers } = makeHandlers({ checkDetailsError: "forge unavailable" });
+    const result = await run<PullRequestPipelineResult>(
+      handlers[WS_METHODS.pullRequestsPipeline]!(
+        { cwd: "/repo", pipelineId: 777, changeRequestNumber: 42 },
+        undefined,
+      ),
+    );
+    expect(result.pipeline).toBeNull();
+    expect(result.error).toBe("forge unavailable");
   });
 
   it("reports a reference neither the checkout nor the forge search knows", async () => {
@@ -273,6 +506,35 @@ describe("pullRequestsRpc", () => {
         ),
       ),
     ).rejects.toThrow("cannot change a pull request to close");
+  });
+
+  it("enables and disables forge auto-merge on the checkout's pull request", async () => {
+    const { handlers, calls } = makeHandlers();
+    const input = {
+      projectId: "prj_1",
+      repository: "neolix/neolix",
+      number: 42,
+    };
+
+    const enabled = await run(
+      handlers[WS_METHODS.pullRequestsSetAutoMerge]!(
+        { ...input, enabled: true, mergeMethod: "squash" },
+        undefined,
+      ),
+    );
+    expect(enabled).toMatchObject({ number: 42, workspaceRoot: "/repo", mergeOutcome: null });
+    expect(calls).toContainEqual([
+      "checkoutForgeSetAutoMerge",
+      { cwd: "/repo", input: { enabled: true, method: "squash" } },
+    ]);
+
+    await run(
+      handlers[WS_METHODS.pullRequestsSetAutoMerge]!({ ...input, enabled: false }, undefined),
+    );
+    expect(calls).toContainEqual([
+      "checkoutForgeSetAutoMerge",
+      { cwd: "/repo", input: { enabled: false } },
+    ]);
   });
 
   it("refuses comment and pin routes Neox does not implement", async () => {

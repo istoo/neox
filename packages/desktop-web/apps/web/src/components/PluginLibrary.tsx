@@ -35,14 +35,27 @@ import {
 } from "~/lib/icons";
 import { cn } from "~/lib/utils";
 import { useTranslation } from "~/i18n";
+import { patchHostConfig } from "~/lib/neolixHostApi";
 import { ensureNativeApi } from "~/nativeApi";
 import { invalidatePluginCatalog } from "~/plugins/catalog";
+import { PluginSlotPanels } from "~/plugins/PluginSlotPanels";
 import { PluginLogsDialog } from "./PluginLogsDialog";
 import { PluginSettingsDialog } from "./PluginSettingsDialog";
+import { BuiltinFeatureSwitches } from "./settings/BuiltinFeatureSwitches";
+import {
+  AlertDialog,
+  AlertDialogClose,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogPopup,
+  AlertDialogTitle,
+} from "./ui/alert-dialog";
 import { Button } from "./ui/button";
 import { InputGroup, InputGroupAddon, InputGroupInput, InputGroupText } from "./ui/input-group";
 import { Skeleton } from "./ui/skeleton";
 import { Switch } from "./ui/switch";
+import { toastManager } from "./ui/toast";
 import { CHAT_BACKGROUND_CLASS_NAME } from "./chat/composerPickerStyles";
 import { RouteInsetSurface } from "./RouteInsetSurface";
 import { RouteSurfaceHeader } from "./RouteSurface";
@@ -282,6 +295,45 @@ function StatusPill({ plugin }: { plugin: NeolixPlugin }) {
     <span className={cn("text-ui-sm", STATUS_TONE[plugin.status])}>
       {t(STATUS_LABEL_KEYS[plugin.status])}
     </span>
+  );
+}
+
+/** The daemon-wide switch that lets every configured plugin run on this computer. */
+function GlobalPluginSwitch({
+  enabled,
+  pending,
+  error,
+  onEnable,
+  onDisable,
+}: {
+  enabled: boolean;
+  pending: boolean;
+  error: string | null;
+  onEnable: () => void;
+  onDisable: () => void;
+}) {
+  const { t } = useTranslation();
+  return (
+    <div className="flex items-start gap-3 rounded-xl border border-border/60 bg-background/40 px-3 py-3">
+      <div className="min-w-0 flex-1">
+        <p className="text-ui-lg leading-snug font-semibold text-foreground">
+          {t("settings:plugins_globalTitle")}
+        </p>
+        <p className="mt-0.5 text-ui leading-snug text-muted-foreground">
+          {t("settings:plugins_globalHint")}
+        </p>
+        {error ? <p className="mt-1 text-ui-sm text-destructive">{error}</p> : null}
+      </div>
+      <Switch
+        checked={enabled}
+        disabled={pending}
+        aria-label={t("settings:plugins_globalTitle")}
+        onCheckedChange={(checked) => {
+          if (checked) onEnable();
+          else onDisable();
+        }}
+      />
+    </div>
   );
 }
 
@@ -753,7 +805,35 @@ export function PluginLibrary(props?: {
     onSuccess: refreshPlugins,
   });
 
+  // Enabling asks first: plugins are trusted, unsandboxed code. Disabling needs no confirmation.
+  const [confirmGlobalEnable, setConfirmGlobalEnable] = useState(false);
+  const globalToggleMutation = useMutation({
+    mutationFn: (enabled: boolean) => patchHostConfig({ pluginsEnabled: enabled }),
+    onSuccess: async (_saved, enabled) => {
+      toastManager.add({
+        type: "success",
+        title: enabled ? t("settings:plugins_globalEnabled") : t("settings:plugins_globalDisabled"),
+      });
+      await refreshPlugins();
+    },
+    onError: (error) => {
+      toastManager.add({
+        type: "error",
+        title: t("settings:couldNotSaveHostSettings"),
+        description: errorMessage(error),
+      });
+    },
+  });
+
   const plugins = pluginsQuery.data?.plugins ?? [];
+  const pluginsGloballyDisabled = pluginsQuery.data?.pluginsEnabled === false;
+  const pluginsGloballyEnabled = pluginsQuery.data?.pluginsEnabled === true;
+  const globalToggleError = globalToggleMutation.isError
+    ? errorMessage(globalToggleMutation.error)
+    : null;
+  const globalPluginsNotice = pluginsGloballyDisabled ? (
+    <InlineWarning>{t("settings:plugins_globallyDisabled")}</InlineWarning>
+  ) : null;
   const builtinIds = builtinQuery.data?.plugins ?? [];
   const filteredPlugins = plugins;
 
@@ -794,6 +874,18 @@ export function PluginLibrary(props?: {
     <div className={embedded ? undefined : "min-h-0 flex-1 overflow-y-auto"}>
       {selectedTab === "installed" ? (
         <div className={cn("flex flex-col gap-2 pb-8", !embedded && "mx-auto max-w-2xl px-6")}>
+          {pluginsQuery.isSuccess ? (
+            <GlobalPluginSwitch
+              enabled={pluginsGloballyEnabled}
+              pending={globalToggleMutation.isPending}
+              error={globalToggleError}
+              onEnable={() => setConfirmGlobalEnable(true)}
+              onDisable={() => {
+                globalToggleMutation.reset();
+                globalToggleMutation.mutate(false);
+              }}
+            />
+          ) : null}
           <form
             className="flex items-center gap-2"
             onSubmit={(event) => {
@@ -1072,30 +1164,38 @@ export function PluginLibrary(props?: {
       {selectedTab === "builtin" ? (
         <div className={cn("pb-10", !embedded && "px-3 sm:px-5")}>
           <div className={cn(!embedded && "mx-auto max-w-2xl")}>
-            {builtinQuery.isLoading ? (
-              <div className="space-y-1">
-                {["1", "2", "3"].map((key) => (
-                  <Skeleton key={key} className="h-[64px] w-full rounded-xl" />
-                ))}
-              </div>
-            ) : builtinQuery.isError ? (
-              <InlineWarning>{errorMessage(builtinQuery.error)}</InlineWarning>
-            ) : builtinIds.length === 0 ? (
-              <EmptyPanel
-                title={t("settings:plugins_builtinEmptyTitle")}
-                description={t("settings:plugins_builtinEmptyDescription")}
-              />
-            ) : (
-              <div className="space-y-0.5">
-                <SectionHeader title={t("settings:plugins_builtinSection")} />
-                {builtinIds.map((id) => (
-                  <BuiltinRow key={id} id={id} />
-                ))}
-              </div>
-            )}
+            <BuiltinFeatureSwitches />
+            <div className="mt-4">
+              {builtinQuery.isLoading ? (
+                <div className="space-y-1">
+                  {["1", "2", "3"].map((key) => (
+                    <Skeleton key={key} className="h-[64px] w-full rounded-xl" />
+                  ))}
+                </div>
+              ) : builtinQuery.isError ? (
+                <InlineWarning>{errorMessage(builtinQuery.error)}</InlineWarning>
+              ) : builtinIds.length === 0 ? (
+                <EmptyPanel
+                  title={t("settings:plugins_builtinEmptyTitle")}
+                  description={t("settings:plugins_builtinEmptyDescription")}
+                />
+              ) : (
+                <div className="space-y-0.5">
+                  <SectionHeader title={t("settings:plugins_builtinSection")} />
+                  {builtinIds.map((id) => (
+                    <BuiltinRow key={id} id={id} />
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         </div>
       ) : null}
+      {/* myna's Settings > Plugins slot: panels a plugin puts on this page. */}
+      <PluginSlotPanels
+        slot="settings"
+        className={cn("pb-8", !embedded && "mx-auto max-w-2xl px-6")}
+      />
     </div>
   );
 
@@ -1123,11 +1223,43 @@ export function PluginLibrary(props?: {
         }}
         onInstall={(listing) => installMutation.mutate(installSource(listing))}
       />
+      <AlertDialog
+        open={confirmGlobalEnable}
+        onOpenChange={(open) => {
+          if (!open) setConfirmGlobalEnable(false);
+        }}
+      >
+        <AlertDialogPopup>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t("settings:plugins_globalConfirmTitle")}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {t("settings:plugins_globalConfirmMessage")}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogClose render={<Button variant="outline" size="sm" />}>
+              {t("common:form_cancel")}
+            </AlertDialogClose>
+            <Button
+              size="sm"
+              disabled={globalToggleMutation.isPending}
+              onClick={() => {
+                setConfirmGlobalEnable(false);
+                globalToggleMutation.reset();
+                globalToggleMutation.mutate(true);
+              }}
+            >
+              {t("settings:plugins_globalConfirmAction")}
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogPopup>
+      </AlertDialog>
     </>
   );
 
   return embedded ? (
     <div className="flex flex-col">
+      {globalPluginsNotice ? <div className="pb-2">{globalPluginsNotice}</div> : null}
       <div className="flex flex-wrap items-center gap-3 pb-2">{tabs}</div>
       {body}
       {dialogs}
@@ -1142,6 +1274,11 @@ export function PluginLibrary(props?: {
         )}
       >
         <RouteSurfaceHeader>{tabs}</RouteSurfaceHeader>
+        {globalPluginsNotice ? (
+          <div className={cn("pb-2", !embedded && "mx-auto w-full max-w-2xl px-6")}>
+            {globalPluginsNotice}
+          </div>
+        ) : null}
         {body}
         {dialogs}
       </div>

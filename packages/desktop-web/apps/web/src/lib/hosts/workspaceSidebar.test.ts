@@ -48,7 +48,7 @@ const session = (environmentId = "mini"): WorkspaceSession => ({
   host: {
     hostId: environmentId,
     hostName: "Mac mini",
-    wsPath: `/ws/remote/${environmentId}`,
+    wsPath: `/rpc/remote/${environmentId}`,
     executionScope: {
       environmentId,
       accountAuthority: "https://account.example",

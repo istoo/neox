@@ -36,11 +36,15 @@ import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "~/components/u
 import { IconButton } from "~/components/ui/icon-button";
 import { Menu, MenuTrigger } from "~/components/ui/menu";
 import { toastManager } from "~/components/ui/toast";
+import { HostUpdateNotice } from "~/components/hosts/HostUpdateNotice";
+import { useHostFeatures } from "~/hooks/useHostFeatures";
+import { HOST_FEATURES } from "~/lib/hostFeatures.logic";
 import { ChevronDownIcon, EllipsisIcon, ExternalLinkIcon, XIcon } from "~/lib/icons";
 import {
   pullRequestActionMutationOptions,
   pullRequestDetailQueryOptions,
   pullRequestQueryErrorState,
+  pullRequestSetAutoMergeMutationOptions,
 } from "~/lib/pullRequestReactQuery";
 import { cn } from "~/lib/utils";
 import { ensureNativeApi } from "~/nativeApi";
@@ -77,6 +81,10 @@ import {
   resolvePullRequestPrimaryAction,
 } from "./PullRequestActions";
 import { PullRequestConfirmActionDialog } from "./PullRequestConfirmActionDialog";
+import {
+  EMPTY_AUTO_MERGE_ACTIONS,
+  resolvePullRequestAutoMergeActions,
+} from "./pullRequestAutoMerge.logic";
 import { PullRequestDiffStat } from "./PullRequestDiffStat";
 import { PullRequestStackPopover } from "./PullRequestStackPopover";
 import { PullRequestStateGlyph } from "./PullRequestStateGlyph";
@@ -196,8 +204,12 @@ export function PullRequestDetailPanel({
   const setConfirmAction = (next: "merge" | "close" | null) =>
     patchPanelState({ confirmAction: next });
   const actionInFlightRef = useRef(false);
+  const hostFeatures = useHostFeatures();
+  // Auto-merge needs the forge-neutral request; an older host gets the update notice instead.
+  const autoMergeAvailable = hostFeatures.isAvailable(HOST_FEATURES.checkoutForgeSetAutoMerge);
   const detailQuery = useQuery(pullRequestDetailQueryOptions(input, { pollingEnabled }));
   const actionMutation = useMutation(pullRequestActionMutationOptions(queryClient));
+  const autoMergeMutation = useMutation(pullRequestSetAutoMergeMutationOptions(queryClient));
   const detail = detailQuery.data;
   const detailErrorState = pullRequestQueryErrorState(detailQuery);
   // Fix findings, Resolve conflicts, and Send to agent all hand the pull request to a fresh
@@ -244,6 +256,29 @@ export function PullRequestDetailPanel({
       })
       .finally(() => {
         actionInFlightRef.current = false;
+      });
+  };
+
+  const setAutoMerge = (enabled: boolean, method?: PullRequestMergeMethod) => {
+    if (!detail || !autoMergeAvailable || autoMergeMutation.isPending) return;
+    void autoMergeMutation
+      .mutateAsync({
+        ...input,
+        enabled,
+        ...(method ? { mergeMethod: method } : {}),
+      })
+      .then(() => {
+        toastManager.add({
+          type: "success",
+          title: t(enabled ? "git:autoMergeEnabled" : "git:autoMergeDisabled"),
+        });
+      })
+      .catch((error: unknown) => {
+        toastManager.add({
+          type: "error",
+          title: t("git:pullRequestActionFailed"),
+          description: error instanceof Error ? error.message : t("git:gitHubCLIActionFailed"),
+        });
       });
   };
 
@@ -325,7 +360,7 @@ export function PullRequestDetailPanel({
   const selectedMergeMethod = allowedMethods.includes(mergeMethod)
     ? mergeMethod
     : (allowedMethods[0] ?? "merge");
-  const actionPending = actionMutation.isPending;
+  const actionPending = actionMutation.isPending || autoMergeMutation.isPending;
   // Which action is in flight — drives the in-flight labels. Optimistic transitions
   // (draft/ready/close/reopen) flip the UI instantly via the mutation's cache patch, so
   // only the pessimistic merge needs a visible progress state.
@@ -335,6 +370,18 @@ export function PullRequestDetailPanel({
   const stackAssessment = detail?.stack ? assessPullRequestStack(detail.stack) : null;
   const stackMergeTargetCount = stackAssessment?.mergeTargetCount ?? 0;
   const mergeBlocker = detail ? pullRequestMergeBlocker(detail, stackAssessment) : null;
+  const autoMergeActions =
+    detail && autoMergeAvailable
+      ? resolvePullRequestAutoMergeActions({
+          state: detail.state,
+          isDraft: detail.isDraft,
+          mergeBlocker,
+          allowedMethods,
+          autoMergeEnabled: detail.autoMergeEnabled === true,
+          canEnableAutoMerge: detail.canEnableAutoMerge === true,
+          canDisableAutoMerge: detail.canDisableAutoMerge === true,
+        })
+      : EMPTY_AUTO_MERGE_ACTIONS;
   const resolvedPrimaryAction = detail
     ? resolvePullRequestPrimaryAction(detail, {
         mergeBlocker,
@@ -371,11 +418,14 @@ export function PullRequestDetailPanel({
       mergeMethods={allowedMethods}
       selectedMergeMethod={selectedMergeMethod}
       mergeBlocker={mergeBlocker}
+      autoMergeActions={autoMergeActions}
       preparingThread={preparingThread}
       sendTargets={sendTargets}
       askPending={askPending === true}
       onStateChange={changeDraftState}
       onMergeMethodChange={setMergeMethod}
+      onEnableAutoMerge={(method) => setAutoMerge(true, method)}
+      onDisableAutoMerge={() => setAutoMerge(false)}
       onSendToAgent={sendToAgent}
       onAsk={ask}
       onFixFindings={fixFindings}
@@ -394,6 +444,12 @@ export function PullRequestDetailPanel({
   ) : null;
   const banners = detail ? (
     <>
+      {!autoMergeAvailable &&
+      (detail.canEnableAutoMerge === true || detail.canDisableAutoMerge === true) ? (
+        <div className="shrink-0 px-3 py-2">
+          <HostUpdateNotice compact />
+        </div>
+      ) : null}
       {detail.stackMetadataIncomplete === true ? (
         <PullRequestWarningNote shape="banner" className="shrink-0" role="status">
           {t("git:stackDetailsCouldNotBeLoadedRefreshBeforeMerging")}

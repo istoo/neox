@@ -1,6 +1,11 @@
 import { Buffer } from "node:buffer";
 import { lookup } from "node:dns/promises";
+import { codeAssistAnswer, codeAssistEnvelope, codeAssistUrl } from "./codeassist.js";
 import type { GatewayAccount, GatewayProvider } from "./config.js";
+import { discoverGoogleProject, googleUserAgent } from "./google-signin.js";
+import { fetchThroughProxy } from "./proxy-fetch.js";
+import { loadSubscriptionAccount, subscriptionAuth } from "./subscription-auth.js";
+import type { GoogleSubscriptionAccount } from "./subscription-store.js";
 import { buildUpstreamHeaders } from "./upstream.js";
 import { privateAddress } from "./video.js";
 
@@ -21,6 +26,7 @@ export type ImageMechanism =
   | "grok"
   | "copilot"
   | "gemini"
+  | "codeassist"
   | "chat";
 
 /** The models asked on an images API, as myna's catalog tells them. */
@@ -173,6 +179,9 @@ interface DrawContext {
   drawing: Drawing;
   timing: ImageDrawTiming;
   fetchImpl: typeof fetch;
+  /** Where a Google sign-in is kept, for Code Assist's drawings. */
+  gatewayDir?: string;
+  proxy?: string;
 }
 
 /* ---------------------------------------------------------------- vendors */
@@ -181,6 +190,7 @@ interface DrawContext {
 export function imageMechanismOf(
   provider: GatewayProvider,
   modelId: string,
+  account?: GatewayAccount,
 ): ImageMechanism | null {
   const base = (provider.baseUrl ?? "").trim();
   const host = hostOf(base);
@@ -195,6 +205,14 @@ export function imageMechanismOf(
   }
   if (provider.id.toLowerCase().includes("copilot")) {
     return "copilot";
+  }
+  // A Google sign-in draws on Code Assist, as myna's drawCodeAssist asks
+  // it (`internal/gateway/draw.go:1199`, `search.go:135`).
+  if (
+    provider.protocol === "gemini" &&
+    (account?.agent === "gemini" || account?.agent === "antigravity")
+  ) {
+    return "codeassist";
   }
   const model = modelId.toLowerCase();
   if (host === "generativelanguage.googleapis.com" && model.includes("gemini")) {
@@ -259,9 +277,19 @@ export async function drawImageFor(input: {
   body: Record<string, unknown>;
   timing?: Partial<ImageDrawTiming>;
   fetchImpl?: typeof fetch;
+  /**
+   * `$NEOLIX_HOME/gateway`, where the Google sign-ins are kept. Absent, a
+   * Google sign-in's drawing is left to the caller as before.
+   */
+  gatewayDir?: string;
+  /** The proxy a sign-in's requests go through. */
+  proxy?: string;
 }): Promise<Response | null> {
-  const mechanism = imageMechanismOf(input.provider, input.model);
+  const mechanism = imageMechanismOf(input.provider, input.model, input.account);
   if (mechanism === null) {
+    return null;
+  }
+  if (mechanism === "codeassist" && (input.gatewayDir === undefined || input.gatewayDir === "")) {
     return null;
   }
   try {
@@ -273,6 +301,8 @@ export async function drawImageFor(input: {
       drawing: parseDrawing(input.body, input.model),
       timing: { ...DEFAULT_TIMING, ...input.timing },
       fetchImpl: input.fetchImpl ?? fetch,
+      ...(input.gatewayDir === undefined ? {} : { gatewayDir: input.gatewayDir }),
+      ...(input.proxy === undefined ? {} : { proxy: input.proxy }),
     };
     const drawn = await drawBy(mechanism, context);
     return await openAiAnswer(context, drawn);
@@ -305,6 +335,8 @@ async function drawBy(mechanism: ImageMechanism, context: DrawContext): Promise<
       return drawCopilot(context);
     case "gemini":
       return drawGemini(context);
+    case "codeassist":
+      return drawCodeAssist(context);
     case "chat":
       return drawChat(context);
     default:
@@ -899,6 +931,204 @@ function collectGemini(value: unknown, out: Drawn): void {
       }
     }
   }
+}
+
+/* ---------------------------------------------------------- Code Assist */
+
+interface CodeAssistSignIn {
+  /** The Bearer token the account's sign-in gave. */
+  headers: Record<string, string>;
+  project: string;
+  agent: "gemini" | "antigravity";
+  name: string;
+}
+
+/**
+ * A Google sign-in's drawing, as myna asks it (`internal/gateway/draw.go:1935`):
+ * on Code Assist, in the account's envelope, which asks for images beside
+ * text (`codeassist.go:607`), and its pictures come back in the reply's
+ * candidates. One request for each image asked for, at once.
+ */
+async function drawCodeAssist(context: DrawContext): Promise<Drawn> {
+  const { drawing } = context;
+  const signIn = await codeAssistSignIn(context);
+  const parts: Array<Record<string, unknown>> = [{ text: drawPrompt(drawing) }];
+  for (const reference of drawing.images) {
+    const image = await inlineImage(reference, context);
+    if (image === null) {
+      throw new DrawInputError(
+        400,
+        `Code Assist can't draw from ${reference}: it takes its images from a public address or this gateway's own`,
+      );
+    }
+    parts.push({ inlineData: { mimeType: image.mime, data: image.data.toString("base64") } });
+  }
+  const envelope = codeAssistEnvelope({
+    model: context.model,
+    project: signIn.project,
+    agent: signIn.agent,
+    request: {
+      contents: [{ role: "user", parts }],
+      // An image model draws only when asked for images too
+      // (`codeassist.go:607`).
+      generationConfig: { responseModalities: ["TEXT", "IMAGE"] },
+    },
+  });
+  const url = codeAssistUrl(context.base, false);
+  const answers = await Promise.all(
+    Array.from({ length: drawing.n }, () => codeAssistSend(context, url, envelope, signIn)),
+  );
+  const out: Drawn = { images: [] };
+  let failed = "";
+  /** The status of the refusal that came as an HTTP one, 0 for one in the body. */
+  let failedStatus = 0;
+  for (const answer of answers) {
+    if (answer.status < 200 || answer.status >= 300) {
+      if (failed === "") {
+        failed = `${signIn.name}: ${answer.status} ${answer.message}`;
+        failedStatus = answer.status;
+      }
+      continue;
+    }
+    const parsed = codeAssistAnswer(answer.json);
+    if ("error" in parsed) {
+      failed ||= `${signIn.name}: ${parsed.error}`;
+      continue;
+    }
+    if ("empty" in parsed) {
+      continue;
+    }
+    // A refusal can come inside the envelope's response too
+    // (`codeassist.go:1345-1360`).
+    const chunk = codeAssistAnswer(parsed.chunk);
+    if ("error" in chunk) {
+      failed ||= `${signIn.name}: ${chunk.error}`;
+      continue;
+    }
+    if ("empty" in chunk) {
+      continue;
+    }
+    collectGemini(chunk.chunk, out);
+  }
+  out.text = (out.text ?? "").trim();
+  // Some images drawn is an answer; none, the first failure
+  // (`draw.go:2035-2050`).
+  if (out.images.length === 0) {
+    if (failed !== "") {
+      throw new VendorError(
+        failedStatus !== 0 ? failedStatus : codeAssistFailureStatus(failed),
+        failed,
+      );
+    }
+    throw new VendorError(502, `${signIn.name} drew nothing${saidOf(out.text ?? "")}`);
+  }
+  return out;
+}
+
+/** The sign-in an account names, its project found as its app does. */
+async function codeAssistSignIn(context: DrawContext): Promise<CodeAssistSignIn> {
+  const agent = context.account?.agent;
+  if (agent !== "gemini" && agent !== "antigravity") {
+    throw new VendorError(502, "Code Assist needs a Google sign-in");
+  }
+  const gatewayDir = context.gatewayDir ?? "";
+  const user = context.account?.subscriptionUser ?? "";
+  const found = await loadSubscriptionAccount(gatewayDir, agent, user);
+  if (found === null) {
+    throw new VendorError(502, `no ${agent} sign-in named ${user === "" ? "(the first)" : user}`);
+  }
+  if (found.agent !== "gemini" && found.agent !== "antigravity") {
+    throw new VendorError(502, `no ${agent} sign-in named ${user === "" ? "(the first)" : user}`);
+  }
+  if (found.lapsed !== null) {
+    throw new VendorError(401, `${agent} sign-in lapsed: ${found.lapsed}`);
+  }
+  const auth = await subscriptionAuth(found, {
+    ...(context.fetchImpl === undefined ? {} : { fetchImpl: context.fetchImpl }),
+    ...(context.proxy === undefined ? {} : { proxy: context.proxy }),
+  });
+  if ("error" in auth) {
+    throw new VendorError(auth.lapsed === undefined ? 502 : 401, auth.error);
+  }
+  const project = await codeAssistProject(found, context);
+  return {
+    headers: auth.headers,
+    project,
+    agent,
+    name: agent === "antigravity" ? "Antigravity" : "Gemini CLI",
+  };
+}
+
+/** The Google Cloud project Code Assist bills, found when the sign-in kept none. */
+async function codeAssistProject(
+  account: GoogleSubscriptionAccount,
+  context: DrawContext,
+): Promise<string> {
+  if (account.project !== null && account.project !== "") {
+    return account.project;
+  }
+  const found = await discoverGoogleProject(account, {
+    ...(context.fetchImpl === undefined ? {} : { fetchImpl: context.fetchImpl }),
+    ...(context.proxy === undefined ? {} : { proxy: context.proxy }),
+  });
+  if ("error" in found) {
+    throw new VendorError(502, found.error);
+  }
+  return found.project;
+}
+
+async function codeAssistSend(
+  context: DrawContext,
+  url: string,
+  body: Record<string, unknown>,
+  signIn: CodeAssistSignIn,
+): Promise<VendorAnswer> {
+  let response: globalThis.Response;
+  try {
+    response = await fetchThroughProxy(context.proxy, context.fetchImpl)(url, {
+      method: "POST",
+      headers: {
+        ...signIn.headers,
+        "content-type": "application/json",
+        "user-agent": googleUserAgent(signIn.agent),
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(context.timing.waitMs),
+    });
+  } catch (error) {
+    throw new VendorError(502, `${signIn.name} couldn't be reached: ${errorMessage(error)}`);
+  }
+  const text = await response.text().catch(() => "");
+  let json: unknown = null;
+  try {
+    json = text === "" ? null : JSON.parse(text);
+  } catch {
+    json = null;
+  }
+  return { status: response.status, text, message: messageOf(json, text), json };
+}
+
+/** myna's saidStatus (`draw.go:1153-1165`): what a failure's words make it. */
+function codeAssistFailureStatus(said: string): number {
+  if (
+    /quota|usage.?limit|out of budget|budget (exceeded|exhausted)|limit.?reached|hit your .*limit|limit.{0,24}resets|exceeded.*(plan|limit)|额度|用量|套餐|上限/i.test(
+      said,
+    ) ||
+    /limit reached\|\d{10}\b|usage_limit_reached|RESOURCE_EXHAUSTED/i.test(said) ||
+    /rate.?limit|frequency.?limit|too many requests|per.?(second|sec|minute|min)\b|\b[rt]pm\b|频率|太频繁|过于频繁|速率/i.test(
+      said,
+    )
+  ) {
+    return 429;
+  }
+  if (
+    /insufficient.?(balance|credit|fund)|balance|credit|billing|payment|arrear|overdue|suspended|余额|欠费|充值|账户.*(不足|停)/i.test(
+      said,
+    )
+  ) {
+    return 402;
+  }
+  return 502;
 }
 
 /* ---------------------------------------------------------------- chat */

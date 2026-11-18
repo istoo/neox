@@ -1,15 +1,9 @@
-import {
-  useMemo,
-  useState,
-  type CSSProperties,
-  type KeyboardEventHandler,
-  type ReactNode,
-} from "react";
+import { useMemo, useState, type KeyboardEventHandler, type ReactNode } from "react";
 import { useLocation } from "@tanstack/react-router";
 import type { useSortable } from "@dnd-kit/sortable";
 import { ThreadId } from "@synara/contracts";
 import { useAppSettings, type SidebarThreadSortOrder } from "../../appSettings";
-import { CentralIcon } from "../../lib/central-icons";
+import { ProjectSidebarIcon } from "../ProjectSidebarIcon";
 import {
   ArchiveIcon,
   EllipsisIcon,
@@ -21,7 +15,6 @@ import {
 } from "../../lib/icons";
 import { createClientPointMenuAnchor } from "../../lib/clientPointMenuAnchor";
 import { pinActionLabel } from "../../lib/pin";
-import { DEFAULT_PROJECT_ICON, projectColorValue } from "../../lib/projectAppearance";
 import {
   deriveWorkspaceProjectThreadRows,
   workspaceThreadKey,
@@ -34,6 +27,8 @@ import {
   type WorkspaceSession,
 } from "../../lib/hosts/workspaceSessions";
 import type { WorkspaceSidebarActions } from "../../lib/hosts/workspaceFrame";
+import { readExecutionContext } from "../../lib/hosts/executionContext";
+import { readHostAppearance, resolveHostBadgeDisplay } from "../../lib/hosts/appearance";
 import { openWorkspacePath } from "../../lib/hosts/workspaceCommands";
 import { SIDEBAR_HOVER_CARD_TRIGGER_PROPS } from "../sidebarHoverCardStyles";
 import { Tooltip, TooltipTrigger } from "../ui/tooltip";
@@ -42,10 +37,13 @@ import {
   resolveSidebarRootThreadId,
   THREAD_STATUS_LABEL_KEYS,
 } from "../Sidebar.logic";
-import { FolderIcon, FolderOpenIcon } from "~/lib/icons";
-import { ProjectEmojiGlyph } from "../ProjectSidebarIcon";
 import { SidebarIconButton } from "../SidebarIconButton";
 import { SidebarProjectRowContent } from "../SidebarProjectRowContent";
+import { SidebarHostBadge } from "../SidebarHostBadge";
+import { SidebarMetaChipStack } from "../SidebarMetaChip";
+import { SidebarThreadRowFields } from "../SidebarThreadRowFields";
+import { resolveThreadRowPrChip } from "../SidebarThreadRowMeta";
+import { toThreadPullRequest } from "../../hooks/useThreadPullRequests";
 import { SidebarSectionToolbar } from "../SidebarSectionToolbar";
 import { SidebarStatusTrailingGlyph } from "../SidebarStatusTrailingGlyph";
 import { SidebarThreadRowContent } from "../SidebarThreadRowContent";
@@ -171,16 +169,18 @@ function WorkspaceProjectIcon({
   entry: WorkspaceProjectEntry;
   expanded: boolean;
 }) {
-  const appearance = entry.project.appearance;
-  if (appearance?.kind === "emoji")
-    return <ProjectEmojiGlyph emoji={appearance.emoji} className="size-4" />;
-  const style: CSSProperties | undefined = appearance?.color
-    ? { color: projectColorValue(appearance.color) }
-    : undefined;
-  if (appearance?.kind === "icon" && appearance.icon !== DEFAULT_PROJECT_ICON)
-    return <CentralIcon name={appearance.icon} className="size-4" style={style} />;
-  const Folder = expanded ? FolderOpenIcon : FolderIcon;
-  return <Folder className="size-4" style={style} />;
+  return (
+    <ProjectSidebarIcon
+      cwd={entry.project.cwd}
+      projectId={entry.project.id}
+      environmentId={
+        entry.session?.host.executionScope.environmentId ??
+        readExecutionContext()?.execution.environmentId
+      }
+      expanded={expanded}
+      appearance={entry.project.appearance}
+    />
+  );
 }
 
 function selectedThreadPath(
@@ -381,6 +381,32 @@ export function WorkspaceThreadRow({
   const status = thread.status;
   const displayTitle =
     settings.sidebarTitleSource === "branch" && thread.branch ? thread.branch : thread.title;
+  const rowItems = settings.sidebarRowItems;
+  // Nested rows sit under a workspace title that already carries the host badge, so the
+  // host field is not repeated per row. Branch/project fields come from the thread's own
+  // summary; checks and services have no connected-host source.
+  const hostAppearance = readHostAppearance(settings.hostAppearance, session.host.hostId);
+  const showHostBadge =
+    rowItems.host &&
+    resolveHostBadgeDisplay({ appearance: hostAppearance, isLocalHost: false }) !== "hidden";
+  const projectName =
+    session.summary?.projects.find((project) => project.id === thread.projectId)?.name ?? null;
+  const lastKnownPr = rowItems.changeRequest ? thread.lastKnownPr : null;
+  const resolvedPr = lastKnownPr != null ? toThreadPullRequest(lastKnownPr) : null;
+  const prChip =
+    !thread.forkSourceThreadId && resolvedPr ? resolveThreadRowPrChip(resolvedPr) : null;
+
+  const hasMetaFields =
+    (rowItems.branch && Boolean(thread.branch)) || (rowItems.project && Boolean(projectName));
+  const meta = hasMetaFields ? (
+    <SidebarThreadRowFields
+      branch={thread.branch}
+      projectName={projectName}
+      runningServiceCount={0}
+      rowItems={rowItems}
+    />
+  ) : null;
+
   const content = (
     <SidebarThreadRowContent
       thread={thread}
@@ -391,21 +417,32 @@ export function WorkspaceThreadRow({
       isActive={active}
       variant="standard"
       pendingStatusColorClass={status?.label === "Pending Approval" ? status.colorClass : null}
+      meta={meta}
       suffix={
         <>
-          {topLevel ? (
+          {topLevel && showHostBadge ? (
             <span
               data-slot="remote-thread-marker"
               className={cn(
-                "inline-flex min-w-0 max-w-[40%] shrink-0 items-center gap-1.5",
+                "inline-flex min-w-0 max-w-[40%] shrink-0 items-center",
                 sidebarHoverRevealHideClassName("thread-row"),
               )}
             >
-              <GlobeIcon
-                className={cn(SIDEBAR_TRAILING_ICON_CLASS, "text-sky-600 dark:text-sky-400")}
-                aria-hidden
+              <SidebarHostBadge
+                hostId={session.host.hostId}
+                hostName={hostName}
+                leadingIcon
+                iconClassName={SIDEBAR_TRAILING_ICON_CLASS}
+                toneClassName="text-sky-600 dark:text-sky-400"
               />
-              <span className="truncate text-ui-xs text-muted-foreground">{hostName}</span>
+            </span>
+          ) : null}
+          {prChip ? (
+            <span
+              data-testid="remote-thread-pr-chip"
+              className={sidebarHoverRevealHideClassName("thread-row")}
+            >
+              <SidebarMetaChipStack chips={[prChip]} />
             </span>
           ) : null}
           <span className={sidebarHoverRevealHideClassName("thread-row")}>
@@ -598,6 +635,11 @@ export function WorkspaceProjectItem({
             }
             label={project.name}
             hostName={hostName}
+            hostBadge={
+              <span className={sidebarHoverRevealHideClassName("project-header")}>
+                <SidebarHostBadge hostId={session.host.hostId} hostName={hostName} />
+              </span>
+            }
             reserveClassName="group-hover/project-header:pr-12 project-header-focus:pr-12"
             trailing={
               status ? (

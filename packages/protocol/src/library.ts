@@ -364,6 +364,8 @@ export const LibraryMarketServerSchema = z.object({
   description: z.string(),
   publisher: z.string().optional(),
   icon: z.string().optional(),
+  /** The icon for a dark theme; `icon` is the light one. */
+  iconDark: z.string().optional(),
   homepage: z.string().optional(),
   transport: LibraryTransportSchema,
   runs: z.string().optional(),

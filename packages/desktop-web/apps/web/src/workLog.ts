@@ -1789,10 +1789,18 @@ export function parseUserInputQuestions(
           ) {
             return null;
           }
-          return {
+          const mapped: { label: string; description: string; preview?: string } = {
             label: optionRecord.label,
             description: optionRecord.description,
           };
+          // The bridge carries the provider's code/text preview; dropping it here left the
+          // option card without the block the old UI showed before choosing.
+          // Trim only decides whether there is text: a code preview's leading indentation and
+          // trailing blank lines are part of what the user compares.
+          if (typeof optionRecord.preview === "string" && optionRecord.preview.trim()) {
+            mapped.preview = optionRecord.preview;
+          }
+          return mapped;
         })
         .filter((option): option is UserInputQuestion["options"][number] => option !== null);
       return {

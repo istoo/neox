@@ -30,6 +30,21 @@ afterEach(async () => {
   await ctx.cleanup();
 }, 60000);
 
+describe("attention clearing", () => {
+  test("an unknown agent id still answers the clear request", async () => {
+    // A draft thread the daemon has never created is not an agent; clearing its attention is a
+    // no-op, not a request that may dangle until the client's 60s timeout.
+    const answer = await Promise.race([
+      ctx.client.clearAgentAttention("agent-that-does-not-exist").then(() => "answered"),
+      new Promise<"timeout">((resolve) => {
+        const timer = setTimeout(() => resolve("timeout"), 2_000);
+        timer.unref?.();
+      }),
+    ]);
+    expect(answer).toBe("answered");
+  }, 10_000);
+});
+
 describe("timestamp behavior", () => {
   test("opening agent without interaction does not update timestamp", async () => {
     const cwd = tmpCwd();
@@ -206,19 +221,21 @@ describe("setAgentMode", () => {
       subscribe: {},
     });
 
-    // Create a Codex agent with default mode ("auto")
+    // Create a Codex agent in "auto" so the switch below has a concrete baseline.
+    // The fake provider does not resolve provider-side defaults, so pass the mode.
     const agent = await ctx.client.createAgent({
       provider: "codex",
       model: CODEX_TEST_MODEL,
       thinkingOptionId: CODEX_TEST_THINKING_OPTION_ID,
       cwd,
       title: "Mode Switch Test Agent",
+      modeId: "auto",
     });
 
     expect(agent.id).toBeTruthy();
     expect(agent.status).toBe("idle");
 
-    // Verify initial mode is "auto" (the default)
+    // Verify the initial mode is the one the caller requested
     expect(agent.currentModeId).toBe("auto");
 
     // Clear message queue before mode switch

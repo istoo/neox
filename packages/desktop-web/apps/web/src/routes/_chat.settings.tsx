@@ -81,6 +81,7 @@ import { ComputerSettingsPanel } from "~/components/settings/ComputerSettingsPan
 import { ModelsSettingsPanel } from "~/components/settings/ModelsSettingsPanel";
 import { AgentProfilesSettingsPanel } from "~/components/settings/AgentProfilesSettingsPanel";
 import { GatewaySettingsPanel } from "~/components/settings/GatewaySettingsPanel";
+import { AgentConnectSettingsPanel } from "~/components/settings/AgentConnectSettingsPanel";
 import { GATEWAY_TABS, type GatewayTab } from "~/components/settings/gateway/gatewayHelpers";
 import {
   HostDaemonSettingsPanel,
@@ -134,6 +135,7 @@ import {
   NamedThemeRow,
 } from "../components/settings/AppearanceExtrasSettings";
 import { AccessibilitySettingsSection } from "../components/settings/AccessibilitySettingsSection";
+import { SidebarNavSettingsSection } from "../components/settings/SidebarNavSettingsSection";
 import { EditorSettingsSection } from "../components/settings/EditorSettingsSection";
 import { HostBehaviorSettingsSection } from "../components/settings/HostBehaviorSettingsSection";
 import { ThemePackEditor } from "../components/ThemePackEditor";
@@ -178,9 +180,11 @@ import {
   SETTINGS_NAV_ITEMS,
   SETTINGS_TARGETS,
   settingRowAnchorId,
-  settingsPageForSection,
+  settingsPageForSectionIn,
+  settingsPagesWithoutSections,
   settingsTabLabel,
 } from "../settingsNavigation";
+import { useBuiltinFeatures } from "../hooks/useBuiltinFeatures";
 import { SettingsSidebarNav } from "../components/SettingsSidebarNav";
 import { isAudioLevelAvailable } from "../lib/audioLevel";
 import { useRunningPlugins } from "../plugins/catalog";
@@ -206,6 +210,7 @@ const HOST_SETTINGS_SECTIONS: ReadonlySet<string> = new Set([
   "voice",
   "sessions",
   "gateway",
+  "agent-connect",
   "agent-profiles",
   "skills",
   "advanced",
@@ -485,8 +490,31 @@ function SettingsRouteView() {
     typeof routeSearch.gatewayTab === "string"
       ? GATEWAY_TABS.find((tab) => tab === routeSearch.gatewayTab)
       : undefined;
-  const activeSectionItem = SETTINGS_NAV_ITEMS.find((item) => item.id === activeSection)!;
-  const activePage = settingsPageForSection(activeSection);
+  const activeSectionItem =
+    SETTINGS_NAV_ITEMS.find((item) => item.id === activeSection) ??
+    SETTINGS_NAV_ITEMS.find((item) => item.id === "general")!;
+  const { settingsSections: hiddenSettingsSections } = useBuiltinFeatures();
+  // A switch can take the open page away; leaving the section in the URL would
+  // keep rendering a page the nav no longer offers.
+  const activeSectionHidden = hiddenSettingsSections.has(activeSection);
+  useEffect(() => {
+    if (!activeSectionHidden) return;
+    void navigate({
+      to: "/settings",
+      search: (previous) => ({
+        ...previous,
+        section: undefined,
+        target: undefined,
+        automation: undefined,
+      }),
+      replace: true,
+    });
+  }, [activeSectionHidden, navigate]);
+  const visibleSettingsPages = useMemo(
+    () => settingsPagesWithoutSections(hiddenSettingsSections),
+    [hiddenSettingsSections],
+  );
+  const activePage = settingsPageForSectionIn(visibleSettingsPages, activeSection);
 
   const {
     isDefaultThemePack,
@@ -1262,6 +1290,8 @@ function SettingsRouteView() {
           ariaLabel: t("settings:showAutomationRunThreadsInTheSidebar"),
         })}
       </SettingsSection>
+
+      <SidebarNavSettingsSection />
 
       <div id={SETTINGS_TARGETS.environmentPanel} className="space-y-6">
         <SettingsSection title="settings:environmentPanel">
@@ -2273,6 +2303,8 @@ function SettingsRouteView() {
         return <DesktopSettingsPanel active />;
       case "appearance":
         return renderAppearancePanel();
+      case "agent-connect":
+        return <AgentConnectSettingsPanel />;
       case "agent-profiles":
         return <AgentProfilesSettingsPanel active />;
       case "behavior":
@@ -2477,7 +2509,7 @@ function SettingsRouteView() {
                 </p>
               ) : null}
 
-              {renderRouteOwnedPanel()}
+              {activeSectionHidden ? null : renderRouteOwnedPanel()}
               {/* These workflow owners stay mounted so drafts, request guards, and pending
                   mutations retain route lifetime while inactive panels render no DOM. */}
               <div className="contents">

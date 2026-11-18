@@ -1,5 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
+import { spawnProcess } from "../../../utils/spawn.js";
+import { signalProcessTree } from "../../../utils/tree-kill.js";
 import { ClaudeStreamParser, type ClaudeStreamEvent } from "./stream.js";
 
 export interface ClaudeToolResult {
@@ -60,6 +62,7 @@ export class ClaudeRun implements ClaudeRunLike {
   private child: ChildProcess | null = null;
   private queue: AsyncQueue<ClaudeStreamEvent> | null = null;
   private exited = false;
+  private failed = false;
   private stderr = "";
   private readonly pending = new Map<string, (result: ClaudeToolResult | null) => void>();
   private readonly early = new Map<string, ClaudeToolResult>();
@@ -95,12 +98,17 @@ export class ClaudeRun implements ClaudeRunLike {
   }
 
   public start(): void {
-    const spawnImpl = this.options.spawnImpl ?? spawn;
-    const child = spawnImpl(this.options.binary, [...this.options.args], {
+    const options = {
       cwd: this.options.cwd,
       env: { ...this.options.env },
-      stdio: ["pipe", "pipe", "pipe"],
-    });
+      stdio: ["pipe", "pipe", "pipe"] as ["pipe", "pipe", "pipe"],
+    };
+    // An npm-installed Claude Code is a `.cmd` on Windows, which Node can only
+    // launch through cmd.exe; the shared launcher quotes its arguments safely.
+    const child =
+      this.options.spawnImpl !== undefined
+        ? this.options.spawnImpl(this.options.binary, [...this.options.args], options)
+        : spawnProcess(this.options.binary, [...this.options.args], options);
     this.child = child;
     this.queue = new AsyncQueue();
     child.stdout?.setEncoding("utf8");
@@ -113,9 +121,11 @@ export class ClaudeRun implements ClaudeRunLike {
     child.stderr?.on("data", (chunk: string) => {
       this.stderr = `${this.stderr}${chunk}`.slice(-8_000);
     });
+    child.stdin?.on("error", (error) => {
+      this.stdinFailed(error);
+    });
     child.on("error", (error) => {
-      this.emit({ kind: "error", message: error.message });
-      this.finish();
+      this.reportFailure(error.message);
     });
     child.on("close", () => {
       this.finish();
@@ -191,9 +201,18 @@ export class ClaudeRun implements ClaudeRunLike {
   }
 
   public abort(): void {
-    if (this.child !== null && !this.exited) {
-      this.child.kill("SIGTERM");
+    const child = this.child;
+    if (child === null || this.exited) {
+      return;
     }
+    if (process.platform === "win32") {
+      // A `.cmd` shim runs under cmd.exe: killing it alone leaves the script's
+      // own process holding the pipes, so the whole tree goes. waitForExit
+      // resolves once that tree has closed.
+      void signalProcessTree(child, "SIGKILL");
+      return;
+    }
+    child.kill("SIGTERM");
   }
 
   /** Goes on with a turn after its tool calls; the next events are the reply's. */
@@ -219,7 +238,42 @@ export class ClaudeRun implements ClaudeRunLike {
   private readonly exitWaiters: Array<() => void> = [];
 
   private write(line: Record<string, unknown>): void {
-    this.child?.stdin?.write(`${JSON.stringify(line)}\n`);
+    const stdin = this.child?.stdin;
+    if (stdin === null || stdin === undefined) {
+      this.reportFailure("can't send a message to Claude Code: its stdin is not available");
+      return;
+    }
+    if (this.exited || stdin.destroyed || !stdin.writable) {
+      this.reportFailure(
+        this.exited
+          ? "can't send a message to Claude Code: its process has exited"
+          : "can't send a message to Claude Code: its stdin is not writable",
+      );
+      return;
+    }
+    try {
+      stdin.write(`${JSON.stringify(line)}\n`);
+    } catch (error) {
+      this.stdinFailed(error);
+    }
+  }
+
+  /** A broken stdin pipe fails the run the way a process error does. */
+  private stdinFailed(error: unknown): void {
+    if (!this.exited) {
+      this.abort();
+    }
+    const reason = error instanceof Error ? error.message : String(error);
+    this.reportFailure(`Claude Code's stdin failed: ${reason}`);
+  }
+
+  private reportFailure(message: string): void {
+    if (this.failed) {
+      return;
+    }
+    this.failed = true;
+    this.emit({ kind: "error", message });
+    this.finish();
   }
 
   private emit(event: ClaudeStreamEvent): void {

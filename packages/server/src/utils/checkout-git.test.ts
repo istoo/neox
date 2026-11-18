@@ -1484,6 +1484,46 @@ const x = 1;
     ]);
   });
 
+  it("compares the working tree against a commit sha", async () => {
+    writeFileSync(join(repoDir, "after.txt"), "after\n");
+    execFileSync("git", ["add", "."], { cwd: repoDir });
+    execFileSync("git", ["-c", "commit.gpgsign=false", "commit", "-m", "marker"], {
+      cwd: repoDir,
+    });
+    const sha = execFileSync("git", ["rev-parse", "HEAD"], {
+      cwd: repoDir,
+      encoding: "utf8",
+    }).trim();
+    writeFileSync(join(repoDir, "after.txt"), "after\nchanged\n");
+
+    const diff = await getCheckoutDiff(repoDir, {
+      mode: "all",
+      baseRef: sha.slice(0, 7),
+      includeStructured: true,
+    });
+    expect(diff.structured?.map((file) => file.path)).toEqual(["after.txt"]);
+    expect(diff.diff).toContain("+changed");
+  });
+
+  it("keeps branch semantics for a branch whose name looks like a commit sha", async () => {
+    execFileSync("git", ["checkout", "-b", "cafe123"], { cwd: repoDir });
+    writeFileSync(join(repoDir, "file.txt"), "hex branch\n");
+    execFileSync("git", ["add", "."], { cwd: repoDir });
+    execFileSync("git", ["-c", "commit.gpgsign=false", "commit", "-m", "hex branch"], {
+      cwd: repoDir,
+    });
+    execFileSync("git", ["checkout", "main"], { cwd: repoDir });
+    writeFileSync(join(repoDir, "file.txt"), "main line\n");
+    execFileSync("git", ["add", "."], { cwd: repoDir });
+    execFileSync("git", ["-c", "commit.gpgsign=false", "commit", "-m", "main line"], {
+      cwd: repoDir,
+    });
+
+    const diff = await getCheckoutDiff(repoDir, { mode: "base", baseRef: "cafe123" });
+
+    expect(diff.diff).toContain("-hello\n+main line\n");
+  });
+
   it("falls back to the local base branch when origin is absent", async () => {
     execFileSync("git", ["checkout", "-b", "feature"], { cwd: repoDir });
     writeFileSync(join(repoDir, "local-feature.txt"), "feature\n");

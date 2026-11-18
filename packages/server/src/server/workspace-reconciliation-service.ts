@@ -148,6 +148,8 @@ export class WorkspaceReconciliationService {
   private started = false;
   private reconciling = false;
   private reconcileQueuedMode: "metadata" | "full" | null = null;
+  /** The reconcile running now; `dispose()` waits for it. */
+  private inFlight: Promise<void> | null = null;
 
   constructor(options: WorkspaceReconciliationServiceOptions) {
     this.directoryInspection =
@@ -196,7 +198,8 @@ export class WorkspaceReconciliationService {
     this.rescanTimer.unref?.();
   }
 
-  dispose(): void {
+  /** Stops new reconciles and waits for the one in flight to finish writing. */
+  async dispose(): Promise<void> {
     this.disposed = true;
     this.wakeInspectionWaiters();
     this.unsubscribeRegistry?.();
@@ -205,6 +208,9 @@ export class WorkspaceReconciliationService {
     if (this.debounceTimer) this.clock.clearTimeout(this.debounceTimer);
     for (const { watcher } of this.watchers) watcher.close();
     this.watchers.length = 0;
+    while (this.inFlight !== null) {
+      await this.inFlight;
+    }
   }
 
   /** Reconciles mutable Git facts only; never archives missing records. */
@@ -524,17 +530,27 @@ export class WorkspaceReconciliationService {
     }, this.debounceMs);
   }
 
-  private async reconcileObservedGitMetadata(
-    mode: "metadata" | "full" = "metadata",
-  ): Promise<void> {
-    if (this.disposed) return;
+  private reconcileObservedGitMetadata(mode: "metadata" | "full" = "metadata"): Promise<void> {
+    if (this.disposed) return Promise.resolve();
     if (this.reconciling) {
       if (mode === "full" || this.reconcileQueuedMode === null) {
         this.reconcileQueuedMode = mode;
       }
-      return;
+      // The queued pass runs when the current one settles; this call only
+      // records the request, as it did before the pass was tracked for dispose.
+      return Promise.resolve();
     }
     this.reconciling = true;
+    const running = this.runObservedReconciliation(mode).finally(() => {
+      if (this.inFlight === running) {
+        this.inFlight = null;
+      }
+    });
+    this.inFlight = running;
+    return running;
+  }
+
+  private async runObservedReconciliation(mode: "metadata" | "full"): Promise<void> {
     try {
       await this.syncProjectRootWatches();
       const result = mode === "full" ? await this.runOnce() : await this.reconcileGitMetadata();
@@ -564,7 +580,7 @@ export class WorkspaceReconciliationService {
       if (this.reconcileQueuedMode) {
         const queuedMode = this.reconcileQueuedMode;
         this.reconcileQueuedMode = null;
-        void this.reconcileObservedGitMetadata(queuedMode);
+        void this.reconcileObservedGitMetadata(queuedMode).catch(() => undefined);
       }
     }
   }

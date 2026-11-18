@@ -91,7 +91,10 @@ describe("the description cache", () => {
     await cache.start();
     cache.set(key("d"), { text: "a chart", by: "probe/eye" }, true);
     await cache.dispose();
-    const { mode } = await import("node:fs/promises").then((fs) => fs.stat(cache.filePath));
-    expect(mode & 0o777).toBe(0o600);
+    // Windows cannot express POSIX permissions; the file is private by location there.
+    if (process.platform !== "win32") {
+      const { mode } = await import("node:fs/promises").then((fs) => fs.stat(cache.filePath));
+      expect(mode & 0o777).toBe(0o600);
+    }
   });
 });

@@ -433,6 +433,27 @@ describe("AgentStorage", () => {
     expect(recordAfterSnapshot?.archivedAt).toBe(archivedAt);
   });
 
+  test("keeps restart-recovery intent across the idle snapshot a shutdown close emits", async () => {
+    const agentId = "agent-resume-on-startup";
+    await storage.applySnapshot(createManagedAgent({ id: agentId, lifecycle: "running" }));
+    await storage.upsert({ ...(await storage.get(agentId))!, resumeOnStartup: true });
+
+    // A live idle snapshot still consumes the intent.
+    await storage.applySnapshot(createManagedAgent({ id: agentId, lifecycle: "idle" }));
+    expect((await storage.get(agentId))?.resumeOnStartup).toBe(false);
+
+    await storage.upsert({ ...(await storage.get(agentId))!, resumeOnStartup: true });
+    await storage.applySnapshot(createManagedAgent({ id: agentId, lifecycle: "idle" }), {
+      preserveResumeOnStartup: true,
+    });
+    expect((await storage.get(agentId))?.resumeOnStartup).toBe(true);
+
+    await storage.applySnapshot(createManagedAgent({ id: agentId, lifecycle: "closed" }), {
+      preserveResumeOnStartup: true,
+    });
+    expect((await storage.get(agentId))?.resumeOnStartup).toBe(true);
+  });
+
   test("stores titles independently of snapshots", async () => {
     await storage.applySnapshot(
       createManagedAgent({

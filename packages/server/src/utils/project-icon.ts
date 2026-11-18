@@ -38,7 +38,7 @@ export const ICON_PATTERNS = [
 export const PRIORITY_DIRS = ["public", "static", "priv/static", "assets", "images", "img"];
 
 /**
- * Monorepo package directory patterns to scan (e.g., packages/app, apps/web).
+ * Monorepo package directory patterns to scan (e.g., packages/server, apps/web).
  */
 export const MONOREPO_PACKAGE_DIRS = ["packages", "apps"];
 

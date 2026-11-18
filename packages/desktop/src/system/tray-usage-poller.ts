@@ -105,7 +105,11 @@ export function daemonWebSocketTarget(listen: string): DaemonWebSocketTarget | n
   }
 }
 
-function trayFormat(settings: TrayUsagePollerSettings, language: TrayLanguage): TrayUsageFormat {
+function trayFormat(
+  settings: TrayUsagePollerSettings,
+  language: TrayLanguage,
+  platform: NodeJS.Platform,
+): TrayUsageFormat {
   return {
     locale: language,
     displayAs: settings.trayDisplayAs,
@@ -116,7 +120,7 @@ function trayFormat(settings: TrayUsagePollerSettings, language: TrayLanguage): 
     // own icon is off; every other card keeps its provider's name.
     showProviderName: (card) =>
       !(
-        process.platform === "darwin" &&
+        platform === "darwin" &&
         settings.trayNoBird &&
         !settings.trayNoLogos &&
         settings.trayUsages[0] === card.id &&
@@ -129,8 +133,9 @@ function trayFormat(settings: TrayUsagePollerSettings, language: TrayLanguage): 
 function trayLogo(
   cards: { id: string; provider: string }[],
   settings: TrayUsagePollerSettings,
+  platform: NodeJS.Platform,
 ): string | null {
-  if (process.platform !== "darwin" || !settings.trayNoBird || settings.trayNoLogos) {
+  if (platform !== "darwin" || !settings.trayNoBird || settings.trayNoLogos) {
     return null;
   }
   // Only when the menu bar's first segment is a card; a total has no mark.
@@ -144,6 +149,7 @@ export async function readTrayUsageState(
   settings: TrayUsagePollerSettings,
   language: TrayLanguage,
   now: number,
+  platform: NodeJS.Platform = process.platform,
 ): Promise<TrayUsageState> {
   if (settings.trayUsages.length === 0) {
     return { label: "", tooltip: "Neox", logoDataUrl: null };
@@ -158,10 +164,10 @@ export async function readTrayUsageState(
     today: today.report,
     week: week.report,
   });
-  const format = trayFormat(settings, language);
+  const format = trayFormat(settings, language, platform);
   const label = trayUsageLabel(data, settings, format);
   const tooltip = trayUsageTooltip(data, settings, format, trayUsageWords(language), now);
-  return { label, tooltip, logoDataUrl: trayLogo(data.cards, settings) };
+  return { label, tooltip, logoDataUrl: trayLogo(data.cards, settings, platform) };
 }
 
 /**

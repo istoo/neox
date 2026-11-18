@@ -38,7 +38,7 @@ describe("plugin web assets", () => {
     expect(Buffer.from(asset.content, "base64")).toEqual(Buffer.from([0x89, 0x50, 0x4e, 0x47]));
   });
 
-  it.each(["../secret.html", "/etc/passwd", "web/../../secret.html", "web\\main.html"])(
+  it.each(["../secret.html", "/etc/passwd", "web/../../secret.html", "..\\secret.html"])(
     "rejects escaping paths: %s",
     async (assetPath) => {
       const directory = await makePluginDirectory();

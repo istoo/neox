@@ -338,6 +338,14 @@
   "checksBriefPending": "{{value0}} pending",
   "checksBriefSuccessful": "{{value0}} successful",
   "checksBriefSkipped": "{{value0}} skipped",
+  "pipeline": "Pipeline",
+  "pipelineNumber": "Pipeline #{{value0}}",
+  "pipelineOpen": "Open pipeline",
+  "pipelineLoadingJobs": "Loading pipeline jobs…",
+  "pipelineNoJobs": "No jobs reported for this pipeline.",
+  "pipelineJobsLoadFailed": "Could not load pipeline jobs.",
+  "pipelineAllowedToFail": "Allowed to fail",
+  "pipelineOpenJobLogs": "Open job logs",
   "closed": "Closed",
   "needsMyReview": "Needs my review",
   "everythingElse": "Everything else",
@@ -489,5 +497,12 @@
   "diffUnavailable": "No repo diff is available right now.",
   "diffCollapsedLines_one": "{{count}} unmodified line",
   "diffCollapsedLines_other": "{{count}} unmodified lines",
-  "diffMoreContext": "More unchanged context may be available"
+  "diffMoreContext": "More unchanged context may be available",
+  "autoMergeEnable": "Enable auto-merge ({{value0}})",
+  "autoMergeDisable": "Disable auto-merge",
+  "autoMergeEnabled": "Auto-merge enabled",
+  "prApprovals": "{{given}} of {{required}} approvals",
+  "autoMergeDisabled": "Auto-merge disabled",
+  "searchingGitHubRepositories": "Searching GitHub repositories…",
+  "githubRepositorySearchUnavailable": "GitHub repository search is unavailable."
 }

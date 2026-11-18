@@ -229,7 +229,7 @@ test("notification timeline items are sent only to clients that advertise suppor
   });
   const agent = await capable.client.createAgent({
     provider: "mock",
-    cwd: "/tmp",
+    cwd: os.tmpdir(),
     title: "Notification compatibility",
     model: "ten-second-stream",
   });
@@ -306,7 +306,7 @@ test("plugin timeline items are sent only to clients that advertise support", as
   });
   const agent = await capable.client.createAgent({
     provider: "mock",
-    cwd: "/tmp",
+    cwd: os.tmpdir(),
     title: "Plugin compatibility",
     model: "ten-second-stream",
   });
@@ -400,7 +400,7 @@ test("rewind routes replacement completion by source capability and subscription
   const legacy = await connect({ clientId: "rewind-legacy", selective: false });
   const agent = await initiating.client.createAgent({
     provider: "mock",
-    cwd: "/tmp",
+    cwd: os.tmpdir(),
     title: "Rewind routing",
     model: "ten-second-stream",
   });
@@ -694,7 +694,7 @@ test("plugin items are gated in provider child streams, child fetches, and rewin
   });
   const agent = await capable.client.createAgent({
     provider: "mock",
-    cwd: "/tmp",
+    cwd: os.tmpdir(),
     model: "ten-second-stream",
   });
   const plugin = {

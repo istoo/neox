@@ -22,6 +22,9 @@ import { ClaudeSessionShelf, cutSession } from "./sessions.js";
 import type { ClaudeStreamEvent } from "./stream.js";
 import type { ClaudeToolSpec } from "./tools.js";
 
+/** How long abortAll waits for the processes it stopped to report their exit. */
+const ABORT_WAIT_MS = 5_000;
+
 export interface ClaudeTurnInput {
   /** Whom the run serves: provider, account and model. */
   owner: string;
@@ -310,7 +313,7 @@ export class ClaudeBridge {
     };
   }
 
-  public abortAll(): void {
+  public async abortAll(): Promise<void> {
     for (const entry of this.idle.values()) {
       clearTimeout(entry.timer);
     }
@@ -323,13 +326,31 @@ export class ClaudeBridge {
       clearTimeout(parked.timer);
     }
     this.parked.clear();
-    for (const run of this.runs.values()) {
+    const runs = [...this.runs.values()];
+    for (const run of runs) {
       run.abort();
     }
     this.runs.clear();
     this.calls.clear();
     this.turns.clear();
     this.releases.clear();
+    // A run stopped through a `.cmd` shim takes its whole tree with it; the
+    // daemon shouldn't exit (or a caller delete its working directory) while
+    // that tree is still alive. A run that never comes up must not hold the
+    // shutdown open forever.
+    let timer: NodeJS.Timeout | null = null;
+    try {
+      await Promise.race([
+        Promise.all(runs.map((run) => run.waitForExit())),
+        new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, ABORT_WAIT_MS);
+        }),
+      ]);
+    } finally {
+      if (timer !== null) {
+        clearTimeout(timer);
+      }
+    }
   }
 
   private async startRun(input: ClaudeTurnInput): Promise<ClaudeTurnHandle> {

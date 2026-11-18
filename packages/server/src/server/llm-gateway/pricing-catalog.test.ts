@@ -19,6 +19,13 @@ afterEach(async () => {
   await Promise.all(homes.splice(0).map((home) => rm(home, { recursive: true, force: true })));
 });
 
+/** A fetch that never answers and fails only when aborted. */
+function rejectOnAbort(signal: AbortSignal): Promise<never> {
+  return new Promise((_resolve, reject) => {
+    signal.addEventListener("abort", () => reject(signal.reason));
+  });
+}
+
 describe("PricingCatalog.refresh", () => {
   it("reports the prices it holds and writes the cache", async () => {
     const prices = await catalog();
@@ -52,5 +59,27 @@ describe("PricingCatalog.refresh", () => {
       ok: false,
       error: "connect ECONNREFUSED",
     });
+  });
+
+  it("writes nothing once disposed while a fetch is in flight", async () => {
+    const prices = await catalog();
+    let started!: () => void;
+    const fetchStarted = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    vi.stubGlobal("fetch", (_url: string, init: { signal: AbortSignal }) => {
+      started();
+      return rejectOnAbort(init.signal);
+    });
+    const refresh = prices.refresh(Date.now());
+    await fetchStarted;
+    await prices.dispose();
+
+    expect((await refresh).ok).toBe(false);
+    expect(await prices.refresh(Date.now())).toEqual({
+      ok: false,
+      error: "The price catalog is shut down",
+    });
+    await expect(readFile(prices.filePath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
   });
 });

@@ -12,7 +12,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { access } from "node:fs/promises";
-import { watch } from "node:fs/promises";
+import { mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -175,6 +175,19 @@ async function readUserFile(
   );
 }
 
+function writeUserFileSync(
+  targets: SkillTargets,
+  skill: string,
+  relativePath: string,
+  contents: string,
+): void {
+  for (const dir of [targets.agentsDir, targets.claudeDir, targets.codexDir]) {
+    const file = path.join(dir, skill, relativePath);
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, contents);
+  }
+}
+
 /** Anything the transaction staged and failed to clean up sits beside the skills tree. */
 async function backupArtifacts(targets: SkillTargets): Promise<string[][]> {
   return Promise.all(
@@ -191,14 +204,23 @@ async function backupArtifacts(targets: SkillTargets): Promise<string[][]> {
   );
 }
 
+/**
+ * Waits until the save has created its transaction directory. Polls the
+ * directory synchronously between event-loop turns instead of using
+ * `fs.watch`: FSEvents batches notifications, and under load the event arrives
+ * after the save has already finished. The caller runs its next step in the
+ * same turn as the detection, before the save can reach its post-apply rescan.
+ */
 async function waitForTransactionDirectory(parent: string): Promise<void> {
-  const events = watch(parent);
-  try {
-    for await (const event of events) {
-      if (event.filename?.startsWith(".neolix-skills-transaction-")) return;
+  for (;;) {
+    let entries: string[] = [];
+    try {
+      entries = readdirSync(parent);
+    } catch {
+      // The parent may not exist yet; the save creates it before the directory.
     }
-  } finally {
-    await events.return?.();
+    if (entries.some((entry) => entry.startsWith(".neolix-skills-transaction-"))) return;
+    await new Promise<void>((resolve) => setImmediate(resolve));
   }
 }
 
@@ -1162,10 +1184,12 @@ describe("skills controller", () => {
     await harness.controller.save(selection);
     await writeFile(path.join(harness.targets.sourceDir, "neox", "SKILL.md"), "neolix-v2");
 
-    const transactionStarted = waitForTransactionDirectory(path.dirname(harness.targets.agentsDir));
     const save = harness.controller.save(selection);
-    await transactionStarted;
-    await writeUserFile(harness.targets, "neox-chat", "notes/mine.md", "hand written");
+    await waitForTransactionDirectory(path.dirname(harness.targets.agentsDir));
+    // Synchronous on purpose: the save may resume on the next microtask. An
+    // async write could land after the frozen plan's post-apply rescan, which
+    // is the window this test is about.
+    writeUserFileSync(harness.targets, "neox-chat", "notes/mine.md", "hand written");
 
     const result = await save;
 

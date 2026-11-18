@@ -14,7 +14,9 @@ import {
   codeAssistStream,
   codeAssistUrl,
   isCodeAssistAgent,
+  type CodeAssistAgent,
 } from "./codeassist.js";
+import { isMantleRoute, mantleBase, mantleFits } from "./mantle.js";
 import { prepareSubscriptionUpstream, SubscriptionSkippedError } from "./subscription-upstream.js";
 import { markMiddlewareReplyHeaders } from "./middleware-reply-headers.js";
 import { openCodeFree, openCodeFreeUrl, openCodeProvider } from "./vendor-shaping.js";
@@ -23,6 +25,7 @@ import {
   preparePluginUpstream,
   pluginRefOf,
   proxyPluginUpstream,
+  runGatewayMiddlewareHeaders,
   runGatewayMiddlewareRequest,
   runGatewayMiddlewareResponse,
 } from "./plugin-upstream.js";
@@ -48,7 +51,20 @@ export interface UpstreamWire {
   error?: string;
 }
 
+/** A middleware turned the request away before anything was sent. */
+export class GatewayPluginRejection extends Error {
+  constructor(
+    public readonly status: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = "GatewayPluginRejection";
+  }
+}
+
 export interface UpstreamRequestInput {
+  /** The client call, shared by every hook of its attempts (myna's ctx.state). */
+  requestKey?: string;
   provider: GatewayProvider;
   /** The credential this attempt uses; omitted when the provider has none. */
   account?: GatewayAccount;
@@ -87,18 +103,22 @@ export function buildUpstreamUrl(
   if ((provider.accounts ?? []).some((entry) => entry.agent === "factory")) {
     return factoryUpstreamUrl(baseUrl, provider.protocol);
   }
+  // Bedrock Mantle serves each model under /v1 or /openai/v1 (mantle.ts).
+  const base = isMantleRoute(provider)
+    ? mantleBase(baseUrl, modelId, !mantleFits(provider.id, modelId, provider.protocol))
+    : baseUrl;
   switch (provider.protocol) {
     case "anthropic":
-      return `${baseUrl}/messages`;
+      return `${base}/messages`;
     case "openai":
-      return `${baseUrl}/chat/completions`;
+      return `${base}/chat/completions`;
     case "openai-responses":
-      return `${baseUrl}/responses`;
+      return `${base}/responses`;
     case "gemini":
       // Gemini selects streaming by method name, not by a body flag.
       return streaming
-        ? `${baseUrl}/models/${modelId}:streamGenerateContent?alt=sse`
-        : `${baseUrl}/models/${modelId}:generateContent`;
+        ? `${base}/models/${modelId}:streamGenerateContent?alt=sse`
+        : `${base}/models/${modelId}:generateContent`;
   }
 }
 
@@ -306,6 +326,40 @@ function dropNonOpenCodeHeaders(
   }
 }
 
+/** A plugin's request middleware, or a rejection that ends the request. */
+async function applyMiddlewareRequest(input: UpstreamRequestInput): Promise<UpstreamRequestInput> {
+  const { provider, account, model } = input;
+  const middleware = await runGatewayMiddlewareRequest({
+    ...(input.requestKey === undefined ? {} : { requestKey: input.requestKey }),
+    providerId: provider.id,
+    protocol: provider.protocol,
+    model: model.id,
+    accountId: account?.id ?? "",
+    body: input.body,
+  });
+  if (middleware?.reject !== undefined) {
+    throw new GatewayPluginRejection(middleware.reject.status, middleware.reject.message);
+  }
+  return middleware === null ? input : { ...input, body: middleware.body };
+}
+
+/** A plugin's chat.headers, over the provider's and the sign-in's. */
+async function applyMiddlewareHeaders(
+  input: UpstreamRequestInput,
+  modelName: string,
+  headers: Headers,
+): Promise<void> {
+  const added = await runGatewayMiddlewareHeaders({
+    ...(input.requestKey === undefined ? {} : { requestKey: input.requestKey }),
+    providerId: input.provider.id,
+    protocol: input.provider.protocol,
+    model: modelName,
+    accountId: input.account?.id ?? null,
+  });
+  if (added === null) return;
+  for (const [name, value] of Object.entries(added)) headers.set(name, value);
+}
+
 async function shapeUpstreamRequest(input: UpstreamRequestInput): Promise<ShapedUpstream> {
   const { provider, account, model, incomingHeaders } = input;
   const headers = buildUpstreamHeaders(provider, account, incomingHeaders);
@@ -313,14 +367,7 @@ async function shapeUpstreamRequest(input: UpstreamRequestInput): Promise<Shaped
   // does not move the request to the other endpoint (myna's onRequest).
   const streaming = input.body.stream === true;
   // A plugin's middleware may reshape the body going out (myna's onRequest).
-  const middleware = await runGatewayMiddlewareRequest({
-    providerId: provider.id,
-    protocol: provider.protocol,
-    model: model.id,
-    accountId: account?.id ?? "",
-    body: input.body,
-  });
-  const request = middleware?.body === undefined ? input : { ...input, body: middleware.body };
+  const request = await applyMiddlewareRequest(input);
   // The user may ask the vendor for a model by another name (myna's Wires).
   const modelName = model.upstreamName ?? model.id;
   const shapedPayload = upstreamPayload(request, provider, headers, modelName, account);
@@ -333,7 +380,17 @@ async function shapeUpstreamRequest(input: UpstreamRequestInput): Promise<Shaped
     headers,
   });
   const payload = pluginUpstream.payload;
-  const codeAssist = provider.protocol === "gemini" && isCodeAssistAgent(account?.agent ?? "");
+  // A plugin's chat.headers hooks add to the request it is about to send;
+  // the plugins' values win over the provider's and the sign-in's, as myna's
+  // `h.set` does.
+  await applyMiddlewareHeaders(input, modelName, headers);
+  const codeAssistAgent =
+    provider.protocol === "gemini" &&
+    account?.agent !== undefined &&
+    isCodeAssistAgent(account.agent)
+      ? account.agent
+      : null;
+  const codeAssist = codeAssistAgent !== null;
   const url = buildUpstreamUrl(
     provider,
     modelName,
@@ -348,6 +405,7 @@ async function shapeUpstreamRequest(input: UpstreamRequestInput): Promise<Shaped
     streaming,
     payload,
     codeAssist,
+    agent: codeAssistAgent,
     headers,
     baseUrl: pluginUpstream.baseUrl ?? subscription.baseUrl ?? account?.baseUrl ?? provider.baseUrl,
     project: subscription.project,
@@ -390,6 +448,8 @@ async function shapeUpstreamTarget(input: {
   streaming: boolean;
   payload: Record<string, unknown>;
   codeAssist: boolean;
+  /** Which app's Code Assist account this is, when it is one. */
+  agent: CodeAssistAgent | null;
   headers: Headers;
   baseUrl: string;
   project: string | null;
@@ -410,6 +470,7 @@ async function shapeUpstreamTarget(input: {
         model: input.modelId,
         project: input.project,
         request: sent,
+        ...(input.agent === null ? {} : { agent: input.agent }),
       }),
     };
   }
@@ -553,6 +614,7 @@ async function applyGatewayMiddlewareResponse(
   headers.delete("content-encoding");
   headers.delete("content-length");
   const changed = await runGatewayMiddlewareResponse({
+    ...(input.requestKey === undefined ? {} : { requestKey: input.requestKey }),
     providerId: input.provider.id,
     model: input.model.id,
     accountId: input.account?.id ?? "",

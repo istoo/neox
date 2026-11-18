@@ -6,12 +6,14 @@
 
 import { defineConfig, mergeConfig } from "vitest/config";
 
+import { vitestMaxWorkers } from "../../../../scripts/vitest-max-workers.mjs";
 import viteConfig from "./vite.config";
 
 export default mergeConfig(
   viteConfig,
   defineConfig({
     test: {
+      maxWorkers: vitestMaxWorkers(),
       setupFiles: ["./src/test/setupLanguage.ts"],
     },
   }),

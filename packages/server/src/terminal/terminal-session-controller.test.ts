@@ -227,8 +227,8 @@ function listSession(input: {
 describe("terminal-session-controller legacy terminal creation", () => {
   test("resolves a missing workspaceId from the active workspace root", async () => {
     const rootCwd = "/work/repo";
-    const appCwd = "/work/repo/packages/app";
-    const terminalCwd = "/work/repo/packages/app/src";
+    const appCwd = "/work/repo/packages/desktop-web";
+    const terminalCwd = "/work/repo/packages/desktop-web/apps/web/src";
     const outboundMessages: SessionOutboundMessage[] = [];
     const createTerminal = vi.fn(
       async (options: Parameters<TerminalManager["createTerminal"]>[0]) =>

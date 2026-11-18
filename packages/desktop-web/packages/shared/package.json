@@ -236,6 +236,10 @@
       "types": "./src/threadDetailEvents.ts",
       "import": "./src/threadDetailEvents.ts"
     },
+    "./threadStreamEvents": {
+      "types": "./src/threadStreamEvents.ts",
+      "import": "./src/threadStreamEvents.ts"
+    },
     "./sidechatExpiry": {
       "types": "./src/sidechatExpiry.ts",
       "import": "./src/sidechatExpiry.ts"

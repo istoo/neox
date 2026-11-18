@@ -126,6 +126,50 @@ export const GATEWAY_PROVIDER_PRESETS: readonly GatewayProviderPreset[] = [
     ],
   },
   {
+    id: "bedrock-mantle",
+    name: "Amazon Bedrock (Mantle)",
+    kind: "vendor",
+    // Most models at /v1, OpenAI's closed GPT models and xAI's Grok at
+    // /openai/v1, which the gateway picks per model (myna's MantleBase).
+    // Messages are at /anthropic alone.
+    endpoints: {
+      openai: "https://bedrock-mantle.us-east-1.api.aws/v1",
+      "openai-responses": "https://bedrock-mantle.us-east-1.api.aws/v1",
+      anthropic: "https://bedrock-mantle.us-east-1.api.aws/anthropic",
+    },
+    website: "https://docs.aws.amazon.com/bedrock/latest/userguide/endpoints.html",
+    keysUrl: "https://console.aws.amazon.com/bedrock/home#/api-keys",
+    note: "Bedrock API key",
+    regionLabel: "Region",
+    regions: [
+      "us-east-1",
+      "us-east-2",
+      "us-west-2",
+      "eu-central-1",
+      "eu-central-2",
+      "eu-north-1",
+      "eu-south-1",
+      "eu-west-1",
+      "eu-west-2",
+      "ap-northeast-1",
+      "ap-northeast-2",
+      "ap-south-1",
+      "ap-southeast-1",
+      "ap-southeast-2",
+      "ap-southeast-3",
+      "ap-southeast-4",
+      "sa-east-1",
+    ].map((region) => ({
+      id: region,
+      name: region,
+      endpoints: {
+        openai: `https://bedrock-mantle.${region}.api.aws/v1`,
+        "openai-responses": `https://bedrock-mantle.${region}.api.aws/v1`,
+        anthropic: `https://bedrock-mantle.${region}.api.aws/anthropic`,
+      },
+    })),
+  },
+  {
     id: "deepseek",
     name: "DeepSeek",
     kind: "vendor",

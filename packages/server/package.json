@@ -1,6 +1,6 @@
 {
   "name": "@neolix/server",
-  "version": "0.16.5",
+  "version": "0.17.0-beta.1",
   "description": "Neolix backend server",
   "license": "Apache-2.0",
   "files": [
@@ -38,6 +38,21 @@
       "types": "./dist/server/server/config.d.ts",
       "source": "./src/server/config.ts",
       "default": "./dist/server/server/config.js"
+    },
+    "./uninstall": {
+      "types": "./dist/server/server/uninstall.d.ts",
+      "source": "./src/server/uninstall.ts",
+      "default": "./dist/server/server/uninstall.js"
+    },
+    "./neolix-home": {
+      "types": "./dist/server/server/neolix-home.d.ts",
+      "source": "./src/server/neolix-home.ts",
+      "default": "./dist/server/server/neolix-home.js"
+    },
+    "./codex-relay": {
+      "types": "./dist/server/server/llm-gateway/codex-relay.d.ts",
+      "source": "./src/server/llm-gateway/codex-relay.ts",
+      "default": "./dist/server/server/llm-gateway/codex-relay.js"
     },
     "./process": {
       "types": "./dist/server/utils/spawn.d.ts",
@@ -116,7 +131,7 @@
     "build:clean": "npm run clean && npm run build",
     "build:lib": "tsc -p tsconfig.server.json --incremental false && node scripts/build-opencode-bridge-plugin.mjs && node scripts/build-terminal-worker.mjs && node -e \"const fs=require('node:fs'); fs.mkdirSync('dist/server/server/speech/providers/local/sherpa/assets',{recursive:true}); fs.copyFileSync('src/server/speech/providers/local/sherpa/assets/silero_vad.onnx','dist/server/server/speech/providers/local/sherpa/assets/silero_vad.onnx'); fs.cpSync('src/terminal/shell-integration','dist/server/terminal/shell-integration',{recursive:true}); fs.cpSync('src/terminal/shell-integration','dist/src/terminal/shell-integration',{recursive:true}); fs.copyFileSync('src/terminal/terminal-ts-loader.mjs','dist/server/terminal/terminal-ts-loader.mjs'); fs.rmSync('dist/server/skills',{recursive:true,force:true}); fs.cpSync('../../skills','dist/server/skills',{recursive:true}); fs.rmSync('dist/server/builtin-plugins',{recursive:true,force:true}); fs.cpSync('../../plugins','dist/server/builtin-plugins',{recursive:true,filter:(source)=>!source.split(require('node:path').sep).some((segment)=>segment==='node_modules'||segment==='test')&&!/\\.(test|spec)\\.[cm]?[jt]sx?$/.test(source)&&!source.endsWith('.tsbuildinfo')});\" && node scripts/copy-browser-extension.mjs && node scripts/copy-library-data.mjs",
     "build:scripts": "tsc -p tsconfig.scripts.json --incremental false && node -e \"const fs=require('node:fs'); fs.mkdirSync('dist/scripts',{recursive:true}); fs.copyFileSync('scripts/mcp-stdio-socket-bridge-cli.mjs','dist/scripts/mcp-stdio-socket-bridge-cli.mjs');\"",
-    "prepack": "npm run build:clean && npm --prefix ../.. run build:daemon-web-ui",
+    "prepack": "npm run build:clean",
     "start": "node dist/scripts/supervisor-entrypoint.js",
     "typecheck": "tsgo -p tsconfig.server.typecheck.json --noEmit",
     "generate:config-schema": "tsx scripts/generate-config-schema.ts",
@@ -130,7 +145,7 @@
     "speech:transcribe:local": "tsx scripts/transcribe-local-wav.ts",
     "test": "npm run test:unit && npm run test:integration",
     "test:unit": "vitest run --fileParallelism --exclude \"**/*.e2e.test.ts\"",
-    "test:integration": "vitest run --maxWorkers=1 src/server/git-filename-diffs.e2e.test.ts src/server/daemon-e2e/checkout-diff-content.e2e.test.ts src/server/daemon-e2e/create-agent-mode.e2e.test.ts src/server/daemon-e2e/filesystem.e2e.test.ts src/server/daemon-e2e/file-download.e2e.test.ts src/server/daemon-e2e/cli-logs-follow.e2e.test.ts src/server/creation/creation.e2e.test.ts src/server/daemon-e2e/creation-status.e2e.test.ts src/server/daemon-e2e/persisted-creation-caller.e2e.test.ts src/server/daemon-e2e/terminal-workspace-sdk.e2e.test.ts src/server/daemon-e2e/terminal-worker-lifecycle.e2e.test.ts src/server/workspace-create-worktree-source.e2e.test.ts src/server/daemon-e2e/models.e2e.test.ts src/server/daemon-e2e/live-preferences.e2e.test.ts src/server/daemon-e2e/oversized-message.e2e.test.ts src/server/agent/model-catalog.e2e.test.ts src/server/plugins/plugin-neolix-api.e2e.test.ts src/server/plugins/usage-sources.e2e.test.ts src/server/plugins/lifecycle.e2e.test.ts src/server/connected-hosts/hosts.e2e.test.ts src/server/owned-subscriptions.e2e.test.ts && vitest run --maxWorkers=1 src/server/agent/providers/omp/history.e2e.test.ts src/server/daemon-e2e/git-operations.e2e.test.ts src/server/session.create-agent-worktree-autoarchive.e2e.test.ts src/server/agent/providers/opencode-bridge.local.e2e.test.ts src/server/daemon-e2e/relay-transport.e2e.test.ts -t \"merges into|creates a worktree and auto-archives both|versioned runtime|oversized attachments|connected hosts|password-protected daemon refuses|replays selected OMP history\"",
+    "test:integration": "vitest run --maxWorkers=1 src/server/git-filename-diffs.e2e.test.ts src/server/daemon-e2e/checkout-diff-content.e2e.test.ts src/server/daemon-e2e/create-agent-mode.e2e.test.ts src/server/daemon-e2e/filesystem.e2e.test.ts src/server/daemon-e2e/file-download.e2e.test.ts src/server/daemon-e2e/cli-logs-follow.e2e.test.ts src/server/creation/creation.e2e.test.ts src/server/daemon-e2e/creation-status.e2e.test.ts src/server/daemon-e2e/persisted-creation-caller.e2e.test.ts src/server/daemon-e2e/terminal-workspace-sdk.e2e.test.ts src/server/daemon-e2e/terminal-worker-lifecycle.e2e.test.ts src/server/workspace-create-worktree-source.e2e.test.ts src/server/daemon-e2e/models.e2e.test.ts src/server/daemon-e2e/live-preferences.e2e.test.ts src/server/daemon-e2e/oversized-message.e2e.test.ts src/server/agent/model-catalog.e2e.test.ts src/server/plugins/plugin-neolix-api.e2e.test.ts src/server/plugins/usage-sources.e2e.test.ts src/server/plugins/lifecycle.e2e.test.ts src/server/connected-hosts/hosts.e2e.test.ts src/server/owned-subscriptions.e2e.test.ts src/server/daemon-e2e/web-app.e2e.test.ts src/server/websocket-server.liveness.e2e.test.ts src/server/daemon-e2e/checkout-diff-subscription.e2e.test.ts src/server/daemon-e2e/terminal.e2e.test.ts src/server/daemon-e2e/agent-operations.e2e.test.ts src/server/daemon-e2e/agent-basics.e2e.test.ts src/server/daemon-e2e/images.e2e.test.ts src/server/daemon-e2e/permissions-claude.e2e.test.ts src/server/daemon-e2e/tool-calls.e2e.test.ts src/server/daemon-e2e/wait-for-idle.e2e.test.ts src/server/daemon-e2e/connection-offer.e2e.test.ts src/server/daemon-client.e2e.test.ts src/server/client-activity.e2e.test.ts src/server/workspace-same-cwd-isolation.e2e.test.ts src/server/agent/opencode-reasoning.e2e.test.ts src/server/plugins/agent-tools.e2e.test.ts src/server/plugins/connection-demand.e2e.test.ts && vitest run --maxWorkers=1 src/server/agent/providers/omp/history.e2e.test.ts src/server/daemon-e2e/git-operations.e2e.test.ts src/server/session.create-agent-worktree-autoarchive.e2e.test.ts src/server/agent/providers/opencode-bridge.local.e2e.test.ts src/server/daemon-e2e/relay-transport.e2e.test.ts -t \"merges into|creates a worktree and auto-archives both|versioned runtime|oversized attachments|connected hosts|password-protected daemon refuses|replays selected OMP history\"",
     "test:hub-cli-contract": "vitest run --maxWorkers=1 src/server/hub/hub-cli-contract.test.ts",
     "test:integration:all": "npm run test:e2e",
     "test:integration:real": "vitest run real.e2e.test.ts",
@@ -142,6 +157,7 @@
     "test:e2e:real": "npm run test:integration:real",
     "test:e2e:local": "npm run test:integration:local",
     "test:e2e:relay:live": "cross-env RUN_LIVE_RELAY_E2E=1 vitest run src/server/daemon-e2e/live-relay.real.e2e.test.ts --maxWorkers=1",
+    "test:e2e:desktop-web": "vitest run src/server/daemon-e2e/desktop-web-ui.e2e.test.ts --maxWorkers=1",
     "test:e2e:ui": "vitest --ui e2e.test.ts"
   },
   "dependencies": {
@@ -150,11 +166,11 @@
     "@anthropic-ai/sdk": "^0.104.2",
     "@isaacs/ttlcache": "^2.1.4",
     "@modelcontextprotocol/sdk": "1.29.0",
-    "@neolix/client": "0.16.5",
-    "@neolix/highlight": "0.16.5",
-    "@neolix/plugin": "0.16.5",
-    "@neolix/protocol": "0.16.5",
-    "@neolix/relay": "0.16.5",
+    "@neolix/client": "0.17.0-beta.1",
+    "@neolix/highlight": "0.17.0-beta.1",
+    "@neolix/plugin": "0.17.0-beta.1",
+    "@neolix/protocol": "0.17.0-beta.1",
+    "@neolix/relay": "0.17.0-beta.1",
     "@opencode-ai/sdk": "1.14.46",
     "@opencode/client": "2.0.10",
     "@xterm/addon-serialize": "0.14.0",

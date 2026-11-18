@@ -7,6 +7,8 @@ import {
   MessageId,
   DEVICE_WS_METHODS,
   COMPUTER_WS_METHODS,
+  NEOLIX_APP_SETTINGS_WS_METHODS,
+  NEOLIX_HOST_WS_METHODS,
   ORCHESTRATION_WS_METHODS,
   ORCHESTRATION_STREAM_OVERFLOW_CODE,
   ProjectId,
@@ -402,7 +404,14 @@ const worker = setupWorker(
         // socket dying and answers with a full reconnect. That loops forever
         // and starves the RPCs these tests are actually asserting on.
         method === DEVICE_WS_METHODS.subscribeEvents ||
-        method === COMPUTER_WS_METHODS.subscribeEvents
+        method === COMPUTER_WS_METHODS.subscribeEvents ||
+        // The app shell now syncs its settings through this stream; leaving it
+        // unanswered would let the reconnect loop starve every subscription.
+        method === NEOLIX_APP_SETTINGS_WS_METHODS.subscribe ||
+        method === NEOLIX_HOST_WS_METHODS.subscribeFeatures ||
+        method === NEOLIX_HOST_WS_METHODS.subscribeUpdateProgress ||
+        method === WS_METHODS.neolixWorkspaceSetupSubscribe ||
+        method === WS_METHODS.browserAutomationSubscribe
       ) {
         return;
       }

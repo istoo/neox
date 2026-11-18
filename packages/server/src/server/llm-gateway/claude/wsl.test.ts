@@ -87,33 +87,38 @@ describe("claudeWslLaunch", () => {
 });
 
 describe("startWslTranscript", { timeout: 20_000 }, () => {
-  it("copies what the distro writes after the session's earlier turns", async () => {
-    const home = await mkdtemp(path.join(os.tmpdir(), "neolix-wsl-home-"));
-    dirs.push(home);
-    const project = path.join(home, ".claude", "projects", "-work");
-    await mkdir(project, { recursive: true });
-    const transcript = path.join(project, "sid-1.jsonl");
-    await writeFile(transcript, '{"type":"user","message":"earlier"}\n');
-    const copy = await mkdtemp(path.join(os.tmpdir(), "neolix-wsl-copy-"));
-    dirs.push(copy);
+  // The distro script is POSIX sh, run here through /bin/sh; Windows CI has no
+  // POSIX shell, and the script's real home is inside the WSL distro.
+  it.skipIf(process.platform === "win32")(
+    "copies what the distro writes after the session's earlier turns",
+    async () => {
+      const home = await mkdtemp(path.join(os.tmpdir(), "neolix-wsl-home-"));
+      dirs.push(home);
+      const project = path.join(home, ".claude", "projects", "-work");
+      await mkdir(project, { recursive: true });
+      const transcript = path.join(project, "sid-1.jsonl");
+      await writeFile(transcript, '{"type":"user","message":"earlier"}\n');
+      const copy = await mkdtemp(path.join(os.tmpdir(), "neolix-wsl-copy-"));
+      dirs.push(copy);
 
-    const reader = await startWslTranscript({
-      distro: "Ubuntu",
-      sid: "sid-1",
-      dir: copy,
-      // The shell runs here, where the script does the same as in a distro.
-      spawnImpl: ((_command: string, _args: readonly string[], options: unknown) =>
-        spawn("/bin/sh", ["-c", WSL_TRANSCRIPT_SCRIPT, "sh", "sid-1"], {
-          ...(options as Record<string, unknown>),
-          env: { ...process.env, HOME: home },
-        })) as unknown as typeof spawn,
-    });
-    await reader.ready;
-    await writeFile(transcript, '{"type":"assistant","message":"later"}\n', { flag: "a" });
-    await waitFor(async () => (await readFile(reader.path, "utf8")).includes("later"));
-    expect(await readFile(reader.path, "utf8")).not.toContain("earlier");
-    await reader.stop();
-  });
+      const reader = await startWslTranscript({
+        distro: "Ubuntu",
+        sid: "sid-1",
+        dir: copy,
+        // The shell runs here, where the script does the same as in a distro.
+        spawnImpl: ((_command: string, _args: readonly string[], options: unknown) =>
+          spawn("/bin/sh", ["-c", WSL_TRANSCRIPT_SCRIPT, "sh", "sid-1"], {
+            ...(options as Record<string, unknown>),
+            env: { ...process.env, HOME: home },
+          })) as unknown as typeof spawn,
+      });
+      await reader.ready;
+      await writeFile(transcript, '{"type":"assistant","message":"later"}\n', { flag: "a" });
+      await waitFor(async () => (await readFile(reader.path, "utf8")).includes("later"));
+      expect(await readFile(reader.path, "utf8")).not.toContain("earlier");
+      await reader.stop();
+    },
+  );
 });
 
 async function waitFor(condition: () => Promise<boolean>): Promise<void> {

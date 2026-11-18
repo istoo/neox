@@ -5,13 +5,14 @@
 // that path. The bridge is the shell in this deployment, so it owns the outbound session
 // instead of a desktop main process. Each connected host gets its own routed DaemonClient
 // (the Neox client's host channel), its own BridgeModel, and its own feature socket under
-// `/ws/remote/<hostId>`; the frontend then runs that computer in its own workspace frame.
+// `/rpc/remote/<hostId>`; the frontend then runs that computer in its own workspace frame.
 import { createHash, randomUUID } from "node:crypto";
 import * as net from "node:net";
 import * as path from "node:path";
 
 import {
   WS_METHODS,
+  WS_REMOTE_PATH_PREFIX,
   WsRpcError,
   type AccountHost,
   type HostConnection,
@@ -23,15 +24,15 @@ import {
 } from "@synara/contracts";
 import { Effect } from "effect";
 
-import { DaemonClient } from "../../../../client/dist/daemon-client.js";
-import { createHostChannelTransport } from "../../../../client/dist/hosts/index.js";
-import { parseHostTarget } from "../../../../client/dist/node/index.js";
+import type { DaemonClient } from "../../../../client/dist/daemon-client.js";
 import type {
   HostAdd,
   HostDirectory,
   HostSummary,
   HostUpdate,
 } from "../../../../client/dist/index.js";
+
+import { bridgeClientRuntime } from "./clientRuntime.ts";
 
 import { BridgeModel } from "./model.ts";
 import { ProjectPins } from "./projectPins.ts";
@@ -40,11 +41,13 @@ import type { DaemonClient as PrimaryClient } from "./neolix.ts";
 import { LOCAL_HOST_ID } from "./pairingRpc.ts";
 import { bridgeError, rpcError } from "./rpcErrors.ts";
 import type { AnyHandler } from "./stubs.ts";
+import { bridgeServerCapabilities, type WsNegotiationOptions } from "./compatibility.ts";
+import { channelFromVersion, worktreesDirFor, type HostPaths } from "./serverInfo.ts";
 
 export { LOCAL_HOST_ID };
 
 const REMOTE_HOST_PREFIX = "neolix-host-";
-const REMOTE_PATH_PREFIX = "/ws/remote/";
+const REMOTE_PATH_PREFIX = WS_REMOTE_PATH_PREFIX;
 const SESSION_LIFETIME_MS = 365 * 24 * 60 * 60 * 1_000;
 
 /** A registration id is opaque; keep it out of paths and environment ids verbatim. */
@@ -116,7 +119,7 @@ export function httpBaseForTarget(description: string): string | null {
 /** The primary daemon's configured target, in the same grammar a saved host uses. */
 export function httpBaseForConnection(connection: string): string | null {
   try {
-    return httpBaseForTarget(parseHostTarget(connection).description);
+    return httpBaseForTarget(bridgeClientRuntime().node.parseHostTarget(connection).description);
   } catch {
     return null;
   }
@@ -244,7 +247,9 @@ function accountHostForRegistration(row: HostSummary): AccountHost {
   const seenAt = row.lastOnlineAt ?? new Date().toISOString();
   return {
     id: hostId,
-    environmentId: hostId as AccountHost["environmentId"],
+    // The daemon's serverId is the stable environment identity; the registration id only
+    // names this saved connection.
+    environmentId: (row.serverId?.trim() || hostId) as AccountHost["environmentId"],
     name: row.label?.trim() || row.targetDescription || "Neox host",
     platform: platformForHost(row),
     kind: "ssh-managed",
@@ -282,6 +287,12 @@ function accountHostForSelf(environmentId: string, label: string): AccountHost {
 export interface HostHandlerOptions {
   readonly environmentId: string;
   readonly home: string;
+  /** Paths from this host's daemon, never the controller's. */
+  readonly paths: HostPaths;
+  readonly platform?: {
+    readonly os: "darwin" | "linux" | "windows" | "unknown";
+    readonly arch: "arm64" | "x64" | "other";
+  };
   readonly log: (line: string) => void;
   readonly label?: string;
   /** HTTP origin of the daemon this handler map talks to, for token-based downloads. */
@@ -386,7 +397,7 @@ export class HostRegistry {
     // create a second registration for the same target and flag it as a duplicate.
     let description: string | null = null;
     try {
-      description = parseHostTarget(input.connection).description;
+      description = bridgeClientRuntime().node.parseHostTarget(input.connection).description;
     } catch {
       // Let the daemon report the grammar error with its own message.
     }
@@ -528,6 +539,19 @@ export class HostRegistry {
     return session ? { key: session.key, handlers: session.handlers } : null;
   }
 
+  /** The version a connected host's negotiation must report, not the controller's. */
+  negotiationFor(hostId: string): WsNegotiationOptions | undefined {
+    const session = this.sessions.get(hostId);
+    if (!session) return undefined;
+    const info = session.client.getLastServerInfoMessage();
+    return {
+      serverBuild: info?.version ?? undefined,
+      capabilities: bridgeServerCapabilities({
+        daemonRuntimeStatus: info?.features?.daemonRuntimeStatus === true,
+      }),
+    };
+  }
+
   async remoteAccess(request: RemoteAccessRequest): Promise<RemoteAccessResult> {
     switch (request.operation) {
       case "device-info":
@@ -592,7 +616,6 @@ export class HostRegistry {
     const serverId = row.serverId;
     if (!serverId) throw bridgeError("host.no-server-id", "Host reported no server id");
     const hostId = remoteHostId(row.registrationId);
-    const environmentId = hostId;
     const label = row.label?.trim() || row.targetDescription || "Neox host";
     const scopeId = randomUUID();
     const startedAt = new Date().toISOString();
@@ -600,12 +623,18 @@ export class HostRegistry {
 
     this.options.log(`opening route to ${row.targetDescription} (${serverId})`);
     const routeId = await this.primary.openHostRoute(serverId, scopeId);
-    const client = new DaemonClient({
+    const runtime = bridgeClientRuntime();
+    const client = new runtime.daemonClient.DaemonClient({
       url: "ws://routed-host/ws",
       clientId: scopeId,
       clientType: "cli",
       appVersion: "0.15.0",
-      transportFactory: createHostChannelTransport(this.primary, serverId, scopeId, routeId),
+      transportFactory: runtime.hosts.createHostChannelTransport(
+        this.primary,
+        serverId,
+        scopeId,
+        routeId,
+      ),
       // Initial acquisition has a deadline; established scopes restore demand on loss.
       reconnect: { enabled: false },
     });
@@ -613,23 +642,44 @@ export class HostRegistry {
     try {
       await client.connect();
       client.setReconnectEnabled(true);
+      // The remote daemon's own serverId, read from the server_info it just sent.
+      const environmentId = client.getLastServerInfoMessage()?.serverId?.trim() || serverId;
+      const legacyScopes = hostId === environmentId ? [] : [hostId];
       const projectPins = new ProjectPins({
         file: path.join(this.options.home, "desktop-web", "project-pins.json"),
         scope: environmentId,
+        legacyScopes,
         log: this.options.log,
       });
       await projectPins.load();
       const draftThreads = new DraftThreads({
         file: path.join(this.options.home, "desktop-web", "draft-threads.json"),
         scope: environmentId,
+        legacyScopes,
         log: this.options.log,
       });
       const model = new BridgeModel(client, this.options.log, undefined, projectPins, draftThreads);
       await model.load();
+      // Paths and OS come from this host. Without a status RPC, no path is invented from the
+      // control machine: root is the only honest fallback, and `homeDir` stays unknown.
+      const status = await client.getDaemonStatus().catch(() => null);
+      const hostHome = status?.configDir?.trim() || null;
+      const hostPaths: HostPaths = hostHome
+        ? {
+            cwd: hostHome,
+            homeDir: hostHome,
+            worktreesDir: await worktreesDirFor(
+              client,
+              `${hostHome.replace(/[\\/]+$/, "")}/worktrees`,
+            ),
+          }
+        : { cwd: "/", worktreesDir: "/worktrees" };
       this.options.log(`host ${hostId} ready`);
       const handlers = this.options.buildHandlers(model, {
         environmentId,
         home: this.options.home,
+        paths: hostPaths,
+        platform: { os: platformForHost(row), arch: "other" },
         log: this.options.log,
         label,
         projectPins,
@@ -663,7 +713,9 @@ export class HostRegistry {
       accountAuthority: "neolix",
       userId: "local",
       organizationId: "local",
-      channel: "dev",
+      // Derived from the host's own version; `dev` remains the only value when it is
+      // unavailable because the scope field is required.
+      channel: channelFromVersion(session.client.getLastServerInfoMessage()?.version) ?? "dev",
     };
     return {
       executionScope,
@@ -682,7 +734,7 @@ export class HostRegistry {
 }
 
 function rowEnvironmentId(row: HostSummary): string {
-  return remoteHostId(row.registrationId);
+  return row.serverId?.trim() || remoteHostId(row.registrationId);
 }
 
 function isUnsupportedCapability(error: unknown): boolean {

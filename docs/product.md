@@ -1,6 +1,6 @@
 # Product
 
-Neox is an environment for running, monitoring, and interacting with coding agents across desktop, mobile, web, and the command line.
+Neox is an environment for running, monitoring, and interacting with coding agents across desktop, web, and the command line.
 
 **Neox has a lean, opinionated core built to be extended.** It should be easy to start using and leave room for people to build far beyond the default experience.
 
@@ -8,7 +8,7 @@ Neox is an environment for running, monitoring, and interacting with coding agen
 
 The central workflow is giving an agent a task, understanding what it is doing, providing direction, and reviewing the result. Files, terminals, diffs, and other supporting tools help you do that.
 
-Neox should make this workflow coherent across providers and devices. You should be able to use the agent that fits a task and keep working from another device without rebuilding your environment around it.
+Neox should make this workflow coherent across providers and client surfaces. You should be able to use the agent that fits a task and keep working from another device without rebuilding your environment around it.
 
 This is the basis for product decisions. A familiar feature from another development tool earns its place by improving that experience. Familiarity alone does not make it a requirement for Neox.
 
@@ -18,7 +18,7 @@ This is the basis for product decisions. A familiar feature from another develop
 
 The default experience should be lean, polished, and understandable to someone who has never run a server or configured a VPN.
 
-With a supported coding agent installed and authenticated, you can open the desktop app and start working. The app manages its local daemon. To connect your phone through the optional Neox relay, enable pairing and scan a QR code. You do not need to configure a VPN or understand the networking behind it.
+With a supported coding agent installed and authenticated, you can open the desktop app and start working. The app manages its local daemon. To reach that daemon from another computer, enable the optional Neox relay and pair the device. You do not need to configure a VPN or understand the networking behind it.
 
 You should not need to know that plugins exist to get a useful, complete experience. Extra capability should become discoverable when it helps with something you want to do.
 
@@ -30,7 +30,7 @@ The same product should also work for someone running agents on a home server, u
 
 The daemon can run independently of the desktop app. Clients connect to it locally or remotely, and multiple clients can use the same daemon. This separation lets you choose where the work runs and how you interact with it.
 
-For example, someone can self-host a relay to connect their phone with minimal setup. Someone else can run a daemon on their own infrastructure and connect through SSH or a VPN. Both use the same underlying system.
+For example, someone can self-host a relay to connect a remote client with minimal setup. Someone else can run a daemon on their own infrastructure and connect through SSH or a VPN. Both use the same underlying system.
 
 Neox should provide useful defaults while keeping these choices available. You should not have to adopt every part of the system to benefit from the parts you want.
 
@@ -42,7 +42,7 @@ Neox's flexibility depends on keeping control with the user:
 
 - **Self-hosted:** Run agents on your own machines, with your own environment, files, and credentials.
 - **Provider choice:** Use supported agent harnesses and extend provider support through plugins. Your workflow should be able to evolve as your choice of provider changes.
-- **Cross-device:** Use desktop, mobile, web, and CLI clients according to the situation.
+- **Cross-device:** Use the desktop app, a web browser, and CLI clients according to the situation.
 - **Privacy:** No telemetry by default: anonymous usage sharing is opt-in under Settings → Privacy. No tracking or forced account, and the relay is optional and end-to-end encrypted.
 - **Open source:** Neox is Apache-2.0 licensed. You can inspect it, modify it, and build on it.
 

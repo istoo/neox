@@ -29,7 +29,7 @@ export async function isOnPath(bin: string, environment: ConnectEnvironment): Pr
     (dir) => dir.length > 0,
   );
   const extensions =
-    process.platform === "win32"
+    (environment.platform ?? process.platform) === "win32"
       ? (env.PATHEXT ?? ".EXE;.CMD;.BAT;.COM").split(";").filter((ext) => ext.length > 0)
       : [""];
   for (const dir of dirs) {
@@ -319,11 +319,12 @@ export function homePath(environment: ConnectEnvironment, ...parts: string[]): s
 export function configHome(environment: ConnectEnvironment): string {
   const xdg = environment.env.XDG_CONFIG_HOME?.trim();
   if (xdg && path.isAbsolute(xdg)) return xdg;
+  const platform = environment.platform ?? process.platform;
   return path.join(
-    process.platform === "win32"
+    platform === "win32"
       ? environment.env.APPDATA?.trim() || environment.homeDir
       : environment.homeDir,
-    ...(process.platform === "win32" ? [] : [".config"]),
+    ...(platform === "win32" ? [] : [".config"]),
   );
 }
 

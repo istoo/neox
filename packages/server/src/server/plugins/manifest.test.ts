@@ -188,7 +188,9 @@ describe("plugin manifest", () => {
           action: { kind: "openView", view: "main" },
         },
       ],
-      sidebarItems: [{ id: "main", title: "Main", view: "main" }],
+      sidebarItems: [
+        { id: "main", title: "Main", view: "main", section: "header", replaces: "sessions" },
+      ],
       timelineItems: [{ kind: "status", version: 1, title: "Status", view: "main" }],
     };
     await writeFile(
@@ -196,6 +198,22 @@ describe("plugin manifest", () => {
       JSON.stringify({ id: "contributed", contributions, web }),
     );
     await expect(readPluginManifest(directory)).resolves.toMatchObject({ contributions, web });
+  });
+
+  it("rejects a sidebar item naming a page nothing replaces", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "neolix-plugin-manifest-"));
+    directories.push(directory);
+    await writeFile(
+      path.join(directory, "neox-plugin.json"),
+      JSON.stringify({
+        id: "contributed",
+        contributions: {
+          sidebarItems: [{ id: "main", title: "Main", view: "main", replaces: "plugins" }],
+        },
+        web: { views: [{ id: "main", title: "Main", entry: "web/main.html" }] },
+      }),
+    );
+    await expect(readPluginManifest(directory)).rejects.toThrow();
   });
 
   it.each([
@@ -212,6 +230,10 @@ describe("plugin manifest", () => {
           },
         ],
       },
+    ],
+    [
+      "a panel",
+      { panels: [{ id: "usage-strip", slot: "usage", title: "Usage", view: "missing" }] },
     ],
     [
       "a timeline view",

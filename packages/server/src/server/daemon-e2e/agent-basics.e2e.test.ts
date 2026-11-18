@@ -1,3 +1,5 @@
+import os from "node:os";
+import path from "node:path";
 import { describe, test, expect, beforeEach, afterEach } from "vitest";
 import { createDaemonTestContext, type DaemonTestContext } from "../test-utils/index.js";
 import { createMessageCollector, type MessageCollector } from "../test-utils/message-collector.js";
@@ -5,6 +7,7 @@ import { createMessageCollector, type MessageCollector } from "../test-utils/mes
 // Use gpt-5.4-mini with low thinking preset for faster test execution
 const CODEX_TEST_MODEL = "gpt-5.4-mini";
 const CODEX_TEST_THINKING_OPTION_ID = "low";
+const TEST_CWD = os.tmpdir();
 
 describe("daemon E2E", () => {
   let ctx: DaemonTestContext;
@@ -26,7 +29,7 @@ describe("daemon E2E", () => {
       provider: "codex",
       model: CODEX_TEST_MODEL,
       thinkingOptionId: CODEX_TEST_THINKING_OPTION_ID,
-      cwd: "/tmp",
+      cwd: TEST_CWD,
       title: "Test Agent",
     });
 
@@ -34,7 +37,9 @@ describe("daemon E2E", () => {
     expect(agent.provider).toBe("codex");
     expect(agent.status).toBe("idle");
     // Title may or may not be set depending on timing
-    expect(agent.cwd).toBe("/tmp");
+    expect(agent.cwd).toBe(TEST_CWD);
+
+    await ctx.client.subscribeAgentTimeline(agent.id, () => {}).ready;
 
     // Send a simple message
     await ctx.client.sendMessage(agent.id, "Say 'hello world' and nothing else");
@@ -79,6 +84,9 @@ describe("daemon E2E", () => {
 
   test("fails to create agent with non-existent cwd", async () => {
     const nonExistentCwd = "/this/path/does/not/exist/12345";
+    // The daemon reports the resolved path; on Windows that is D:\this\path\...
+    // rather than the POSIX-looking input.
+    const resolvedCwd = path.resolve(nonExistentCwd);
 
     await expect(
       ctx.client.createAgent({
@@ -88,6 +96,6 @@ describe("daemon E2E", () => {
         cwd: nonExistentCwd,
         title: "Should Fail Agent",
       }),
-    ).rejects.toThrow(nonExistentCwd);
+    ).rejects.toThrow(resolvedCwd);
   });
 });

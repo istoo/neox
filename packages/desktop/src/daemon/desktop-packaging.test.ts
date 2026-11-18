@@ -105,10 +105,12 @@ describe("desktop packaging", () => {
     expect(config).toContain("!node_modules/@neolix/**/*.spec.*");
   });
 
-  it("excludes the bundled daemon web UI from the packaged app", () => {
+  it("ships the web app once, as a resource, not again inside the server package", () => {
     const config = readFileSync(join(packageRoot, "electron-builder.yml"), "utf8");
 
-    expect(config).toContain("!node_modules/@neolix/server/dist/server/web-ui/**");
+    expect(config).toContain("!node_modules/@neolix/server/dist/server/web-app/**");
+    expect(config).toContain("to: desktop-web/bridge/embed.js");
+    expect(config).toContain("to: desktop-web/web");
   });
 
   it("uses the server skill catalog without a duplicate desktop resource", () => {

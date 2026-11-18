@@ -56,8 +56,60 @@ import { PluginAccountsStore } from "./accounts/index.js";
 import { PluginAccountsError, type PluginAccounts } from "@neolix/plugin/server/accounts";
 import { readPluginProviderIcon } from "./provider-icon.js";
 import { initializeEnvironmentProxy } from "../network/index.js";
-function describeError(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+/**
+ * A cause's code and message, without the outer message. Node's fetch reports a DNS or
+ * connection failure as `TypeError("fetch failed", { cause })`, so the cause is the only
+ * place naming the host and failure code.
+ */
+function causeText(cause: unknown): string {
+  if (!(cause instanceof Error)) return String(cause);
+  const code = (cause as { code?: unknown }).code;
+  const message = cause.message.trim();
+  if (typeof code === "string" && code.length > 0) {
+    if (message.length === 0) return code;
+    return message.includes(code) ? message : `${code} ${message}`;
+  }
+  return message;
+}
+
+/** The cause chain's codes and messages, outermost first. */
+function describeErrorCause(error: unknown): string | undefined {
+  if (!(error instanceof Error)) return undefined;
+  const parts: string[] = [];
+  const seen = new Set<unknown>();
+  let current: unknown = (error as { cause?: unknown }).cause;
+  while (current !== null && current !== undefined && !seen.has(current)) {
+    seen.add(current);
+    const text = causeText(current);
+    if (text.length > 0) parts.push(text);
+    current = typeof current === "object" ? (current as { cause?: unknown }).cause : undefined;
+  }
+  return parts.length === 0 ? undefined : parts.join(": ");
+}
+
+/** The error's own message first, then its cause chain, for the daemon's message text. */
+export function describeError(error: unknown): string {
+  if (!(error instanceof Error)) return String(error);
+  const cause = describeErrorCause(error);
+  return cause === undefined ? error.message : `${error.message}: ${cause}`;
+}
+
+/** The cross-process error payload: a message that keeps its prefix, plus the cause chain. */
+function errorPayload(error: unknown): { error: string; cause?: string } {
+  const cause = describeErrorCause(error);
+  return cause === undefined
+    ? { error: describeError(error) }
+    : { error: describeError(error), cause };
+}
+
+/** The string entries of a headers object a plugin gave back. */
+function stringHeaders(value: unknown): Record<string, string> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return {};
+  const out: Record<string, string> = {};
+  for (const [name, entry] of Object.entries(value)) {
+    if (typeof entry === "string") out[name] = entry;
+  }
+  return out;
 }
 
 function requireAccounts(store: PluginAccountsStore | null): PluginAccountsStore {
@@ -122,6 +174,44 @@ export function createPluginWorker(options: {
   const gatewayUsageObservers: GatewayUsageObserverRegistration[] = [];
   const routingStrategies: GatewayRoutingStrategyRegistration[] = [];
   const agentIntegrations: GatewayAgentIntegrationRegistration[] = [];
+  /**
+   * myna's `ctx.state`: one object per middleware per client request, shared by
+   * that request's hooks. `requestKey` is the daemon's client-call id; an entry
+   * is released when the request's `onResponse` runs, and expires otherwise so
+   * a streamed request that never reports a response cannot leak.
+   */
+  const GATEWAY_STATE_TTL_MS = 15 * 60 * 1000;
+  const gatewayStates = new Map<string, { state: Record<string, unknown>; at: number }>();
+
+  function gatewayState(
+    requestKey: string | undefined,
+    middlewareId: string,
+  ): Record<string, unknown> | undefined {
+    if (requestKey === undefined || requestKey === "") return undefined;
+    const now = Date.now();
+    // debt: each hook sweeps the whole map; move to a timer once many requests
+    // are live at once.
+    for (const [key, entry] of gatewayStates) {
+      if (now - entry.at > GATEWAY_STATE_TTL_MS) gatewayStates.delete(key);
+    }
+    const key = `${requestKey}\u0000${middlewareId}`;
+    let entry = gatewayStates.get(key);
+    if (entry === undefined) {
+      entry = { state: {}, at: now };
+      gatewayStates.set(key, entry);
+    } else {
+      entry.at = now;
+    }
+    return entry.state;
+  }
+
+  function releaseGatewayState(requestKey: string | undefined): void {
+    if (requestKey === undefined || requestKey === "") return;
+    const prefix = `${requestKey}\u0000`;
+    for (const key of gatewayStates.keys()) {
+      if (key.startsWith(prefix)) gatewayStates.delete(key);
+    }
+  }
   /** A loader's own fetch, kept for the one request that names its token. */
   const subscriptionRequests: Map<
     string,
@@ -307,6 +397,7 @@ export function createPluginWorker(options: {
         ...(method.apiKey === undefined ? {} : { apiKey: method.apiKey }),
       })),
       ...(provider.options === undefined ? {} : { options: provider.options }),
+      ...(provider.checkin === undefined ? {} : { checkin: true as const }),
     };
   }
 
@@ -510,7 +601,7 @@ export function createPluginWorker(options: {
             gatewayMiddlewares: gatewayMiddlewares.map((middleware) => middleware.id),
             gatewayMiddlewareHooks: gatewayMiddlewares.map((middleware) => ({
               id: middleware.id,
-              hooks: ["onRequest", "onProvider", "onAccount", "onResponse", "onEvent"]
+              hooks: ["onRequest", "onProvider", "onAccount", "onResponse", "onEvent", "onHeaders"]
                 .filter(
                   (hook) =>
                     typeof (middleware as unknown as Record<string, unknown>)[hook] === "function",
@@ -555,6 +646,7 @@ export function createPluginWorker(options: {
       .catch((error) => console.error("Plugin API cleanup failed", error));
     hooks.close();
     agentTools.close();
+    gatewayStates.clear();
     subscriptions.releaseAll();
     for (const pending of pendingProviderConnections.values()) pending.tombstoned = true;
     const currentCleanup = cleanup;
@@ -585,7 +677,7 @@ export function createPluginWorker(options: {
       return jsonTransportValue(await source.fetch(input));
     })().then(
       (output) => send({ type: "result", requestId: message.requestId, output }),
-      (error) => send({ type: "error", requestId: message.requestId, error: describeError(error) }),
+      (error) => send({ type: "error", requestId: message.requestId, ...errorPayload(error) }),
     );
   }
 
@@ -621,7 +713,7 @@ export function createPluginWorker(options: {
       const output = ProviderStatusSchema.parse(await provider.status(message.request));
       send({ type: "result", requestId: message.requestId, output });
     })().catch((error) =>
-      send({ type: "error", requestId: message.requestId, error: describeError(error) }),
+      send({ type: "error", requestId: message.requestId, ...errorPayload(error) }),
     );
   }
 
@@ -636,7 +728,7 @@ export function createPluginWorker(options: {
         throw new Error("Invalid catalogue key");
       send({ type: "result", requestId: message.requestId, output });
     })().catch((error) =>
-      send({ type: "error", requestId: message.requestId, error: describeError(error) }),
+      send({ type: "error", requestId: message.requestId, ...errorPayload(error) }),
     );
   }
 
@@ -830,7 +922,7 @@ export function createPluginWorker(options: {
       }
     })().then(
       (output) => send({ type: "result", requestId: message.requestId, output }),
-      (error) => send({ type: "error", requestId: message.requestId, error: describeError(error) }),
+      (error) => send({ type: "error", requestId: message.requestId, ...errorPayload(error) }),
     );
   }
 
@@ -848,7 +940,7 @@ export function createPluginWorker(options: {
       return jsonTransportValue(pages);
     })().then(
       (output) => send({ type: "result", requestId: message.requestId, output }),
-      (error) => send({ type: "error", requestId: message.requestId, error: describeError(error) }),
+      (error) => send({ type: "error", requestId: message.requestId, ...errorPayload(error) }),
     );
   }
 
@@ -910,7 +1002,7 @@ export function createPluginWorker(options: {
           }),
         )
         .catch((error) =>
-          send({ type: "error", requestId: message.requestId, error: describeError(error) }),
+          send({ type: "error", requestId: message.requestId, ...errorPayload(error) }),
         );
       return true;
     }
@@ -1019,6 +1111,9 @@ export function createPluginWorker(options: {
       case "middleware.response":
         void runGatewayMiddleware(message);
         return true;
+      case "middleware.headers":
+        void runGatewayHeaders(message);
+        return true;
       case "middleware.usage":
         void runGatewayUsage(message);
         return true;
@@ -1049,34 +1144,60 @@ export function createPluginWorker(options: {
     try {
       const output =
         message.type === "middleware.request"
-          ? { body: await requestMiddlewareBody(message) }
+          ? await requestMiddlewareBody(message)
           : await responseMiddlewareAnswer(message);
       send({ type: "result", requestId: message.requestId, output });
     } catch (error) {
-      send({ type: "error", requestId: message.requestId, error: describeError(error) });
+      send({ type: "error", requestId: message.requestId, ...errorPayload(error) });
+    } finally {
+      // A whole answer ends the request for this plugin's middleware hooks.
+      if (message.type === "middleware.response") {
+        releaseGatewayState(message.requestKey);
+      }
     }
   }
 
   async function requestMiddlewareBody(
     message: Extract<PluginProcessRequest, { type: "middleware.request" }>,
-  ): Promise<Record<string, unknown>> {
+  ): Promise<{
+    body: Record<string, unknown>;
+    reject?: { status: number; message: string };
+  }> {
     let body = message.body;
     for (const middleware of gatewayMiddlewares) {
       if (!middleware.onRequest) continue;
       try {
         const change = await middleware.onRequest({
+          ...(message.requestKey === undefined ? {} : { requestKey: message.requestKey }),
+          state: gatewayState(message.requestKey, middleware.id),
           providerId: message.providerId,
           protocol: message.protocol,
           model: message.model,
           accountId: message.accountId,
           body,
         });
+        if (change?.reject !== undefined) {
+          // myna's ctx.reject: 400–599, 403 by default, and the hook chain stops.
+          const status =
+            typeof change.reject.status === "number" &&
+            change.reject.status >= 400 &&
+            change.reject.status <= 599
+              ? change.reject.status
+              : 403;
+          const text =
+            typeof change.reject.message === "string" && change.reject.message !== ""
+              ? change.reject.message
+              : "turned away by a gateway middleware";
+          // The request ends here, so nothing later will run onResponse.
+          releaseGatewayState(message.requestKey);
+          return { body, reject: { status, message: text } };
+        }
         if (change?.body !== undefined) body = change.body;
       } catch (error) {
         console.error(`gateway middleware ${middleware.id} onRequest failed`, error);
       }
     }
-    return body;
+    return { body };
   }
 
   async function responseMiddlewareAnswer(
@@ -1089,6 +1210,8 @@ export function createPluginWorker(options: {
       if (!middleware.onResponse) continue;
       try {
         const change = await middleware.onResponse({
+          ...(message.requestKey === undefined ? {} : { requestKey: message.requestKey }),
+          state: gatewayState(message.requestKey, middleware.id),
           providerId: message.providerId,
           model: message.model,
           accountId: message.accountId,
@@ -1121,7 +1244,7 @@ export function createPluginWorker(options: {
       }
       send({ type: "result", requestId: message.requestId, output: {} });
     } catch (error) {
-      send({ type: "error", requestId: message.requestId, error: describeError(error) });
+      send({ type: "error", requestId: message.requestId, ...errorPayload(error) });
     }
   }
 
@@ -1143,7 +1266,7 @@ export function createPluginWorker(options: {
       }
       send({ type: "result", requestId: message.requestId, output });
     } catch (error) {
-      send({ type: "error", requestId: message.requestId, error: describeError(error) });
+      send({ type: "error", requestId: message.requestId, ...errorPayload(error) });
     }
   }
 
@@ -1155,6 +1278,8 @@ export function createPluginWorker(options: {
       if (!middleware.onProvider) continue;
       try {
         const change = await middleware.onProvider({
+          ...(message.requestKey === undefined ? {} : { requestKey: message.requestKey }),
+          state: gatewayState(message.requestKey, middleware.id),
           providerId: message.providerId,
           protocol: message.protocol,
           accountId: message.accountId,
@@ -1176,6 +1301,8 @@ export function createPluginWorker(options: {
       if (!middleware.onAccount) continue;
       try {
         const decision = await middleware.onAccount({
+          ...(message.requestKey === undefined ? {} : { requestKey: message.requestKey }),
+          state: gatewayState(message.requestKey, middleware.id),
           providerId: message.providerId,
           protocol: message.protocol,
           accountId: message.accountId,
@@ -1198,6 +1325,8 @@ export function createPluginWorker(options: {
       if (!middleware.onEvent) continue;
       try {
         const change = (await middleware.onEvent({
+          ...(message.requestKey === undefined ? {} : { requestKey: message.requestKey }),
+          state: gatewayState(message.requestKey, middleware.id),
           providerId: message.providerId,
           accountId: message.accountId,
           model: message.model,
@@ -1210,6 +1339,34 @@ export function createPluginWorker(options: {
       }
     }
     return event;
+  }
+
+  /** Adds the headers this plugin's `onHeaders` hooks give one request. */
+  async function runGatewayHeaders(
+    message: Extract<PluginProcessRequest, { type: "middleware.headers" }>,
+  ): Promise<void> {
+    try {
+      const headers: Record<string, string> = {};
+      for (const middleware of gatewayMiddlewares) {
+        if (!middleware.onHeaders) continue;
+        try {
+          const change = await middleware.onHeaders({
+            ...(message.requestKey === undefined ? {} : { requestKey: message.requestKey }),
+            state: gatewayState(message.requestKey, middleware.id),
+            providerId: message.providerId,
+            protocol: message.protocol,
+            model: message.model,
+            accountId: message.accountId,
+          });
+          if (change?.headers !== undefined) Object.assign(headers, stringHeaders(change.headers));
+        } catch (error) {
+          console.error(`gateway middleware ${middleware.id} onHeaders failed`, error);
+        }
+      }
+      send({ type: "result", requestId: message.requestId, output: { headers } });
+    } catch (error) {
+      send({ type: "error", requestId: message.requestId, ...errorPayload(error) });
+    }
   }
 
   /** Runs one routing strategy; the daemon validates the permutation. */
@@ -1233,7 +1390,7 @@ export function createPluginWorker(options: {
       });
       send({ type: "result", requestId: message.requestId, output: { order } });
     } catch (error) {
-      send({ type: "error", requestId: message.requestId, error: describeError(error) });
+      send({ type: "error", requestId: message.requestId, ...errorPayload(error) });
     }
   }
 
@@ -1258,7 +1415,7 @@ export function createPluginWorker(options: {
       });
       send({ type: "result", requestId: message.requestId, output: { settings } });
     } catch (error) {
-      send({ type: "error", requestId: message.requestId, error: describeError(error) });
+      send({ type: "error", requestId: message.requestId, ...errorPayload(error) });
     }
   }
 
@@ -1284,8 +1441,7 @@ export function createPluginWorker(options: {
       })
       .then(
         (output) => send({ type: "result", requestId: message.requestId, output }),
-        (error) =>
-          send({ type: "error", requestId: message.requestId, error: describeError(error) }),
+        (error) => send({ type: "error", requestId: message.requestId, ...errorPayload(error) }),
       );
   }
   channel.onMessage(handleMessage);
@@ -1311,7 +1467,7 @@ export function createPluginWorker(options: {
           return send({ type: "result", requestId: message.requestId, output });
         },
         (error) => {
-          return send({ type: "error", requestId: message.requestId, error: describeError(error) });
+          return send({ type: "error", requestId: message.requestId, ...errorPayload(error) });
         },
       );
       return;

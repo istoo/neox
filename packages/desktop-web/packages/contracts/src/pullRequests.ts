@@ -57,8 +57,65 @@ export const PullRequestCheck = Schema.Struct({
   url: Schema.NullOr(Schema.String),
   startedAt: Schema.NullOr(IsoDateTime),
   completedAt: Schema.NullOr(IsoDateTime),
+  /** Forge-formatted elapsed time, e.g. "2m" while running or "1m 4s" once finished. */
+  duration: Schema.optional(Schema.String),
 });
 export type PullRequestCheck = typeof PullRequestCheck.Type;
+
+/**
+ * One CI job in a pipeline. Status strings stay open (`success`, `failed`, `running`,
+ * `manual`, …) because each forge reports its own vocabulary; clients map the ones they
+ * present and fall back to "pending".
+ */
+export const PullRequestPipelineJob = Schema.Struct({
+  id: PositiveInt,
+  name: TrimmedNonEmptyString,
+  stage: TrimmedNonEmptyString,
+  status: Schema.String,
+  url: Schema.NullOr(Schema.String),
+  allowFailure: Schema.Boolean,
+  durationSeconds: Schema.NullOr(NonNegativeInt),
+});
+export type PullRequestPipelineJob = typeof PullRequestPipelineJob.Type;
+
+export const PullRequestPipelineStage = Schema.Struct({
+  name: TrimmedNonEmptyString,
+  status: Schema.String,
+  jobs: Schema.Array(PullRequestPipelineJob),
+});
+export type PullRequestPipelineStage = typeof PullRequestPipelineStage.Type;
+
+export const PullRequestPipeline = Schema.Struct({
+  id: PositiveInt,
+  status: Schema.String,
+  url: Schema.NullOr(Schema.String),
+  ref: Schema.NullOr(Schema.String),
+  sha: Schema.NullOr(Schema.String),
+  stages: Schema.Array(PullRequestPipelineStage),
+});
+export type PullRequestPipeline = typeof PullRequestPipeline.Type;
+
+/** Forge-side pipeline identity, available even when the job breakdown cannot be fetched. */
+export const PullRequestPipelineSummary = Schema.Struct({
+  id: PositiveInt,
+  status: Schema.String,
+  url: Schema.NullOr(Schema.String),
+});
+export type PullRequestPipelineSummary = typeof PullRequestPipelineSummary.Type;
+
+/** `pipelineId` is the forge's check-details id; `changeRequestNumber` resolves forks. */
+export const PullRequestPipelineInput = Schema.Struct({
+  cwd: TrimmedNonEmptyString,
+  pipelineId: PositiveInt,
+  changeRequestNumber: PositiveInt,
+});
+export type PullRequestPipelineInput = typeof PullRequestPipelineInput.Type;
+
+export const PullRequestPipelineResult = Schema.Struct({
+  pipeline: Schema.NullOr(PullRequestPipeline),
+  error: Schema.NullOr(Schema.String),
+});
+export type PullRequestPipelineResult = typeof PullRequestPipelineResult.Type;
 
 export const PullRequestCommentKind = Schema.Literals([
   "issue-comment",
@@ -207,6 +264,13 @@ export const PullRequestDetailInput = Schema.Struct({
 });
 export type PullRequestDetailInput = typeof PullRequestDetailInput.Type;
 
+/** Forge-reported review approvals; GitLab reports these as a given/required pair. */
+export const PullRequestApprovals = Schema.Struct({
+  given: NonNegativeInt,
+  required: PositiveInt,
+});
+export type PullRequestApprovals = typeof PullRequestApprovals.Type;
+
 export const PullRequestDetail = Schema.Struct({
   projectId: ProjectId,
   projectTitle: TrimmedNonEmptyString,
@@ -240,6 +304,15 @@ export const PullRequestDetail = Schema.Struct({
   reviewers: Schema.Array(PullRequestActor),
   labels: Schema.Array(PullRequestLabel),
   checks: Schema.Array(PullRequestCheck),
+  // Forge pipeline identity from the PR status, so the section can render while jobs load.
+  // A missing field is a forge without pipelines or an older server.
+  pipeline: Schema.optional(Schema.NullOr(PullRequestPipelineSummary)).pipe(
+    Schema.withDecodingDefault(() => null),
+  ),
+  // GitLab's approval rule. Null when the forge has none (GitHub carries reviewDecision instead).
+  approvals: Schema.optional(Schema.NullOr(PullRequestApprovals)).pipe(
+    Schema.withDecodingDefault(() => null),
+  ),
   comments: Schema.Array(PullRequestComment),
   commentsTruncated: Schema.Boolean,
   commentsIncomplete: Schema.Boolean,
@@ -252,6 +325,13 @@ export const PullRequestDetail = Schema.Struct({
   // Stack lookup is optional for rendering detail, but merge UX must distinguish an unavailable
   // lookup from a confirmed standalone pull request.
   stackMetadataIncomplete: Schema.optional(Schema.Boolean).pipe(
+    Schema.withDecodingDefault(() => false),
+  ),
+  // Forge-reported auto-merge state. Neox keeps the facts on the GitHub status object; a host
+  // that does not report them decodes as "not available" instead of failing the whole detail.
+  autoMergeEnabled: Schema.optional(Schema.Boolean).pipe(Schema.withDecodingDefault(() => false)),
+  canEnableAutoMerge: Schema.optional(Schema.Boolean).pipe(Schema.withDecodingDefault(() => false)),
+  canDisableAutoMerge: Schema.optional(Schema.Boolean).pipe(
     Schema.withDecodingDefault(() => false),
   ),
 });
@@ -271,6 +351,15 @@ export const PullRequestActionInput = Schema.Struct({
   mergeMethod: Schema.optional(PullRequestMergeMethod),
 });
 export type PullRequestActionInput = typeof PullRequestActionInput.Type;
+
+/** Enable or disable the forge's auto-merge for the checkout's pull request. */
+export const PullRequestSetAutoMergeInput = Schema.Struct({
+  ...PullRequestDetailInput.fields,
+  enabled: Schema.Boolean,
+  /** Required when enabling; ignored when disabling. */
+  mergeMethod: Schema.optional(PullRequestMergeMethod),
+});
+export type PullRequestSetAutoMergeInput = typeof PullRequestSetAutoMergeInput.Type;
 
 export const PullRequestCommentInput = Schema.Struct({
   projectId: ProjectId,

@@ -55,22 +55,24 @@ describe("buildTrayMenuTemplate", () => {
 
 describe("resolveTrayIconPath", () => {
   it("reads resources when packaged and assets in dev", () => {
+    const resourcesPath = "/app/resources";
+    const assetsDir = "/repo/packages/desktop/assets";
     expect(
       resolveTrayIconPath({
         isPackaged: true,
-        resourcesPath: "/app/resources",
-        assetsDir: "/repo/packages/desktop/assets",
+        resourcesPath,
+        assetsDir,
         platform: "darwin",
       }),
-    ).toBe("/app/resources/tray/trayTemplate.png");
+    ).toBe(path.join(resourcesPath, "tray", "trayTemplate.png"));
     expect(
       resolveTrayIconPath({
         isPackaged: false,
-        resourcesPath: "/app/resources",
-        assetsDir: "/repo/packages/desktop/assets",
+        resourcesPath,
+        assetsDir,
         platform: "win32",
       }),
-    ).toBe("/repo/packages/desktop/assets/tray/tray.png");
+    ).toBe(path.join(assetsDir, "tray", "tray.png"));
   });
 
   it("points at files that exist in this checkout", () => {

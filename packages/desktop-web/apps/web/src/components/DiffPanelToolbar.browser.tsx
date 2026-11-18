@@ -56,6 +56,9 @@ it.each([false, true])(
           <DiffPanelToolbar
             activeCwd="/fixture"
             activeThreadId={null}
+            activeCommit={null}
+            onSelectCommit={noop}
+            onClearCommit={noop}
             viewSource={
               turn
                 ? { kind: "turn", turnId: TurnId.makeUnsafe("long-turn") }

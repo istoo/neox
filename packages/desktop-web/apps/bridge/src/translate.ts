@@ -49,6 +49,10 @@ export function toProjectShell(
   homeDir?: string,
   isPinned = false,
   scripts: readonly ProjectScript[] = [],
+  worktree: { readonly setup: string | null; readonly teardown: string | null } = {
+    setup: null,
+    teardown: null,
+  },
 ): OrchestrationProjectShell {
   const isHome =
     homeDir !== undefined && path.resolve(project.projectRootPath) === path.resolve(homeDir);
@@ -59,6 +63,13 @@ export function toProjectShell(
     workspaceRoot: brand(project.projectRootPath),
     defaultModelSelection: null,
     scripts: isHome ? [] : [...scripts],
+    // Home is not a worktree project; its config lifecycle stays hidden with the scripts.
+    ...(isHome
+      ? {}
+      : {
+          ...(worktree.setup ? { worktreeSetup: worktree.setup } : {}),
+          ...(worktree.teardown ? { worktreeTeardown: worktree.teardown } : {}),
+        }),
     isPinned,
     spaceId: null,
     additionalFolders: [],
@@ -176,11 +187,12 @@ export function toRuntimeMode(
   // separate lets the composer show which one the provider is actually in.
   if (modeId === "acceptEdits") return "accept-edits";
   if (modeId === "auto-review") return "auto";
-  const codexTiers =
-    availableModes.length > 0
-      ? availableModes.some((mode) => mode.id === "auto-review")
-      : provider !== undefined && driverForProvider(provider) === "codex";
-  if (modeId === "auto" && !codexTiers) return "auto";
+  const providerIsCodex = provider !== undefined && driverForProvider(provider) === "codex";
+  // `auto` on a non-Codex provider is the unattended tier. Codex's `auto` always asks, even on
+  // builds that do not offer `auto-review`; reading it as unattended would mislabel the composer
+  // and skip the full-access widening behind "Always allow this session".
+  const codexAutoAsks = providerIsCodex || availableModes.some((mode) => mode.id === "auto-review");
+  if (modeId === "auto" && !codexAutoAsks) return "auto";
   return "approval-required";
 }
 
@@ -747,8 +759,9 @@ export function toUserInputQuestions(
               ? description.trim()
               : label.trim(),
           // AskUserQuestion options can carry a code/text preview; the client shows it as
-          // preformatted text so options are comparable before picking.
-          ...(typeof preview === "string" && preview.trim() ? { preview: preview.trim() } : {}),
+          // preformatted text so options are comparable before picking. Trim only to reject a
+          // blank preview: a code block's indentation and trailing lines are meaningful.
+          ...(typeof preview === "string" && preview.trim() ? { preview } : {}),
         },
       ];
     });
@@ -1013,6 +1026,23 @@ export function toThreadTimeline(
           : `msg:${agent.id}:${seq}`;
       const text = typeof item.text === "string" ? item.text : "";
       if (item.type === "assistant_message" && turn) turn.assistantMessageId = id;
+      // Tool calls split one assistant reply into several projected rows that share the
+      // provider's message id. The client keeps one message per id and replaces its text
+      // with each payload, so publishing per-row text drops every row the client did not
+      // observe while it was the newest one. Publish the accumulated reply instead.
+      const previousMessage = messages.at(-1);
+      if (
+        item.type === "assistant_message" &&
+        previousMessage?.role === "assistant" &&
+        previousMessage.id === brand(id)
+      ) {
+        messages[messages.length - 1] = {
+          ...previousMessage,
+          text: `${previousMessage.text}${text}`,
+          updatedAt: at,
+        } as OrchestrationMessage;
+        continue;
+      }
       const attachments =
         item.type === "user_message" ? toTimelineAttachments(item.attachments) : undefined;
       messages.push({

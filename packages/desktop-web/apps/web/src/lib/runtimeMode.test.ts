@@ -82,7 +82,9 @@ describe("runtime mode provider support", () => {
 
 describe("runtimeModePresentation", () => {
   it("describes each mode with the provider's own mechanism for Claude and Codex", () => {
-    expect(runtimeModePresentation("auto", "claudeAgent").description).toContain("classifier");
+    expect(runtimeModePresentation("auto", "claudeAgent").description).toContain(
+      "safety check approves or blocks",
+    );
     expect(runtimeModePresentation("approval-required", "codex").description).toContain(
       "Read-only sandbox",
     );

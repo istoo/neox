@@ -1,7 +1,0 @@
-First Neox release published from istoo/neox. Desktop builds for macOS (Apple Silicon and Intel), Windows and Linux, with updates delivered through GitHub Releases.
-
-The macOS app is not signed with an Apple Developer ID yet. The first time you open it, macOS may refuse to start it: open System Settings › Privacy & Security and choose Open Anyway, or run xattr -dr com.apple.quarantine /Applications/Neox.app.
-
-Windows and the Linux AppImage download and...
-
-Full notes: https://github.com/istoo/neox/releases

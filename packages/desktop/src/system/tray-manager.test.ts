@@ -20,7 +20,12 @@ vi.mock("electron", () => ({
   },
   globalShortcut: { register: vi.fn(() => true), unregister: vi.fn() },
   nativeImage: {
-    createFromPath: vi.fn(() => ({ resize: vi.fn(() => ({})) })),
+    createFromPath: vi.fn(() => ({
+      resize: vi.fn(() => ({ setTemplateImage: vi.fn() })),
+      isEmpty: vi.fn(() => false),
+      getSize: vi.fn(() => ({ width: 16, height: 16 })),
+      setTemplateImage: vi.fn(),
+    })),
     createFromDataURL: vi.fn(() => ({ setTemplateImage: vi.fn() })),
     createFromBuffer: vi.fn(() => ({})),
     createEmpty: vi.fn(() => ({})),

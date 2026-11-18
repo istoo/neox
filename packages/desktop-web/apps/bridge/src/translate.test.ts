@@ -399,6 +399,20 @@ describe("translate", () => {
     ]);
   });
 
+  it("preserves a code preview's indentation and trailing blank lines", () => {
+    const preview = "  if (ready) {\n    run();\n  }\n\n";
+    const questions = toUserInputQuestions({
+      questions: [
+        {
+          header: "rollout",
+          question: "Which rollout?",
+          options: [{ label: "Flag", description: "Feature flag", preview }],
+        },
+      ],
+    });
+    expect(questions?.[0]?.options[0]?.preview).toBe(preview);
+  });
+
   it("maps Neox permission modes onto Synara runtime modes", () => {
     expect(toRuntimeMode("bypassPermissions")).toBe("full-access");
     expect(toRuntimeMode("acceptEdits")).toBe("accept-edits");
@@ -409,6 +423,11 @@ describe("translate", () => {
     expect(toRuntimeMode("auto", codex)).toBe("approval-required");
     expect(toRuntimeMode("auto-review", codex)).toBe("auto");
     expect(toRuntimeMode("auto", [{ id: "auto" }, { id: "default" }])).toBe("auto");
+    // Codex without auto-review still only asks in `auto`: the composer must read
+    // approval-required so "Always allow this session" widens the runtime mode.
+    expect(toRuntimeMode("auto", [{ id: "auto" }, { id: "full-access" }], "codex")).toBe(
+      "approval-required",
+    );
     expect(toRuntimeMode("allow-all")).toBe("full-access");
     // An unloaded agent lists no modes; the provider tells Codex's `auto` apart.
     expect(toRuntimeMode("auto", [], "codex")).toBe("approval-required");
@@ -1055,5 +1074,30 @@ describe("translate", () => {
         (activity) => activity.kind === "tool.completed" || activity.kind === "tool.started",
       ),
     ).toBe(false);
+  });
+
+  it("publishes the accumulated reply when tool calls split one assistant message", () => {
+    const entry = makeEntry({ status: "idle" });
+    const entries = [
+      timelineEntry(1, { type: "user_message", text: "Fix it", messageId: "u1" }),
+      timelineEntry(2, { type: "assistant_message", text: "First part. ", messageId: "a1" }),
+      timelineEntry(3, {
+        type: "tool_call",
+        callId: "call-1",
+        name: "read",
+        status: "completed",
+        error: null,
+        detail: { type: "read", filePath: "a.ts" },
+      }),
+      timelineEntry(4, { type: "assistant_message", text: "Last part.", messageId: "a1" }),
+    ];
+    // The client keeps one message per id and replaces its text with each payload, so a
+    // per-row message would leave only the final row visible.
+    const timeline = toThreadTimeline(entry.agent, entries);
+    const assistants = timeline.messages.filter((message) => message.role === "assistant");
+    expect(assistants).toHaveLength(1);
+    expect(assistants[0]?.text).toBe("First part. Last part.");
+    expect(assistants[0]?.createdAt).toBe("2026-11-05T05:27:02.000Z");
+    expect(assistants[0]?.updatedAt).toBe("2026-11-05T05:27:04.000Z");
   });
 });

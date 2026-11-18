@@ -9,6 +9,8 @@ import { readUnconfirmedTerminalCleanup } from "../../../terminal/terminal-worke
 import { generateLocalPairingOffer } from "../../pairing-offer.js";
 import { isContainerRuntime } from "../../container-runtime.js";
 import { daemonLogPath } from "../../daemon-instance.js";
+import { getProcessMemoryDiagnostics, getProcessUptimeSeconds } from "../../process-diagnostics.js";
+import type { DaemonRuntimeStatusSnapshot } from "../../runtime-status.js";
 import { revealCommand } from "../../llm-gateway/held-report.js";
 import { publicPageUrl } from "../../web-page.js";
 import {
@@ -66,6 +68,7 @@ export interface DaemonSessionOptions {
   /** Why this host's terminals cannot be served (held by a newer Neolix's worker), if so. */
   getTerminalsUnavailable?: () => string | null;
   getWebSocketRuntimeMetrics?: () => DaemonWebSocketRuntimeDiagnosticSnapshot | null;
+  getDaemonRuntimeStatus?: () => DaemonRuntimeStatusSnapshot | null;
   getObservationMetrics?: () => Record<string, number>;
   logger: pino.Logger;
   hubRelationships?: HubRelationshipManagement;
@@ -86,12 +89,15 @@ export class DaemonSession {
   private readonly serverId: string | undefined;
   private readonly daemonVersion: string | undefined;
   private readonly daemonRuntimeConfig: DaemonRuntimeConfig | undefined;
+  /** The status payload's optional worktree path, built once so the handler stays simple. */
+  private readonly worktreesRootStatus: { worktreesRoot?: string };
   private readonly listAgents: () => ManagedAgent[];
   private readonly listProjects: () => Promise<PersistedProjectRecord[]>;
   private readonly listWorkspaces: () => Promise<PersistedWorkspaceRecord[]>;
   private readonly listProviderAvailability: () => Promise<ProviderAvailability[]>;
   private readonly getTerminalsUnavailable: () => string | null;
   private readonly getWebSocketRuntimeMetrics: () => DaemonWebSocketRuntimeDiagnosticSnapshot | null;
+  private readonly getDaemonRuntimeStatus: () => DaemonRuntimeStatusSnapshot | null;
   private readonly getObservationMetrics: DaemonSessionOptions["getObservationMetrics"];
   private readonly logger: pino.Logger;
   private readonly selfUpdate: DaemonSelfUpdateSessionController;
@@ -105,12 +111,16 @@ export class DaemonSession {
     this.serverId = options.serverId;
     this.daemonVersion = options.daemonVersion;
     this.daemonRuntimeConfig = options.daemonRuntimeConfig;
+    this.worktreesRootStatus = options.daemonRuntimeConfig?.worktreesRoot
+      ? { worktreesRoot: options.daemonRuntimeConfig.worktreesRoot }
+      : {};
     this.listAgents = options.listAgents;
     this.listProjects = options.listProjects;
     this.listWorkspaces = options.listWorkspaces;
     this.listProviderAvailability = options.listProviderAvailability;
     this.getTerminalsUnavailable = options.getTerminalsUnavailable ?? (() => null);
     this.getWebSocketRuntimeMetrics = options.getWebSocketRuntimeMetrics ?? (() => null);
+    this.getDaemonRuntimeStatus = options.getDaemonRuntimeStatus ?? (() => null);
     this.getObservationMetrics = options.getObservationMetrics;
     this.logger = options.logger;
     this.hubRelationships = options.hubRelationships ?? null;
@@ -222,6 +232,7 @@ export class DaemonSession {
           ...(publicUrl === null ? {} : { publicUrl }),
           configDir: this.neolixHome,
           ...(hasLog ? { logPath } : {}),
+          ...this.worktreesRootStatus,
           relay: this.daemonRuntimeConfig?.getRelayConfig() ?? null,
           providers,
           terminalCleanupUnconfirmed,
@@ -244,6 +255,7 @@ export class DaemonSession {
           ...(publicUrl === null ? {} : { publicUrl }),
           configDir: this.neolixHome,
           ...(hasLog ? { logPath } : {}),
+          ...this.worktreesRootStatus,
           relay: null,
           providers: [],
           terminalCleanupUnconfirmed,
@@ -445,6 +457,37 @@ export class DaemonSession {
         payload: {
           requestId: msg.requestId,
           error: error instanceof Error ? error.message : String(error),
+        },
+      });
+    }
+  }
+
+  /** Settings › Runtime: event-loop health plus the live process and agent counts. */
+  async handleRuntimeStatusRequest(
+    msg: Extract<SessionInboundMessage, { type: "daemon.runtime.get_status.request" }>,
+  ): Promise<void> {
+    try {
+      const status = this.getDaemonRuntimeStatus();
+      if (!status) throw new Error("Runtime status is unavailable");
+      this.host.emit({
+        type: "daemon.runtime.get_status.response",
+        payload: {
+          requestId: msg.requestId,
+          ...status,
+          uptimeSeconds: getProcessUptimeSeconds(),
+          memory: getProcessMemoryDiagnostics(),
+          agentCount: this.listAgents().length,
+        },
+      });
+    } catch (error) {
+      this.logger.error({ err: error }, "Failed to handle daemon runtime status request");
+      this.host.emit({
+        type: "rpc_error",
+        payload: {
+          requestId: msg.requestId,
+          requestType: msg.type,
+          error: error instanceof Error ? error.message : String(error),
+          code: "handler_error",
         },
       });
     }

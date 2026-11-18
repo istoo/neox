@@ -413,7 +413,7 @@ describe("workspaceSidebarSearch", () => {
     host: {
       hostId: "host-mini",
       hostName: "Mac mini",
-      wsPath: "/ws/remote/mini",
+      wsPath: "/rpc/remote/mini",
       executionScope: {
         environmentId: "mini",
         accountAuthority: "https://account.example",

@@ -71,6 +71,10 @@ export class PricingCatalog {
   private makers = new Map<string, PricedModel>();
   private fetchedAt = 0;
   private timer: NodeJS.Timeout | null = null;
+  /** The fetch in flight; `dispose` aborts and awaits it so nothing writes after shutdown. */
+  private inFlight: { controller: AbortController; done: Promise<PricingCatalogRefresh> } | null =
+    null;
+  private disposed = false;
 
   constructor(options: { neolixHome: string; logger: Logger }) {
     this.filePath = path.join(options.neolixHome, FILENAME);
@@ -88,10 +92,16 @@ export class PricingCatalog {
     this.timer.unref();
   }
 
-  public dispose(): void {
+  public async dispose(): Promise<void> {
+    this.disposed = true;
     if (this.timer !== null) {
       clearInterval(this.timer);
       this.timer = null;
+    }
+    const inFlight = this.inFlight;
+    if (inFlight !== null) {
+      inFlight.controller.abort();
+      await inFlight.done;
     }
   }
 
@@ -115,12 +125,33 @@ export class PricingCatalog {
   }
 
   public async refresh(now: number): Promise<PricingCatalogRefresh> {
+    if (this.disposed) {
+      return { ok: false, error: "The price catalog is shut down" };
+    }
+    // One fetch at a time: a refresh asked for while one runs shares its result.
+    if (this.inFlight !== null) {
+      return this.inFlight.done;
+    }
+    const controller = new AbortController();
+    const done = this.fetchAndStore(now, controller.signal).finally(() => {
+      this.inFlight = null;
+    });
+    this.inFlight = { controller, done };
+    return done;
+  }
+
+  private async fetchAndStore(now: number, signal: AbortSignal): Promise<PricingCatalogRefresh> {
     try {
-      const response = await fetch(MODELS_DEV_URL, { signal: AbortSignal.timeout(10_000) });
+      const response = await fetch(MODELS_DEV_URL, {
+        signal: AbortSignal.any([signal, AbortSignal.timeout(10_000)]),
+      });
       if (!response.ok) {
         return { ok: false, error: `models.dev answered ${response.status}` };
       }
       const payload: unknown = await response.json();
+      if (signal.aborted) {
+        return { ok: false, error: "The price catalog is shut down" };
+      }
       const parsed = parseModelsDev(payload);
       this.prices = parsed.prices;
       this.makers = parsed.makers;

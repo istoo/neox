@@ -3,9 +3,9 @@ import { THIRD_PARTY_NOTICES } from "@neolix/protocol/generated/third-party-noti
 
 /**
  * myna's `myna licenses` (internal/notices): the third-party notices the
- * binary carries, generated from package-lock.json at build time
- * (scripts/generate-third-party-notices.mjs). Settings › About shows the
- * same text.
+ * binary carries, generated from the root package-lock.json and the
+ * desktop-web workspace at build time (scripts/generate-third-party-notices.mjs).
+ * Settings › About shows the same text.
  */
 export function createLicensesCommand(): Command {
   return new Command("licenses")

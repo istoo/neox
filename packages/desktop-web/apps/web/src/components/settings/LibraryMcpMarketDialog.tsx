@@ -20,11 +20,67 @@ import { Input } from "~/components/ui/input";
 import { toastManager } from "~/components/ui/toast";
 import { neolixLibraryApi } from "~/lib/neolixLibraryClient";
 import { localizeLibraryError } from "~/lib/errorLocalization";
+import { McpIcon } from "~/lib/icons";
+import { cn } from "~/lib/utils";
 import { useTranslation } from "~/i18n";
 import { LibraryAgentChips, LibraryField } from "./LibraryShared";
 
 function orNull(value: string | null | undefined): string | null {
   return value ?? null;
+}
+
+const MARKET_ICON_TILE =
+  "flex size-8 shrink-0 items-center justify-center overflow-hidden rounded-md bg-[var(--color-background-elevated-secondary)] ring-1 ring-border/50";
+
+/**
+ * A market server's registry icon: `icon` in a light theme, `iconDark` in a
+ * dark one. The title sits beside it, so the image is decorative; a failed
+ * load leaves the same muted tile a server without an icon gets.
+ */
+function MarketServerIcon({ server }: { server: LibraryMarketServer }) {
+  const [failed, setFailed] = useState<ReadonlySet<string>>(() => new Set());
+  const light = server.icon?.trim() || server.iconDark?.trim() || "";
+  const dark = server.iconDark?.trim() || light;
+
+  if (light.length === 0) {
+    return (
+      <span className={MARKET_ICON_TILE} aria-hidden="true">
+        <McpIcon className="size-4 text-muted-foreground" />
+      </span>
+    );
+  }
+
+  const markFailed = (src: string) => {
+    setFailed((current) => new Set(current).add(src));
+  };
+
+  const picture = (src: string, className: string) =>
+    failed.has(src) ? (
+      <McpIcon className={cn("size-4 text-muted-foreground", className)} aria-hidden="true" />
+    ) : (
+      <img
+        src={src}
+        alt=""
+        loading="lazy"
+        decoding="async"
+        draggable={false}
+        onError={() => markFailed(src)}
+        className={cn("size-5 object-contain", className)}
+      />
+    );
+
+  return (
+    <span className={MARKET_ICON_TILE}>
+      {dark === light ? (
+        picture(light, "")
+      ) : (
+        <>
+          {picture(light, "dark:hidden")}
+          {picture(dark, "hidden dark:block")}
+        </>
+      )}
+    </span>
+  );
 }
 
 export function LibraryMcpMarketDialog(props: {
@@ -182,6 +238,7 @@ export function LibraryMcpMarketDialog(props: {
                         key={`${server.id}:${server.name}`}
                         className="flex items-center gap-3 border-b border-border/40 px-1 py-2 last:border-b-0"
                       >
+                        <MarketServerIcon server={server} />
                         <div className="min-w-0 flex-1">
                           <p className="truncate text-ui font-medium text-foreground">
                             {server.title}

@@ -5,6 +5,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 
+import { useBuiltinFeatures } from "~/hooks/useBuiltinFeatures";
 import { neolixGatewayApi } from "~/lib/neolixGatewayApi";
 import type {
   GatewayConfig,
@@ -201,6 +202,8 @@ function KeyEditor({
   index: number;
 }) {
   const { t } = useTranslation();
+  const { isEnabled } = useBuiltinFeatures();
+  const budgetOn = isEnabled("budget");
   const update = (mutate: (draft: GatewayKeyObject) => void) => updateKey(edit, index, mutate);
   const limits = keyEntry.limits ?? [];
 
@@ -255,26 +258,30 @@ function KeyEditor({
           }
           placeholder="2027-01-01T00:00:00Z"
         />
-        <GatewayNumberField
-          label={t("gateway:daily_tokens")}
-          value={keyEntry.dailyTokens}
-          min={1}
-          onChange={(value) =>
-            update((draft) => {
-              draft.dailyTokens = value;
-            })
-          }
-        />
-        <GatewayNumberField
-          label={t("gateway:monthly_usd")}
-          value={keyEntry.monthlyUsd}
-          min={0}
-          onChange={(value) =>
-            update((draft) => {
-              draft.monthlyUsd = value;
-            })
-          }
-        />
+        {budgetOn ? (
+          <>
+            <GatewayNumberField
+              label={t("gateway:daily_tokens")}
+              value={keyEntry.dailyTokens}
+              min={1}
+              onChange={(value) =>
+                update((draft) => {
+                  draft.dailyTokens = value;
+                })
+              }
+            />
+            <GatewayNumberField
+              label={t("gateway:monthly_usd")}
+              value={keyEntry.monthlyUsd}
+              min={0}
+              onChange={(value) =>
+                update((draft) => {
+                  draft.monthlyUsd = value;
+                })
+              }
+            />
+          </>
+        ) : null}
         <GatewayNumberField
           label={t("gateway:rate_per_minute")}
           value={keyEntry.ratePerMinute}
@@ -323,138 +330,142 @@ function KeyEditor({
         </label>
       </div>
 
-      <div>
-        <div className="mb-1 flex items-center justify-between">
-          <span className="text-ui-sm text-muted-foreground">{t("gateway:limits")}</span>
-          <Button
-            size="xs"
-            variant="outline"
-            disabled={limits.length >= 5}
-            onClick={() =>
-              update((draft) => {
-                draft.limits = [
-                  ...(draft.limits ?? []),
-                  { period: "day", tokens: 1_000_000, cacheReads: false },
-                ];
-              })
-            }
-          >
-            {t("gateway:add_limit")}
-          </Button>
-        </div>
-        {limits.length === 0 ? (
-          <div className="text-ui-xs text-muted-foreground">{t("gateway:no_limits")}</div>
-        ) : (
-          limits.map((limit, at) => (
-            <div
-              key={`${limit.period}-${limit.days ?? ""}-${limit.hours ?? ""}-${limit.tokens ?? ""}-${limit.cost ?? ""}-${limit.since ?? ""}`}
-              className="mt-2 rounded-md border border-[color:var(--color-border)] p-2"
+      {budgetOn ? (
+        <div>
+          <div className="mb-1 flex items-center justify-between">
+            <span className="text-ui-sm text-muted-foreground">{t("gateway:limits")}</span>
+            <Button
+              size="xs"
+              variant="outline"
+              disabled={limits.length >= 5}
+              onClick={() =>
+                update((draft) => {
+                  draft.limits = [
+                    ...(draft.limits ?? []),
+                    { period: "day", tokens: 1_000_000, cacheReads: false },
+                  ];
+                })
+              }
             >
-              <div className="grid gap-2 sm:grid-cols-4">
-                <label className="flex flex-col gap-1">
-                  <span className="text-ui-sm text-muted-foreground">{t("gateway:period")}</span>
-                  <select
-                    value={limit.period}
-                    onChange={(event) => {
-                      const value = event.currentTarget.value as GatewayKeyLimit["period"];
+              {t("gateway:add_limit")}
+            </Button>
+          </div>
+          {limits.length === 0 ? (
+            <div className="text-ui-xs text-muted-foreground">{t("gateway:no_limits")}</div>
+          ) : (
+            limits.map((limit, at) => (
+              <div
+                key={`${limit.period}-${limit.days ?? ""}-${limit.hours ?? ""}-${limit.tokens ?? ""}-${limit.cost ?? ""}-${limit.since ?? ""}`}
+                className="mt-2 rounded-md border border-[color:var(--color-border)] p-2"
+              >
+                <div className="grid gap-2 sm:grid-cols-4">
+                  <label className="flex flex-col gap-1">
+                    <span className="text-ui-sm text-muted-foreground">{t("gateway:period")}</span>
+                    <select
+                      value={limit.period}
+                      onChange={(event) => {
+                        const value = event.currentTarget.value as GatewayKeyLimit["period"];
+                        updateLimit(at, (draft) => {
+                          draft.period = value;
+                        });
+                      }}
+                      className="h-7 rounded-md border border-[color:var(--color-border)] bg-background px-2 text-ui-sm"
+                    >
+                      {LIMIT_PERIODS.map((period) => (
+                        <option key={period} value={period}>
+                          {t(`gateway:limit_${period}`)}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  {limit.period === "days" ? (
+                    <GatewayNumberField
+                      label={t("gateway:days")}
+                      value={limit.days}
+                      min={1}
+                      onChange={(value) =>
+                        updateLimit(at, (draft) => {
+                          draft.days = value;
+                        })
+                      }
+                    />
+                  ) : null}
+                  {limit.period === "hours" ? (
+                    <GatewayNumberField
+                      label={t("gateway:hours")}
+                      value={limit.hours}
+                      min={1}
+                      onChange={(value) =>
+                        updateLimit(at, (draft) => {
+                          draft.hours = value;
+                        })
+                      }
+                    />
+                  ) : null}
+                  <GatewayNumberField
+                    label={t("gateway:limit_tokens")}
+                    value={limit.tokens}
+                    min={1}
+                    onChange={(value) =>
                       updateLimit(at, (draft) => {
-                        draft.period = value;
-                      });
-                    }}
-                    className="h-7 rounded-md border border-[color:var(--color-border)] bg-background px-2 text-ui-sm"
+                        draft.tokens = value;
+                      })
+                    }
+                  />
+                  <GatewayNumberField
+                    label={t("gateway:limit_cost")}
+                    value={limit.cost}
+                    min={0}
+                    onChange={(value) =>
+                      updateLimit(at, (draft) => {
+                        draft.cost = value;
+                      })
+                    }
+                  />
+                </div>
+                <div className="mt-2 flex flex-wrap items-center gap-3">
+                  <label className="flex items-center gap-2 text-ui-sm">
+                    <GatewayToggle
+                      checked={limit.cacheReads === true}
+                      label={t("gateway:limit_cache_reads")}
+                      onChange={(checked) =>
+                        updateLimit(at, (draft) => {
+                          draft.cacheReads = checked;
+                        })
+                      }
+                    />
+                    {t("gateway:limit_cache_reads")}
+                  </label>
+                  <Button
+                    size="xs"
+                    variant="ghost"
+                    onClick={() =>
+                      updateLimit(at, (draft) => {
+                        draft.since = new Date().toISOString();
+                      })
+                    }
                   >
-                    {LIMIT_PERIODS.map((period) => (
-                      <option key={period} value={period}>
-                        {t(`gateway:limit_${period}`)}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                {limit.period === "days" ? (
-                  <GatewayNumberField
-                    label={t("gateway:days")}
-                    value={limit.days}
-                    min={1}
-                    onChange={(value) =>
-                      updateLimit(at, (draft) => {
-                        draft.days = value;
+                    {t("gateway:reset_window")}
+                  </Button>
+                  <Button
+                    size="xs"
+                    variant="ghost"
+                    onClick={() =>
+                      update((draft) => {
+                        draft.limits = (draft.limits ?? []).filter(
+                          (_, position) => position !== at,
+                        );
                       })
                     }
-                  />
-                ) : null}
-                {limit.period === "hours" ? (
-                  <GatewayNumberField
-                    label={t("gateway:hours")}
-                    value={limit.hours}
-                    min={1}
-                    onChange={(value) =>
-                      updateLimit(at, (draft) => {
-                        draft.hours = value;
-                      })
-                    }
-                  />
-                ) : null}
-                <GatewayNumberField
-                  label={t("gateway:limit_tokens")}
-                  value={limit.tokens}
-                  min={1}
-                  onChange={(value) =>
-                    updateLimit(at, (draft) => {
-                      draft.tokens = value;
-                    })
-                  }
-                />
-                <GatewayNumberField
-                  label={t("gateway:limit_cost")}
-                  value={limit.cost}
-                  min={0}
-                  onChange={(value) =>
-                    updateLimit(at, (draft) => {
-                      draft.cost = value;
-                    })
-                  }
-                />
+                  >
+                    {t("gateway:remove")}
+                  </Button>
+                </div>
               </div>
-              <div className="mt-2 flex flex-wrap items-center gap-3">
-                <label className="flex items-center gap-2 text-ui-sm">
-                  <GatewayToggle
-                    checked={limit.cacheReads === true}
-                    label={t("gateway:limit_cache_reads")}
-                    onChange={(checked) =>
-                      updateLimit(at, (draft) => {
-                        draft.cacheReads = checked;
-                      })
-                    }
-                  />
-                  {t("gateway:limit_cache_reads")}
-                </label>
-                <Button
-                  size="xs"
-                  variant="ghost"
-                  onClick={() =>
-                    updateLimit(at, (draft) => {
-                      draft.since = new Date().toISOString();
-                    })
-                  }
-                >
-                  {t("gateway:reset_window")}
-                </Button>
-                <Button
-                  size="xs"
-                  variant="ghost"
-                  onClick={() =>
-                    update((draft) => {
-                      draft.limits = (draft.limits ?? []).filter((_, position) => position !== at);
-                    })
-                  }
-                >
-                  {t("gateway:remove")}
-                </Button>
-              </div>
-            </div>
-          ))
-        )}
-      </div>
+            ))
+          )}
+        </div>
+      ) : null}
     </div>
   );
 }

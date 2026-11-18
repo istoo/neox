@@ -1,9 +1,0 @@
-{
-  "platforms": ["ios", "android"],
-  "ios": {
-    "modules": ["NeolixHardwareKeyboardModule"]
-  },
-  "android": {
-    "modules": ["com.istoo.neox.keyboard.NeolixHardwareKeyboardModule"]
-  }
-}

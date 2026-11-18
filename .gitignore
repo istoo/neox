@@ -49,9 +49,6 @@ test-results/
 # Vercel
 .vercel/
 
-# Expo
-.expo/
-
 # Misc
 *.pem
 .vercel
@@ -91,7 +88,6 @@ packages/protocol/codegen/generated/
 /artifacts
 packages/desktop/.cache/
 packages/desktop/src-tauri/resources/managed-runtime/
-app.json
 
 # Heap snapshots dumped by --heapsnapshot-near-heap-limit; keep them for debugging.
 *.heapsnapshot

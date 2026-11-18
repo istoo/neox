@@ -4,10 +4,13 @@ import process from "node:process";
 import { chromium } from "playwright";
 
 const CDP_PORT = process.env.NEOLIX_ELECTRON_REMOTE_DEBUGGING_PORT ?? "9223";
-const EXPO_PORT = process.env.EXPO_PORT ?? "8082";
+const APP_ORIGIN =
+  process.env.ELECTRON_VERIFY_APP_ORIGIN ??
+  process.env.NEOLIX_DESKTOP_WEB_URL?.trim() ??
+  `http://${process.env.NEOLIX_LISTEN?.trim() || "127.0.0.1:6767"}`;
 const CDP_URL = process.env.CDP_URL ?? `http://127.0.0.1:${CDP_PORT}`;
 const OUTPUT_DIR = process.env.ELECTRON_VERIFY_OUTPUT_DIR ?? "/tmp/electron-verification";
-const APP_URL_FRAGMENT = process.env.ELECTRON_VERIFY_APP_URL_FRAGMENT ?? `localhost:${EXPO_PORT}`;
+const APP_URL_FRAGMENT = process.env.ELECTRON_VERIFY_APP_URL_FRAGMENT ?? new URL(APP_ORIGIN).host;
 const REQUIRED_DESKTOP_KEYS = ["invoke", "events", "window", "dialog", "notification", "opener"];
 const INTERACTIVE_SELECTOR = [
   "button",
@@ -515,7 +518,7 @@ async function navigateToWelcome(page) {
   await page.waitForLoadState("domcontentloaded");
   await page.waitForTimeout(1000);
   if (!page.url().endsWith("/welcome")) {
-    await page.goto(`http://${APP_URL_FRAGMENT}/welcome`, { waitUntil: "domcontentloaded" });
+    await page.goto(`${APP_ORIGIN.replace(/\/$/, "")}/welcome`, { waitUntil: "domcontentloaded" });
     await page.waitForTimeout(1000);
   }
 }

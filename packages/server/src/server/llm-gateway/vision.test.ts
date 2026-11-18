@@ -10,19 +10,24 @@ import { IMAGE_OMITTED, VisionService, type VisionAsk, type VisionSend } from ".
 
 const logger = pino({ level: "silent" });
 const homes: string[] = [];
+const services: VisionService[] = [];
 
 const noSend: VisionSend = async () => {
   throw new Error("no describer in this test");
 };
 
 afterAll(async () => {
+  // The description cache saves in the background; let it finish before its home goes.
+  await Promise.all(services.splice(0).map((created) => created.dispose()));
   await Promise.all(homes.splice(0).map((home) => rm(home, { recursive: true, force: true })));
 });
 
 async function service(): Promise<VisionService> {
   const home = await mkdtemp(path.join(tmpdir(), "neolix-vision-"));
   homes.push(home);
-  return new VisionService({ neolixHome: home, logger });
+  const created = new VisionService({ neolixHome: home, logger });
+  services.push(created);
+  return created;
 }
 
 function configWith(vision: GatewayConfig["vision"], images?: boolean): GatewayConfig {

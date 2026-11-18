@@ -13,6 +13,8 @@ import {
   type ProjectAppearance,
   type ProjectColor,
 } from "~/lib/projectAppearance";
+import { readExecutionContext } from "~/lib/hosts/executionContext";
+import { useProjectIcon } from "~/lib/projectIcons.query";
 import { cn } from "~/lib/utils";
 import { resolveExecutionResource } from "~/lib/wsHttpUrl";
 import { FolderIcon, FolderOpenIcon } from "~/lib/icons";
@@ -84,8 +86,16 @@ export function ProjectEmojiGlyph({ emoji, className }: { emoji: string; classNa
   );
 }
 
+function localEnvironmentId(): string {
+  return readExecutionContext()?.execution.environmentId ?? "local";
+}
+
 type ProjectGlyphProps = {
   cwd: string;
+  /** Needed to read a custom icon the daemon stores against the project. */
+  projectId?: string | undefined;
+  /** The host that owns the project; defaults to the local environment. */
+  environmentId?: string | undefined;
   expanded: boolean;
   appearance?: ProjectAppearance | null | undefined;
 };
@@ -97,12 +107,16 @@ type ProjectGlyphProps = {
  */
 export function ProjectSidebarIcon({
   cwd,
+  projectId,
+  environmentId: environmentIdProp,
   expanded,
   appearance,
   glyphClassName: glyphClassNameProp,
   fallback,
 }: ProjectGlyphProps & { glyphClassName?: string; fallback?: ReactNode }) {
   const glyphClassName = glyphClassNameProp ?? "size-4";
+  const environmentId = environmentIdProp ?? localEnvironmentId();
+  const customIcon = useProjectIcon({ environmentId, projectId, cwd }).iconDataUri;
   if (appearance?.kind === "emoji") {
     return <ProjectEmojiGlyph emoji={appearance.emoji} className={glyphClassName} />;
   }
@@ -112,6 +126,18 @@ export function ProjectSidebarIcon({
         name={appearance.icon}
         className={glyphClassName}
         style={colorStyle(appearance.color)}
+      />
+    );
+  }
+  // A custom upload is the user's explicit choice for the project, so it beats
+  // the detected favicon and the plain folder.
+  if (customIcon) {
+    return (
+      <img
+        src={customIcon}
+        alt=""
+        aria-hidden="true"
+        className={cn(glyphClassName, "rounded-[2px] object-contain", LOGO_HALO_CLASS_NAME)}
       />
     );
   }
@@ -154,13 +180,18 @@ function ProjectLogo({
  */
 export function ProjectDisclosureChevron({
   cwd,
+  projectId,
+  environmentId: environmentIdProp,
   expanded,
   appearance,
   className,
 }: ProjectGlyphProps & { className?: string }) {
+  const environmentId = environmentIdProp ?? localEnvironmentId();
+  const customIcon = useProjectIcon({ environmentId, projectId, cwd }).iconDataUri;
   if (
     appearance?.kind === "emoji" ||
-    (appearance?.kind === "icon" && appearance.icon !== DEFAULT_PROJECT_ICON)
+    (appearance?.kind === "icon" && appearance.icon !== DEFAULT_PROJECT_ICON) ||
+    customIcon
   ) {
     return <DisclosureChevron open={expanded} className={className} />;
   }

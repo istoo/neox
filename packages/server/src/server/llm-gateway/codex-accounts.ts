@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, rename, unlink, writeFile } from "node:fs/promises";
+import { mkdir, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { isValidJson, keepLastGood, readLastGood } from "../last-good.js";
+import { renameSteady } from "../steady.js";
 import { codexLimitsOf, type CodexLimit } from "./codex-limits.js";
 import { CODEX_CLIENT_ID, CODEX_TOKEN_URL } from "./codex-user-data.js";
 
@@ -72,7 +73,9 @@ export async function saveCodexAccounts(
   await keepLastGood(file, isValidJson);
   await writeFile(temp, JSON.stringify(accounts), { mode: 0o600 });
   try {
-    await rename(temp, file);
+    // Windows briefly refuses the replace while a reader or scanner holds the
+    // file, which `renameSteady` waits out.
+    await renameSteady(temp, file);
   } catch (error) {
     await unlink(temp).catch(() => undefined);
     throw error;

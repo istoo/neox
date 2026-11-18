@@ -255,7 +255,7 @@ so it cannot break the plugin surface.
 Its controlled modal keeps presentation metadata on `<Modal title="…" icon={…}>` and body UI in
 `<Modal.Content>`. Body layout, sheet-aware scrolling, and clipboard actions follow the
 [host UI contract](../public-docs/plugins/reference.md#host-ui).
-Plugin UI runs on desktop and mobile across multiple themes: color every `Text` from
+Plugin UI runs on desktop and web across multiple themes: color every `Text` from
 `theme.colors.foreground` or `theme.colors.foregroundMuted`, and size layout from `layout.compact`.
 See `public-docs/plugins/reference.md`.
 
@@ -383,7 +383,7 @@ limit, is in [stream events from the daemon](../public-docs/plugins/reference.md
 workspaces, agents, terminals, providers, and daemon config. They do not expose connection lifecycle.
 
 `useNeolix()` is the plugin's one client: `InstalledPlugin.neolix`, created with the installation in
-`packages/app/src/plugins/registry.ts` over the host's existing connection and passed to setup as
+the web client's plugin registry over the host's existing connection and passed to setup as
 `client.neolix`. Authors release their subscriptions in their own cleanup, and teardown (disable,
 reload, removal, host removal) disposes the client, which ends the rest; nothing is created or
 disposed per mounted surface. See the
@@ -392,7 +392,7 @@ changes both `useNeolix()` and `useRpc()` to that host's installation. An offlin
 installation. A server handler owns an IPC-backed daemon session for the life of its subprocess.
 Use plugin RPC for plugin-specific backend behavior that is not a normal Neox operation.
 
-Host-targeted clients and discovery are owned by `packages/app/src/plugins/hosts`, with per-installation
+Host-targeted clients and discovery are owned by the web client's plugin host module, with per-installation
 bindings supplied by the bundle loader. Bind the imperative getter to that installation; do not
 resolve ownership through a mutable current-plugin global. Keep observation ownership in this module
 and transport ownership in the app host runtime. See the [public host API contract](../public-docs/plugins/reference.md#discover-hosts-and-target-another-host).
@@ -406,8 +406,8 @@ catalog is complete.
 The app retains client bundles per host in its file cache (IndexedDB on web), keyed by plugin ID
 and the daemon's SHA-256. A cold client verifies stored contents before advertising their hashes;
 missing or corrupt files request full bundles. Only the latest catalog's bundles remain. Hashing
-uses Expo's native async digest on mobile, avoiding a JavaScript hash loop on Hermes; reading and
-passing the bundle string still costs memory and time once per client lifetime.
+uses the browser's async digest; reading and passing the bundle string still costs memory and time
+once per client lifetime.
 Persistence runs after catalog reconstruction without delaying installation. One write runs at a
 time; while storage is busy, only the newest pending catalog is kept. A failed write leaves the
 in-memory bundles usable, and a later catalog retries persistence.
@@ -466,6 +466,9 @@ metadata and includes them in `plugin.list`; no client code runs. React Native h
       }
     ],
     "sidebarItems": [{ "id": "main", "title": "Review", "view": "main" }],
+    "panels": [
+      { "id": "usage-strip", "slot": "usage", "title": "Usage", "view": "main", "height": 240 }
+    ],
     "composerPills": [
       {
         "id": "greet",
@@ -513,14 +516,31 @@ metadata and includes them in `plugin.list`; no client code runs. React Native h
 }
 ```
 
+A sidebar entry may declare `replaces: "sessions" | "usage"` to take History's or Usage's place.
+The built-in row keeps its slot but hides, the plugin row moves into it, and the built-in entry
+opens the plugin view while the plugin runs: History's route redirects to it, and the rail's Usage
+entry steps aside. Disabling or removing the plugin restores both. `library` and `routing` name
+settings sections in myna; a declarative sidebar entry has no sidebar row to take, so desktop-web
+leaves them to the host's settings pages.
+
+A `panels` entry puts a view inside a built-in page instead of a sidebar tab. `agents` appends it
+to Settings > Agents > Agent Connect, `usage` to the gateway's Usage page, `settings` to
+Settings > Plugins, and `provider` to the gateway provider editor. A `provider` panel's frame
+context carries `providerId` and `providerName`; the converted myna bridge turns those into
+`window.myna.context = { provider: { id, name } }`, matching myna's provider-editor panel. `title`
+defaults to the plugin name, and `height` sets the initial frame height in CSS pixels (160–2400,
+default 240). A panel view that grants `resize` follows its own drawing, which is how myna's
+"as tall as it draws" panels behave. Disabling or removing the plugin removes its panels with its
+other contributions.
+
 An action is `pluginRpc` (the named server method must be registered with `server.handle`) or
 `openView`. Slash-command and attachment-source RPCs receive `{ args }` and `{ query }` merged into
 their declared input. An attachment source's search returns
 `{ items: [{ id, identifier?, title, subtitle?, text, resourceType?, url? }] }`. Picking one creates
 a UTF-8 text file containing the resource and attaches it through the normal composer file upload,
 so it reaches the provider the same way a dropped file does. A timeline item is matched by `kind`
-and `version`. `sidebarItems`, `openView` actions, and timeline-item `view` must name a declared
-view; the manifest fails to load otherwise. Icons are Lucide names the host knows; an unknown name
+and `version`. `sidebarItems`, `panels`, `openView` actions, and timeline-item `view` must name a
+declared view; the manifest fails to load otherwise. Icons are Lucide names the host knows; an unknown name
 falls back to the plugin glyph.
 
 The web host also reads five keys that stand in for surfaces the React Native client registers in
@@ -570,7 +590,7 @@ The [public reference](../public-docs/plugins/reference.md#icons) owns the autho
   The daemon applies it to provider and usage-source icon files; the app applies it to inline
   icons. Change the rules there, never at a call site.
 - The app validates each icon once, at registration, through `parsePluginIcon` in
-  `packages/app/src/plugins/icons.ts`. Rendering trusts the stored icon.
+  the web client's plugin icon module. Rendering trusts the stored icon.
 - That module is the only code that branches on the icon form. Surfaces draw with
   `PluginIconView`, or take a stable component from `pluginIconComponent` when their slot expects
   one. Lucide and SVG icons receive only size and color, so the host props a button passes to its
@@ -715,7 +735,7 @@ When the host’s **Check usage** switch is off, the daemon rejects usage reques
 
 Sidebar header and footer items are plugin components, not descriptors. The
 [public reference](../public-docs/plugins/reference.md#sidebar-items) owns the author API. The host
-lives in `packages/app/src/plugins/sidebar-items/`; `packages/app/src/sidebar-nav/model.ts` resolves
+lives in the web client's plugin sidebar module; the sidebar model resolves
 one section's order from built-ins, plugin groups, and the section's preference
 (`sidebarNavItems` or `sidebarFooterItems`).
 
@@ -755,7 +775,7 @@ panels own their Preview and Source views, toolbar and editor buffer, and the ta
 dot a panel sets through `tab.setModified`. Source is the floor for text files no other built-in
 claims, never a candidate beside one. Built-in panels (Markdown, HTML, Image, and Source, Neox's
 editor) take exactly `PluginFilePanelProps`, including params and persisted tab state, so a fix to reading, watching, or writing lands in one place:
-`packages/app/src/file-panels/file/`. Do not add a host-side read or loading gate for one panel;
+the web client's file-panel host. Do not add a host-side read or loading gate for one panel;
 make that panel faster instead. Source highlights a large file on native in idle-time slices,
 the lines around the opening line first.
 
@@ -769,7 +789,7 @@ the author API, selection, `DocumentFrame`, and the version requirement. The exa
 ## Contribute buttons
 
 Header buttons and composer pills share the client-only descriptor and registration lifecycle in
-`packages/app/src/plugins/buttons/`. The [public button reference](../public-docs/plugins/reference.md#header-buttons)
+the web client's plugin button host. The [public button reference](../public-docs/plugins/reference.md#header-buttons)
 owns the author API and placement rules. Keep presentation policy in this module so another
 placement can reuse behavior without copying registration or action state. The header overflow
 and the compact workspace menu share one builder that turns buttons into menu rows and pages; the
@@ -922,10 +942,8 @@ forms remain the fallback and stay supported beside it.
 
 `addTheme` takes a small light or dark palette and a display name. Neox expands it through the
 same semantic builders as the built-in themes, so plugins do not depend on the complete app token
-contract. Unistyles needs every theme name at `StyleSheet.configure` time, so
-`packages/app/src/styles/theme.ts` reserves one light and one dark plugin slot. The appearance
-provider rewrites the matching slot when the selection changes. See [unistyles.md](unistyles.md)
-for the runtime-patching rules the appearance settings share.
+contract. The web client's style sheet reserves one light and one dark plugin slot. The
+appearance provider rewrites the matching slot when the selection changes.
 
 `addTheme` is a client registration and belongs in `index.client.tsx`. A client that predates it
 cannot evaluate that entry. Daemons advertise
@@ -949,16 +967,45 @@ attachment-source example, `plugin-examples/timeline-items` for timeline project
 
 ## myna provider plugins
 
-`neox plugin install` can read a myna package's `package.json.magpie` for its `tool` hook. It also
-converts `magpie.page`, `magpie.panels` and `magpie.actions`: each HTML file is inlined with its
-local stylesheets, scripts and media, keeps myna's `window.myna` bridge (`hello`, `options.get`/
-`set`, `read`, `onAction`), and renders through `HtmlFrame`. `replaces` maps to Neox's replaceable
-pages; a `settings` or `usage` panel becomes a settings screen, an `agents` panel a sidebar row, a
-`provider` panel is drawn inside the provider editor, and an action a provider or agent row menu
-item. The reads a page may ask for are
-still `providers:list` and `usage:summary`, from `magpie.permissions`. A page's `service` is not
-run — the bridge reports no service address — and ES module scripts with imports are rejected
-rather than inlined broken. A page that `fetch`es files beside it has no base URL in the frame;
+`neox plugin install` converts a myna package (npm or Git) into a Neox plugin. Its
+`package.json.magpie` names runtime modules: `middleware` (alias `gateway`) becomes a gateway
+middleware carrying `onRequest`/`onProvider`/`onAccount`/`onEvent`/`onResponse`, `strategies` and
+`onUsage`; `hooks` becomes the gateway's asynchronous request hooks; `agent` becomes an agent
+integration. The entry function's hooks supply tools (`tool`), plugin search APIs (`search`) and
+subscription providers (`auth` with `provider` and `config`). `magpie.page`, `magpie.panels` and
+`magpie.actions` become declarative contributions the desktop web host renders without a client
+bundle. The page becomes a sandboxed `web.views` entry, served from a generated file beside its
+source, and a sidebar item; `replaces` of `sessions` or `usage` moves that item into the built-in
+row. (`library` and `routing` are settings sections, which a declarative sidebar item cannot
+take.) Each panel becomes its own sandboxed view and a `panels` contribution in its myna slot:
+`agents` at the end of Agent Connect, `usage` at the end of the gateway Usage page, `settings` at
+the end of Settings > Plugins, and `provider` inside the gateway provider editor with the
+provider's ID and name as frame context. Panel views grant `resize`, myna's height negotiation. An
+action becomes a provider or agent row item that opens the page with the row's ID and name.
+
+The translation keeps myna's trust boundary: converted code runs in the plugin subprocess, and the
+gateway's normal limits apply (250ms per middleware hook, 50ms per stream event; every failure
+leaves traffic as it was). The semantics are not identical. Plugin middleware runs after protocol
+translation and once per upstream attempt, not once before routing. A request's hooks share
+myna's `ctx.state`: the daemon names the client call, and the plugin process releases the state
+when its `onResponse` runs (15 minutes otherwise, since a streamed reply has no whole-answer hook).
+`ctx.reject` turns a request away with the middleware's status (400–599, 403 by default) and text,
+answered in the client's error shape. An entry's `chat.headers` adds headers to the outgoing
+request through `onHeaders`; plugin values win over the provider's and sign-in's, and the hook never
+sees the request's headers. The `events` allow-list matches Neox's IR event types rather than each
+protocol's event names. Asynchronous hooks get 250ms instead of myna's default second and no client
+identity. `page.service` is not converted, and an agent's `library`, `bin`,
+`dir`, `ua`, `icon` and `notice` are ignored. Unknown entry hooks, a provider model hook without a
+matching `auth`, and a `config`-only entry fail the conversion instead of installing half-working.
+
+The converted page keeps myna's bridge: `window.myna` and `window.owl` expose `options.get`/`set`
+through the generated `settings.options.*` RPCs, `read` through a generated `myna.read` handler, and
+`onAction` with the action a row opened the page with. Reads are still only `providers:list` and
+`usage:summary`, from `magpie.permissions`. Local stylesheets and media are inlined; local scripts
+stay files beside the page because the view's `script-src 'self'` forbids inline copies, and inline
+`<script>` blocks therefore do not run (myna's own CSP forbids them too). A page's `service` is not
+run — the bridge reports no service address. A panel's generated HTML goes through the same
+conversion as a page's. A page that `fetch`es files beside it has no network access in the frame;
 inline the data or read it through the plugin's RPCs. The community
 `@magpie-community/opencode-*-auth` packages are OpenCode plugins, not manifests Neox can
 install: wrap their 1.x export with `openCodeSubscriptionProvider` in a Neox plugin (below).
@@ -995,16 +1042,19 @@ beyond sign-in/models/usage still depends on the package's own hooks.
 
 ## Gateway middleware
 
-`server.registerGatewayMiddleware({ id, onRequest, onProvider, onAccount, onResponse, onEvent })` is
-the hook beside myna's `magpie.middleware`. It runs in the plugin process for every gateway upstream
-attempt while the plugin runs, not only for the plugin's own provider. Hooks run in registration
-order.
+`server.registerGatewayMiddleware({ id, onRequest, onProvider, onAccount, onResponse, onEvent, onHeaders })`
+is the hook beside myna's `magpie.middleware`. It runs in the plugin process for every gateway
+upstream attempt while the plugin runs, not only for the plugin's own provider. Hooks run in
+registration order. Every hook is told the client call's `requestKey` and gets a `state` object
+shared by that call's hooks for this middleware; the host releases it after `onResponse`, or after
+15 minutes, since a streamed reply has no whole-answer hook.
 
 `onRequest` sees `providerId`, `protocol`, `model`, `accountId` and the body after protocol
-translation, and may return a replacement body. Headers are not exposed (myna's hook gets none
-either), so credentials never enter the plugin process. The address and streaming mode are chosen
-before hooks run, so a hook that flips `stream` does not move the request to the endpoint the other
-mode uses.
+translation, and may return a replacement body or `{ reject: { status, message } }` to end the
+request with myna's status (400–599, 403 by default) and text. Request headers are not exposed
+(myna's hook gets none either), so credentials never enter the plugin process. The address and
+streaming mode are chosen before hooks run, so a hook that flips `stream` does not move the request
+to the endpoint the other mode uses.
 
 `onProvider` runs once per try, with the provider, account (null for a key), model and body; it may
 return a replacement body. `onAccount` runs before a try's account is asked, with
@@ -1017,6 +1067,11 @@ Reply headers it sets reach the client unless the gateway never passes them on (
 `Content-*`, `x-neolix-*` and the rest of `REPLY_HEADERS_NEVER`). Streaming answers pass through
 untouched. Every hook but `onEvent` gets 250ms; one event gets 50ms. A hook that throws, times out,
 or is not loaded leaves the traffic exactly as it was.
+
+`onHeaders` runs while the outgoing request is shaped, after the provider's, sign-in's and upstream
+plugin's headers, and returns headers to add; its values win over theirs. It is not given the
+existing headers, where credentials live, so it can add a routing or tracing header but cannot read
+the key.
 
 `server.registerGatewayUsageObserver({ id, onUsage })` is the hook beside myna's `onUsage`: one call
 per finished gateway request, with the ledger row (`time`, `requested`, `provider`, `account`,

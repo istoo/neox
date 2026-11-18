@@ -648,6 +648,8 @@ export type LookResult = SwitchSignInResult | { status: "skipped"; reason: strin
 export class SignInSwitchScheduler {
   private timer: NodeJS.Timeout | null = null;
   private disposed = false;
+  /** The look in flight; `dispose()` waits for it. */
+  private inFlight: Promise<void> | null = null;
   /** True while the last look saw the signed-in account near out. */
   private near = false;
   private readonly logger: Pick<Logger, "info" | "warn" | "debug">;
@@ -660,11 +662,15 @@ export class SignInSwitchScheduler {
     this.schedule(this.options.firstLookMs ?? FIRST_SIGN_IN_LOOK);
   }
 
-  public dispose(): void {
+  /** Stops the timer, waits for the look in flight, and refuses new looks. */
+  public async dispose(): Promise<void> {
     this.disposed = true;
     if (this.timer !== null) {
       clearTimeout(this.timer);
       this.timer = null;
+    }
+    if (this.inFlight !== null) {
+      await this.inFlight;
     }
   }
 
@@ -673,9 +679,27 @@ export class SignInSwitchScheduler {
       return;
     }
     this.timer = setTimeout(() => {
-      void this.tick();
+      void this.runTick();
     }, ms);
     this.timer.unref();
+  }
+
+  private runTick(): Promise<void> {
+    if (this.disposed) {
+      return Promise.resolve();
+    }
+    if (this.inFlight !== null) {
+      return this.inFlight;
+    }
+    const running = this.tick()
+      .catch(() => undefined)
+      .finally(() => {
+        if (this.inFlight === running) {
+          this.inFlight = null;
+        }
+      });
+    this.inFlight = running;
+    return running;
   }
 
   private async tick(): Promise<void> {

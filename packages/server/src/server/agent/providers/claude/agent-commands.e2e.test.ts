@@ -1,3 +1,4 @@
+import os from "node:os";
 import { describe, test, expect, beforeEach, afterEach } from "vitest";
 import { createDaemonTestContext, type DaemonTestContext } from "../../../test-utils/index.js";
 
@@ -19,7 +20,7 @@ describe("claude agent commands E2E", () => {
     // Create a Claude agent
     const agent = await ctx.client.createAgent({
       provider: "claude",
-      cwd: "/tmp",
+      cwd: os.tmpdir(),
       title: "Commands Test Agent",
     });
 

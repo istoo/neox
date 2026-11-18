@@ -1,4 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+// Neox hides the projectAgent-backed Project surface; this suite covers the
+// selection logic, so re-enable the gate for it.
+vi.mock("~/neolixFeatures", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("~/neolixFeatures")>()),
+  NEOLIX_PROJECT_AGENT_UI_ENABLED: true,
+}));
 
 import { resolveAuxiliarySurface, resolveProjectPanelEnabled } from "./auxiliaryPanel.logic";
 

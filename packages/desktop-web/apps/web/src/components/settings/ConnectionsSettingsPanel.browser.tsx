@@ -300,7 +300,7 @@ describe("Connections settings", () => {
     const session = addWorkspaceSession({
       hostId: "11111111-1111-4111-8111-111111111111",
       hostName: "Studio Mac mini",
-      wsPath: "/ws/remote/11111111-1111-4111-8111-111111111111",
+      wsPath: "/rpc/remote/11111111-1111-4111-8111-111111111111",
       executionScope: {
         environmentId: "env_studio",
         accountAuthority: "https://account.example.test/api/v1",

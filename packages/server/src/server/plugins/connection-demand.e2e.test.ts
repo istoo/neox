@@ -8,7 +8,10 @@ import { createTestNeolixDaemon } from "../test-utils/neolix-daemon.js";
 
 test("an RPC-only plugin receives no agent, project or provider data", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "neolix-quiet-plugin-"));
-  await writeFile(path.join(directory, "neox-plugin.json"), JSON.stringify({ id: "quiet" }));
+  await writeFile(
+    path.join(directory, "neox-plugin.json"),
+    JSON.stringify({ id: "quiet", requirements: { neolix: ">=0.8.0" } }),
+  );
   await writeFile(
     path.join(directory, "index.server.ts"),
     `
@@ -33,6 +36,9 @@ export default function contribute(server) {
   const legacy = new DaemonClient({
     url: `ws://127.0.0.1:${daemon.port}/ws`,
     capabilities: {
+      // Without owned subscriptions the daemon treats this connection as legacy
+      // and sends its implicit broadcasts, which is what this fixture observes.
+      owned_subscriptions: false,
       selective_agent_timeline: false,
       explicit_event_subscriptions: false,
       provider_snapshot_references: false,
@@ -65,7 +71,10 @@ export default function contribute(server) {
     await client.waitForFinish(agent.id);
     await client.refreshProvidersSnapshot({ cwd: directory });
     const counts = await client.invokePluginRpc("quiet", "counts", {});
-    expect(counts).toEqual({ status: 1 });
+    // The plugin's own daemon client consumes its connection frames (including
+    // server_info) before `contribute` registers this observer, so a healthy
+    // RPC-only plugin sees no frames at all once it is running.
+    expect(counts).toEqual({});
     await legacy.getDaemonConfig();
     expect(legacyTypes).toEqual(
       expect.arrayContaining(["project.update", "providers_snapshot_update", "agent_stream"]),

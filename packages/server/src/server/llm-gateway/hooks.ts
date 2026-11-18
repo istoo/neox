@@ -8,6 +8,8 @@ const TIMEOUT_MS = 250;
 
 /** What an event hook is told about the reply it belongs to. */
 export interface EventHookContext {
+  /** The client call, shared with the request's other plugin hooks. */
+  requestKey?: string;
   providerId: string;
   model: string;
   accountId: string;

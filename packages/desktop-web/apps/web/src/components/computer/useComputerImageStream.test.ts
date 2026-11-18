@@ -164,6 +164,7 @@ function renderStream(input: {
 function stubVisibleDocument(): void {
   vi.stubGlobal("document", {
     visibilityState: "visible",
+    documentElement: { lang: "", dir: "" },
     addEventListener: vi.fn(),
     removeEventListener: vi.fn(),
   });

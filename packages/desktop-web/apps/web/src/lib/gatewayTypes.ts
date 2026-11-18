@@ -114,6 +114,10 @@ export interface GatewayProvider {
   modelsUrl?: string | undefined;
   apiKey?: string | undefined;
   headers?: Record<string, string> | undefined;
+  /** Vendor reply headers passed on to the agent, beside the defaults. */
+  replyHeaders?: string[] | undefined;
+  /** Agent request headers passed on to the vendor as sent. */
+  passHeaders?: string[] | undefined;
   accounts?: GatewayAccount[] | undefined;
   enabled?: boolean | undefined;
   exposeModels?: boolean | undefined;
@@ -647,6 +651,13 @@ export interface GatewayRouteHistoryRow {
   held?: string | undefined;
   /** Codex's hidden turn kind, for a title request. */
   kind?: string | undefined;
+  /** The prompt's size, and its parts when the daemon recorded them. */
+  prompt?:
+    | {
+        tokens: number;
+        parts?: Array<{ kind: string; tokens: number }> | undefined;
+      }
+    | undefined;
   /** The conversation a title turn belongs to. */
   parentSession?: string | undefined;
   parentMatched?: boolean | undefined;
@@ -681,6 +692,25 @@ export interface GatewayArchiveRecord {
   request: GatewayArchivePart;
   response: GatewayArchivePart;
   upstream?: GatewayArchiveUpstream[] | undefined;
+}
+
+/** The masked request body still kept for a call's prompt, or null once it is gone. */
+export interface GatewayPromptText {
+  id: string;
+  protocol: string;
+  body: string;
+}
+
+export interface GatewayReplyPiece {
+  role: "assistant" | "thinking" | "call";
+  name?: string | undefined;
+  text: string;
+}
+
+/** The reply an archived call got, piece by piece. */
+export interface GatewayReply {
+  pieces: GatewayReplyPiece[];
+  cut?: boolean | undefined;
 }
 
 export interface GatewayTraceRoute {

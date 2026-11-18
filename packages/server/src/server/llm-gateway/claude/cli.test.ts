@@ -172,8 +172,16 @@ describe("findClaudeBinary", () => {
     const binary = path.join(dir, "claude");
     await writeFile(binary, "#!/bin/sh\n", { mode: 0o755 });
     await chmod(binary, 0o755);
+    // A Windows temp folder carries a drive colon, so it cannot sit in a
+    // colon-separated PATH: the case parses this machine's own PATH.
+    const platform = process.platform;
+    const delimiter = platform === "win32" ? ";" : ":";
     await expect(
-      findClaudeBinary({ env: { PATH: `/nowhere${path.delimiter}${dir}` }, platform: "linux" }),
+      findClaudeBinary({
+        env: { PATH: `/nowhere${delimiter}${dir}` },
+        platform,
+        pathDelimiter: delimiter,
+      }),
     ).resolves.toBe(binary);
   });
 

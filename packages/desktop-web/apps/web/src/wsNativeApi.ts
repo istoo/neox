@@ -47,6 +47,8 @@ import {
   type ServerKeepAwakeUpdatedPayload,
   type ServerLifecycleStreamEvent,
   type ServerSettingsUpdatedPayload,
+  type NeolixHostFeatures,
+  type NeolixHostUpdateProgress,
   ServerVoiceTranscriptionResult,
   type TerminalEvent,
   ORCHESTRATION_WS_CHANNELS,
@@ -167,6 +169,8 @@ const serverProviderStatusesUpdatedListeners =
 const serverMaintenanceUpdatedListeners = createListenerRegistry<ServerLifecycleStreamEvent>();
 const serverSettingsUpdatedListeners = createListenerRegistry<ServerSettingsUpdatedPayload>();
 const serverKeepAwakeUpdatedListeners = createListenerRegistry<ServerKeepAwakeUpdatedPayload>();
+const neolixHostFeaturesListeners = createListenerRegistry<NeolixHostFeatures>();
+const neolixHostUpdateProgressListeners = createListenerRegistry<NeolixHostUpdateProgress>();
 const gitActionProgressListeners = createListenerRegistry<GitActionProgressEvent>();
 const gitWorktreeSetupProgressListeners = createListenerRegistry<GitWorktreeSetupProgressEvent>();
 const projectProvisionProgressListeners =
@@ -210,6 +214,8 @@ function clearWsNativeApiListeners(): void {
   serverMaintenanceUpdatedListeners.clear();
   serverSettingsUpdatedListeners.clear();
   serverKeepAwakeUpdatedListeners.clear();
+  neolixHostFeaturesListeners.clear();
+  neolixHostUpdateProgressListeners.clear();
   gitActionProgressListeners.clear();
   gitWorktreeSetupProgressListeners.clear();
   projectProvisionProgressListeners.clear();
@@ -448,6 +454,34 @@ export function onServerMaintenanceUpdated(
   });
 }
 
+/**
+ * The host re-sent `server_info`: its daemon restarted or reconnected behind the bridge's
+ * surviving session. Consumers refetch the flags rather than waiting for a socket reopen.
+ */
+export function onNeolixHostFeaturesUpdated(
+  listener: (features: NeolixHostFeatures) => void,
+): () => void {
+  const latest = instance?.transport.getLatestPush(WS_CHANNELS.neolixHostFeatures)?.data ?? null;
+  return subscribeWithReplay({
+    registry: neolixHostFeaturesListeners,
+    listener,
+    latest,
+  });
+}
+
+/** One phase of a daemon self-update, forwarded while the update runs. */
+export function onNeolixHostUpdateProgress(
+  listener: (progress: NeolixHostUpdateProgress) => void,
+): () => void {
+  const latest =
+    instance?.transport.getLatestPush(WS_CHANNELS.neolixHostUpdateProgress)?.data ?? null;
+  return subscribeWithReplay({
+    registry: neolixHostUpdateProgressListeners,
+    listener,
+    latest,
+  });
+}
+
 export function onServerSettingsUpdated(
   listener: (payload: ServerSettingsUpdatedPayload) => void,
 ): () => void {
@@ -534,6 +568,12 @@ export function createWsNativeApi(): NativeApi {
   });
   transport.subscribe(WS_CHANNELS.serverSettingsUpdated, (message) => {
     serverSettingsUpdatedListeners.emit(message.data);
+  });
+  transport.subscribe(WS_CHANNELS.neolixHostFeatures, (message) => {
+    neolixHostFeaturesListeners.emit(message.data);
+  });
+  transport.subscribe(WS_CHANNELS.neolixHostUpdateProgress, (message) => {
+    neolixHostUpdateProgressListeners.emit(message.data);
   });
   // Neox 无 keep-awake 服务：不订阅该推送流。
   if (NEOLIX_KEEP_AWAKE_UI_ENABLED) {
@@ -685,6 +725,8 @@ export function createWsNativeApi(): NativeApi {
           ...(options?.signal ? { signal: options.signal } : {}),
         }),
       onProvisionProgress: projectProvisionProgressListeners.subscribe,
+      searchGitHubRepositories: (input) =>
+        executionRequest(WS_METHODS.projectsSearchGitHubRepositories, input),
     },
     filesystem: {
       browse: (input) => executionRequest(WS_METHODS.filesystemBrowse, input),
@@ -735,6 +777,8 @@ export function createWsNativeApi(): NativeApi {
         }),
       listBranches: (input) => executionRequest(WS_METHODS.gitListBranches, input),
       listRecentCommits: (input) => executionRequest(WS_METHODS.gitListRecentCommits, input),
+      listCommits: (input) => executionRequest(WS_METHODS.gitListCommits, input),
+      commitDiff: (input) => executionRequest(WS_METHODS.gitCommitDiff, input),
       createWorktree: (input) => executionRequest(WS_METHODS.gitCreateWorktree, input),
       // Worktree materialization scales with checkout size; progress events
       // keep the UI honest while the stream runs, so no fixed timeout.
@@ -772,9 +816,12 @@ export function createWsNativeApi(): NativeApi {
     },
     pullRequests: {
       detail: (input) => executionRequest(WS_METHODS.pullRequestsDetail, input),
+      pipeline: (input) => executionRequest(WS_METHODS.pullRequestsPipeline, input),
       diff: (input) => executionRequest(WS_METHODS.pullRequestsDiff, input),
       action: (input) =>
         executionRequest(WS_METHODS.pullRequestsAction, input, { timeoutMs: null }),
+      setAutoMerge: (input) =>
+        executionRequest(WS_METHODS.pullRequestsSetAutoMerge, input, { timeoutMs: null }),
       comment: (input) => executionRequest(WS_METHODS.pullRequestsComment, input),
       setPinned: (input) => executionRequest(WS_METHODS.pullRequestsSetPinned, input),
       getAutoFix: (input) => executionRequest(WS_METHODS.pullRequestsGetAutoFix, input),
@@ -971,6 +1018,12 @@ export function createWsNativeApi(): NativeApi {
       subagents: {
         list: (input) => executionRequest(WS_METHODS.neolixSubagentsList, input),
         timeline: (input) => executionRequest(WS_METHODS.neolixSubagentsTimeline, input),
+        detach: (input) => executionRequest(WS_METHODS.neolixSubagentsDetach, input),
+      },
+      attention: {
+        clearAgent: (input) => executionRequest(WS_METHODS.neolixAttentionClearAgent, input),
+        clearWorkspace: (input) =>
+          executionRequest(WS_METHODS.neolixAttentionClearWorkspace, input),
       },
       workspaces: {
         list: () => executionRequest(WS_METHODS.neolixWorkspacesList),
@@ -988,6 +1041,10 @@ export function createWsNativeApi(): NativeApi {
           executionRequest(WS_METHODS.neolixWorkspacesInspectRecovery, input),
         restore: (input) => executionRequest(WS_METHODS.neolixWorkspacesRestore, input),
         listArchived: () => executionRequest(WS_METHODS.neolixWorkspacesListArchived),
+      },
+      workspaceSetup: {
+        subscribe: (input, listener) => transport.subscribeWorkspaceSetup(input, listener),
+        run: (input) => executionRequest(WS_METHODS.neolixWorkspaceSetupRun, input),
       },
     },
     orchestration: {

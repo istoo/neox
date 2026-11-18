@@ -1,5 +1,66 @@
 # Changelog
 
+## 0.17.0-beta.1 - 2026-11-16
+
+Neox now runs one interface in the desktop app and in a browser. The desktop shell loads the interface served by the daemon; the mobile app and its React Native client are removed.
+
+### Added
+
+- Agent Connect wires installed CLI agents to the model gateway, with per-agent model lists and saved profiles
+- Orchestration skills can be installed, updated, and removed from Settings › Agent skills
+- Workspace setup and teardown, including service ports, appear in the chat dock
+- History searches sessions across this computer and other connected computers, and imports threads and projects
+- Project icons are detected from the repository or set from an image
+- App preferences sync across connected computers
+- Sidebar entries can be shown, hidden, and reordered
+- Adding a project can search GitHub repositories instead of requiring a URL
+- Pull requests show per-check details, GitLab pipeline stages and jobs, and an approvals badge
+- Pull requests can be set to auto-merge from the review panel
+- The diff panel switches to a single commit's diff from its commit history menu
+- Gateway diagnostics show the prompt, reply, SSE stream, and request flow, along with held reports
+- Usage reports list every gateway account and show usage from other connected computers
+- Agents can drive the built-in browser, controlled by the Browser tools switch
+- Subagents can be detached into their own agent, and attention markers can be cleared
+- Plugins can render their pages as web views and replace built-in pages
+- Settings › About includes third-party licenses, community links, the status line command, the public address, and uninstall
+- Amazon Bedrock (Mantle) is available as a gateway provider
+- Code Assist can generate images
+- Plugin providers that support daily check-in appear in Allowances with their own switch
+- The sidebar shows a host badge on remote workspaces, and remote threads show their branch and pull request; the host and pull request row fields can be toggled
+
+### Improved
+
+- History opens immediately and fills full counts in the background instead of waiting for a complete scan
+- The desktop window shows a waiting page and a retry page during daemon startup instead of staying blank
+- Settings › Providers uses a master-detail layout with one status line per provider
+- The web interface shipped with the daemon is about 1 MB instead of 17.6 MB
+- Browser access on the local network serves the same interface as the desktop app
+- Docker and Nix installs include the web interface
+
+### Changed
+
+- The desktop app now opens the interface served by the daemon
+
+### Breaking
+
+- The mobile app is removed; Neox now ships desktop and browser interfaces only
+
+### Fixed
+
+- Daemon updates show progress instead of appearing stalled
+- Old browser data partitions are cleaned up
+- Plugin sign-in shows the correct success message and no longer crashes when the pane updates
+- Clearing an attention marker that fails now answers instead of timing out
+- Creating a project no longer clears text already typed into the dialog
+- Option previews are no longer trimmed
+- Settings no longer repeats every sidebar page five times
+- Streaming replies no longer overwrite an earlier segment that shares the same id
+
+### Notes
+
+- macOS builds remain unsigned; updates on macOS open the release download page
+- This is a beta build and is offered only to installations on the beta channel
+
 ## 0.16.5 - 2026-11-13
 
 ### Fixed

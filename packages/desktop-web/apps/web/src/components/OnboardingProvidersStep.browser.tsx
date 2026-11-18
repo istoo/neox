@@ -6,8 +6,13 @@ import { page } from "vitest/browser";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
 
+import { VISIBLE_PROVIDER_DESCRIPTORS } from "../betaFeatures";
 import { ProvidersStep } from "../onboarding/steps/ProvidersStep";
 import { useProviderDetection } from "../onboarding/useProviderDetection";
+
+const PROVIDER_SUMMARY = `1 connected · 0 need sign-in · ${
+  VISIBLE_PROVIDER_DESCRIPTORS.length - 1
+} not installed`;
 
 const mocks = vi.hoisted(() => ({ getConfig: vi.fn(), refreshProviders: vi.fn() }));
 vi.mock("../nativeApi", () => {
@@ -18,7 +23,11 @@ vi.mock("../nativeApi", () => {
 });
 vi.mock("../appSettings", () => {
   const appSettings = { settings: { disabledProviders: [] }, updateSettingsAndWait: vi.fn() };
-  return { useAppSettings: () => appSettings, getCustomBinaryPathForProvider: () => null };
+  return {
+    useAppSettings: () => appSettings,
+    getCustomBinaryPathForProvider: () => null,
+    useLocalAppSetting: () => true,
+  };
 });
 vi.mock("../workspacePathsStore", () => ({
   useWorkspacePathsStore: (select: (state: { homeDir: null }) => unknown) =>
@@ -72,9 +81,7 @@ it("does not report agents as not installed while the first probe is running", a
   for (const resolve of pendingRefreshes) resolve({ providers: [codexStatus] });
 
   await expect.element(page.getByText("Connected", { exact: true })).toBeVisible();
-  await expect
-    .element(page.getByText("1 connected · 0 need sign-in · 9 not installed"))
-    .toBeVisible();
+  await expect.element(page.getByText(PROVIDER_SUMMARY)).toBeVisible();
 });
 
 it("leaves missing agents unknown after a timeout and recovers on retry", async () => {
@@ -94,7 +101,5 @@ it("leaves missing agents unknown after a timeout and recovers on retry", async 
   mocks.refreshProviders.mockResolvedValue({ providers: [codexStatus] });
   await page.getByRole("button", { name: "Re-detect" }).click();
   await expect.element(page.getByText("Connected", { exact: true })).toBeVisible();
-  await expect
-    .element(page.getByText("1 connected · 0 need sign-in · 9 not installed"))
-    .toBeVisible();
+  await expect.element(page.getByText(PROVIDER_SUMMARY)).toBeVisible();
 });

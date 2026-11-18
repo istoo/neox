@@ -34,7 +34,7 @@ describe("resolveWsHttpUrl", () => {
   it("forwards the websocket token to relative server routes", () => {
     vi.stubGlobal("window", {
       desktopBridge: {
-        getWsUrl: () => "ws://127.0.0.1:4111/ws?token=legacy-secret",
+        getWsUrl: () => "ws://127.0.0.1:4111/rpc?token=legacy-secret",
       },
       location: { origin: "http://fallback.test" },
     });
@@ -47,7 +47,7 @@ describe("resolveWsHttpUrl", () => {
   it("does not forward the websocket token to an absolute external URL", () => {
     vi.stubGlobal("window", {
       desktopBridge: {
-        getWsUrl: () => "wss://synara.test/ws?token=legacy-secret",
+        getWsUrl: () => "wss://synara.test/rpc?token=legacy-secret",
       },
       location: { origin: "https://fallback.test" },
     });
@@ -157,7 +157,7 @@ describe("typed execution resource routing", () => {
 
   it("routes remote uploads and previews through their selected host, never the local backend", () => {
     vi.mocked(readExecutionContext).mockReturnValue(remoteContext);
-    const getWsUrl = vi.fn(() => "ws://127.0.0.1:4111/ws?token=local-only");
+    const getWsUrl = vi.fn(() => "ws://127.0.0.1:4111/rpc?token=local-only");
     const remoteResourceUrl = vi.fn(() => "synara-resource://broker/fixture-handle");
     vi.stubGlobal("window", {
       desktopBridge: { getWsUrl, remoteResourceUrl },
@@ -182,7 +182,7 @@ describe("typed execution resource routing", () => {
 
   it("refuses a missing remote broker instead of falling back to a local upload", () => {
     vi.mocked(readExecutionContext).mockReturnValue(remoteContext);
-    const getWsUrl = vi.fn(() => "ws://127.0.0.1:4111/ws?token=local-only");
+    const getWsUrl = vi.fn(() => "ws://127.0.0.1:4111/rpc?token=local-only");
     vi.stubGlobal("window", {
       desktopBridge: { getWsUrl },
       location: { origin: "synara-remote://app" },
@@ -196,7 +196,7 @@ describe("typed execution resource routing", () => {
 
   it("keeps browser resources on the owner-session proxy without copying local tokens", () => {
     vi.mocked(readExecutionContext).mockReturnValue(remoteContext);
-    vi.stubEnv("VITE_WS_URL", "ws://127.0.0.1:4111/ws?token=local-only");
+    vi.stubEnv("VITE_WS_URL", "ws://127.0.0.1:4111/rpc?token=local-only");
     vi.stubGlobal("window", { location: { origin: "https://controller.example" } });
 
     const url = new URL(resolveExecutionResource(upload));

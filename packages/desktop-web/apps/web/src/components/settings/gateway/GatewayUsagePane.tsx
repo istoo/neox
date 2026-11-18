@@ -15,6 +15,7 @@ import type {
   GatewayUsageTotals,
 } from "~/lib/gatewayTypes";
 import { useTranslation } from "~/i18n";
+import { PluginSlotPanels } from "~/plugins/PluginSlotPanels";
 import { toastManager } from "../../ui/toast";
 
 import { Button } from "../../ui/button";
@@ -22,6 +23,7 @@ import { Input } from "../../ui/input";
 import { SettingsSection } from "../SettingsPanelPrimitives";
 import { downloadUsageCsv } from "./gatewayUsageCsv";
 import { formatTokens, formatUsd, formatWhen } from "./gatewayHelpers";
+import { GatewaySyncUsageSection } from "./GatewaySyncUsageSection";
 import { GatewayEmpty, GatewayPill, GatewayRow, GatewayToggle } from "./GatewayPrimitives";
 
 const PERIODS = ["today", "7d", "30d", "all", "custom"] as const;
@@ -296,6 +298,8 @@ export function GatewayUsagePane({ config, apply }: GatewayUsageProps) {
         )}
       </SettingsSection>
 
+      <GatewaySyncUsageSection refreshMs={refreshMs} />
+
       <SettingsSection title="gateway:checkin_title">
         <CheckinCard config={config} apply={apply} />
       </SettingsSection>
@@ -303,6 +307,8 @@ export function GatewayUsagePane({ config, apply }: GatewayUsageProps) {
       <SettingsSection title="gateway:tune_title">
         <TuneCard />
       </SettingsSection>
+
+      <PluginSlotPanels slot="usage" />
     </div>
   );
 }

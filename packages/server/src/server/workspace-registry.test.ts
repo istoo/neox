@@ -356,7 +356,7 @@ describe("workspace registries", () => {
       timestamp: "2026-03-01T00:00:00.000Z",
     });
     const second = await projectRegistry.getOrCreateActiveByRoot({
-      rootPath: "c:/users/neolix/repo/.",
+      rootPath: "c:/users/Neox/repo/.",
       kind: "git",
       displayName: "Repo",
       timestamp: "2026-03-02T00:00:00.000Z",

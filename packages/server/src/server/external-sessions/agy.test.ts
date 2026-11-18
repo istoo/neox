@@ -1,6 +1,7 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { ExternalSessionsService } from "./service.js";
 
@@ -50,7 +51,7 @@ async function writeSummaries(
     "INSERT INTO conversation_summaries (conversation_id, title, workspace_uris, last_modified_time) VALUES (?, ?, ?, ?)",
   );
   for (const row of rows) {
-    insert.run(row.id, row.title, JSON.stringify([`file://${row.cwd}`]), row.last);
+    insert.run(row.id, row.title, JSON.stringify([pathToFileURL(row.cwd).href]), row.last);
   }
   db.close();
 }
@@ -74,11 +75,13 @@ async function writeTranscript(
 describe("ExternalSessionsService Antigravity", () => {
   it("lists a conversation from its transcript and its summary row", async () => {
     const { agyDir, service } = await fixture();
+    // Antigravity resumes with a folder of this host's own shape.
+    const cwd = process.platform === "win32" ? "C:\\work\\agy" : "/work/agy";
     await writeSummaries(agyDir, [
       {
         id: CONVERSATION,
         title: "Read a file",
-        cwd: "/work/agy",
+        cwd,
         last: "2026-10-25 09:48:56.074501+00:00",
       },
     ]);
@@ -124,11 +127,14 @@ describe("ExternalSessionsService Antigravity", () => {
     expect(list.agents).toEqual([{ agent: "agy", name: "Antigravity", count: 1, deletable: true }]);
     expect(list.sessions[0]).toMatchObject({
       id: CONVERSATION,
-      cwd: "/work/agy",
+      cwd,
       title: "Read a file",
       messages: 2,
       deletable: true,
-      resume: "cd '/work/agy' && agy --conversation conv-1",
+      resume:
+        process.platform === "win32"
+          ? `Set-Location -LiteralPath '${cwd}'; agy --conversation conv-1`
+          : `cd '${cwd}' && agy --conversation conv-1`,
     });
     expect(list.sessions[0]?.tokens).toEqual({
       input: 3100,

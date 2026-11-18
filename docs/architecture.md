@@ -1,6 +1,6 @@
 # Architecture
 
-Neox is a client-server system for monitoring and controlling local AI coding agents. The daemon runs on your machine, manages agent processes, and streams their output in real time over WebSocket. Clients (mobile app, CLI, desktop app) connect to the daemon to observe and interact with agents.
+Neox is a client-server system for monitoring and controlling local AI coding agents. The daemon runs on your machine, manages agent processes, and streams their output in real time over WebSocket. Clients (desktop app, web browser, CLI) connect to the daemon to observe and interact with agents.
 
 Your code never leaves your machine. Neox is local-first.
 
@@ -11,8 +11,8 @@ Daemon-owned outbound connections and routed API scope ownership are described i
 
 ```
 ┌─────────────┐    ┌─────────────┐    ┌─────────────┐
-│  Mobile App  │    │     CLI     │    │ Desktop App │
-│   (Expo)     │    │ (Commander) │    │ (Electron)  │
+│  Web Client │    │     CLI     │    │ Desktop App │
+│  (browser)  │    │ (Commander) │    │ (Electron)  │
 └──────┬───────┘    └──────┬──────┘    └──────┬──────┘
        │                   │                  │
        │    WebSocket      │    WebSocket     │    Managed subprocess
@@ -37,9 +37,9 @@ Daemon-owned outbound connections and routed API scope ownership are described i
 ## Components at a glance
 
 - **Daemon:** Local server that spawns and manages agent processes and exposes the WebSocket API.
-- **App:** Cross-platform Expo client for iOS, Android, web, and the shared UI used by desktop.
+- **Web client:** The React app in `packages/desktop-web`, served by the daemon and loaded by the desktop shell.
 - **CLI:** Terminal interface for agent workflows that can also start and manage the daemon.
-- **Desktop app:** Electron wrapper around the web app that bundles and auto-manages its own daemon.
+- **Desktop app:** Electron wrapper that loads the daemon-hosted web client and auto-manages its own daemon.
 - **Relay:** Optional encrypted bridge for remote access without opening ports directly.
 
 ## Packages
@@ -121,46 +121,18 @@ code imports from `@neolix/client`.
 host's client; plugin subprocesses use the same facade over a host-owned IPC transport. Protocol capability ownership and subscription lifetimes follow
 [the client contract](protocol-compatibility.md#client-capability-ownership).
 
-### `packages/app` — Mobile + web client (Expo)
+### `packages/desktop-web` — Web client
 
-Cross-platform React Native app that connects to one or more daemons.
+A Bun workspace separate from the root npm workspaces. `apps/web` is the page; `apps/bridge` builds
+`embed.js`, which the daemon loads in-process through `packages/server/src/server/web-app.ts` and
+serves on its own HTTP port. `apps/bridge` also owns the RPC socket (`/rpc`) and the web app's upload
+and download routes.
 
-- Expo Router navigation (`/h/[serverId]/workspace/[workspaceId]`, `/h/[serverId]/agent/[agentId]`, etc.). The `workspaceId` URL segment is an opaque workspace id, not a directly meaningful filesystem path.
-- `HostRuntimeController` manages saved host connections, reconnection, and per-host runtime state. Direct TCP and relay connections use the ordinary client transport; desktop socket, pipe, and SSH connections cross one Electron-owned transport boundary. SSH only tunnels to an already-running daemon.
-- `runtime/replica-cache` is typed storage behind the directory and timeline owners. It never observes or mutates `SessionStore`.
-- `runtime/directory-sync` owns directory cache selection and network reconciliation. On demand it paints accepted rows for one host, then passes the persisted per-entity cursor through `project.list`, `fetch_workspaces`, and `fetch_agents`; the daemon returns each entity's latest projection when its sequence is newer, plus tombstones.
-- `workspace-labels` owns one sequenced catalog replica per connected host, the deterministic cross-host projection that surfaces spanning hosts use (the filter page, the manager), and the per-host resolution a workspace row's chips use. Two hosts may give one name different colors, so a row resolves against its own host's catalog and a merged answer would be wrong there. Catalogs never synchronize between hosts; assignment creates a missing definition only on the target host. On the daemon, catalog and assignment rewrites share a journaled commit boundary. Startup recovery completes that commit before workspace or catalog publication.
-- `SessionContext` wraps the daemon client for the active session
-- Composer UI and submit/draft behavior live in `packages/app/src/composer/`; screens and panels should integrate it from there instead of dropping composer internals into `components/`, `hooks/`, or `screens/workspace/`
-- Timeline reducers in `timeline/session-stream-reducers.ts` handle compaction, gap detection, sequence-based deduplication
-- Timeline sync correctness is documented in [docs/timeline-sync.md](timeline-sync.md): live streams are for immediacy, `fetch_agent_timeline_request` is authoritative, and catch-up is paged but complete.
-- Voice features: dictation (STT) and voice agent (realtime)
-
-Consumers request directory or timeline data without choosing memory, cache, or network. The owner
-publishes an accepted cache hit and then reconciles it over the existing network path. A miss or an
-invalid row uses that same path. Offline demand still publishes an accepted cache hit and defers
-network reconciliation. Cache loading is demand-driven: opening a chat reads its agent row and
-focused timeline row, plus the workspace and project rows needed by the route; opening a directory
-reads directory rows for that host and establishes its live subscription when connected. Accepted
-cached rows satisfy the same consumer-readiness projection as network rows. Host registry startup and
-host connection do not create directory demand or install replicas. The directory owner retains
-declared surface demand and re-establishes network reconciliation after reconnect; React does not
-track connection generations. Late cache reads cannot replace state already advanced by live or
-authoritative network data. Owners explicitly persist accepted commits; directory rows and their
-checkpoint share one storage transaction. See
-[data-model.md](data-model.md#replica-row-store)
-for the storage shape and [timeline-sync.md](timeline-sync.md#client-replica-lifetime) for timeline
-resume behavior.
-
-The three directory entity types have independent monotonic sequences and share one daemon
-generation. The daemon retains only the latest projection per entity and bounded tombstones, not an
-event log. A missing, expired, or previous-generation cursor receives a full snapshot. Projects are
-independent records; a project with no workspaces does not need a workspace placeholder.
-
-Workspace label definitions use a separate, explicitly subscribed sequence. The list request both
-fetches and grants live updates for that session. A current cursor receives an empty correlated
-catch-up response when nothing changed; idle sessions and unsubscribed sessions receive no label
-traffic. Workspace assignments stay on the workspace directory sequence.
+- The desktop shell loads the daemon URL and does not bundle its own renderer logic.
+- `npm run build:daemon-web-app` copies the bridge bundle and `apps/web/dist` into
+  `packages/server/dist/server/web-app` for standalone daemon use.
+- The client still speaks the WebSocket protocol documented below and in
+  [timeline-sync.md](timeline-sync.md).
 
 ### `packages/cli` — Command-line client
 
@@ -208,7 +180,7 @@ Electron wrapper for macOS, Linux, and Windows.
 
 - Can spawn the daemon as a managed subprocess
 - Native file access for workspace integration
-- Same WebSocket client as mobile app
+- Loads the daemon-hosted web client and uses the same WebSocket protocol
 
 The desktop does not manage agent skills. It retains one compatibility reader for the old
 `skill-selection.json`, imports that preference into its managed local daemon, then deletes the old
@@ -276,7 +248,7 @@ Client liveness checks use the top-level JSON `ping`/`pong` envelope, not a sess
 
 Every physical send path enforces an 8 MiB outbound high-water mark, including JSON broadcasts, binary terminal frames, and the encrypted relay adapter's asynchronous queue. This sits above the terminal stream's 4 MiB soft backpressure threshold, leaving room for snapshot catch-up before the hard cutoff. JSON is serialized once per broadcast after sockets already at the limit are removed, then its exact byte length is checked for every remaining socket. A frame that would cross the limit is not sent; that physical socket is forcibly terminated without disturbing other sockets attached to the same logical session. Multiple tabs and simultaneous direct and relay paths may legitimately share a client id.
 
-Client session RPC waits default to 60s so slow relay or mobile networks do not turn a live but delayed daemon response into a false operation failure. Keep connect timeouts, app-level grace windows, explicit diagnostic latency probes, liveness ping timers, and genuinely long-running RPCs separate from this default.
+Client session RPC waits default to 60s so slow relay or remote networks do not turn a live but delayed daemon response into a false operation failure. Keep connect timeouts, app-level grace windows, explicit diagnostic latency probes, liveness ping timers, and genuinely long-running RPCs separate from this default.
 
 New session RPCs use dotted names with `.request` and `.response` suffixes, such as `checkout.forge.set_auto_merge.request` and `checkout.forge.set_auto_merge.response`. See [rpc-namespacing.md](rpc-namespacing.md) for the convention and migration rules for older flat RPC names.
 
@@ -400,37 +372,6 @@ initializing → idle ⇄ running
 - Events stream to connected clients in real time; correctness is backed by authoritative timeline fetches and paged-to-completion catch-up.
 - Agent state persists to `$NEOLIX_HOME/agents/{cwd-with-dashes}/{agent-id}.json`. Timeline rows are runtime memory; provider history is the durable transcript authority and resumed agents rebuild from it. That storage path is derived from `cwd`, not from workspace id.
 
-## Right-sidebar boundary: directory-backed vs workspace-owned
-
-Two workspaces can share the same `cwd` (e.g. a `directory` workspace and a `local_checkout` workspace on the same folder, or several workspaces opened against one checkout). Model B keeps these distinct: they share everything the directory determines, but nothing the workspace owns. The right-sidebar surfaces split cleanly along this line, and the split is enforced purely by **what each piece of state is keyed by**.
-
-**Directory-backed (shared by same-`cwd` workspaces) — keyed by `(serverId, cwd)`, never by `workspaceId`:**
-
-| Surface                 | Key                                                      | Source                                                  |
-| ----------------------- | -------------------------------------------------------- | ------------------------------------------------------- |
-| Git status              | `checkoutStatusQueryKey(serverId, cwd)`                  | `packages/app/src/git/query-keys.ts`                    |
-| Git diff                | `checkoutDiffQueryKey(serverId, cwd, mode, baseRef, ws)` | `packages/app/src/git/query-keys.ts`                    |
-| Forge change request    | `checkoutPrStatusQueryKey(serverId, cwd)`                | `packages/app/src/git/query-keys.ts`                    |
-| Change request timeline | `prPaneTimelineQueryKey({ serverId, cwd, prNumber })`    | `packages/app/src/git/pull-request-panel/query-keys.ts` |
-| File preview content    | `["workspaceFile", serverId, cwd, path]`                 | `packages/app/src/components/file-pane.tsx`             |
-| File explorer listings  | fetched via `listDirectory(workspaceRoot, path)`         | `packages/app/src/hooks/use-file-explorer-actions.ts`   |
-
-**Workspace-owned (independent per workspace) — keyed by `workspaceId` (falling back to `cwd` only when no `workspaceId` exists):**
-
-| State                        | Key builder / store                                | Source                                                        |
-| ---------------------------- | -------------------------------------------------- | ------------------------------------------------------------- |
-| Review draft comments        | `buildReviewDraftKey`                              | `packages/app/src/review/store.ts`                            |
-| Working diff comparison      | `workingDiffComparisonKey` (in-memory)             | `packages/app/src/git/working-diff-comparison/state.ts`       |
-| Composer attachments         | `buildWorkspaceAttachmentScopeKey`                 | `packages/app/src/attachments/workspace-attachments-store.ts` |
-| File explorer nav/open state | `fileExplorer` map keyed `workspace:{workspaceId}` | `packages/app/src/hooks/use-file-explorer-actions.ts`         |
-| File explorer expanded paths | `expandedPathsByWorkspace[workspaceStateKey]`      | `packages/app/src/stores/panel-store/state.ts`                |
-
-`diff-pane.tsx` is the canonical wiring site: it passes `{ serverId, cwd }` to the git queries and `{ serverId, workspaceId, cwd }` to the draft/comparison/attachment scope keys.
-
-**Do not "fix" the sharing away.** Re-keying a directory-backed query by `workspaceId` makes same-`cwd` workspaces diverge (two windows onto the same git tree showing different diffs). Re-keying owned state (drafts, expanded paths) by `cwd` makes them leak between distinct workspaces on the same folder. The `workspaceId`-keyed builders carry a `// workspaceId is opaque; do not parse this key back into a path.` comment — the opaque-id fallback to `cwd` exists only for old payloads without a `workspaceId`, not as a content-sharing mechanism.
-
-One deliberate non-violation: `AgentFileExplorerState.directories`/`files` cache directory listings inside the `workspaceId`-keyed explorer map. Same-`cwd` workspaces therefore keep duplicate caches, but they can never diverge — both fetch the identical directory via `listDirectory(workspaceRoot, …)`. This is duplication, not leakage, and is left as-is.
-
 ## Agent providers
 
 Each provider implements the `AgentClient` interface in `agent/agent-sdk-types.ts`. Provider implementations live in `agent/providers/`.
@@ -480,7 +421,7 @@ $NEOLIX_HOME/
 ├── schedules/                                  # Scheduled-agent definitions and runs
 ├── config.json                                 # Daemon config (mutable)
 ├── daemon-keypair.json                         # Daemon identity for relay/E2EE
-├── push-tokens.json                            # Mobile push tokens
+├── push-tokens.json                            # Client push tokens
 ├── neolix.pid                                  # Supervisor identity and published bound endpoint
 └── daemon.log                                  # Daemon trace logs (rotated)
 ```

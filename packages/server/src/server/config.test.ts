@@ -222,25 +222,27 @@ describe("server config", () => {
           path.join(root, "repo", "packages", "server", "src", "server", "config.ts"),
         ),
       }),
-    ).toBe(path.join(root, "repo", "packages", "server", "dist", "server", "web-ui"));
+    ).toBe(path.join(root, "repo", "packages", "server", "dist", "server", "web-app", "web"));
   });
 
   test("resolves bundled web UI path from globally installed compiled modules", async () => {
     const packageRoot = await mkdtemp(path.join(os.tmpdir(), "neolix-config-compiled-"));
     roots.push(packageRoot);
-    await mkdir(path.join(packageRoot, "dist", "server", "web-ui"), { recursive: true });
+    await mkdir(path.join(packageRoot, "dist", "server", "web-app", "web"), {
+      recursive: true,
+    });
 
     expect(
       resolveBundledWebUiDistDir({
         moduleUrl: pathToFileURL(path.join(packageRoot, "dist", "server", "server", "config.js")),
       }),
-    ).toBe(path.join(packageRoot, "dist", "server", "web-ui"));
+    ).toBe(path.join(packageRoot, "dist", "server", "web-app", "web"));
   });
 
-  test("resolves packaged desktop web UI path from resources app-dist", async () => {
+  test("resolves packaged desktop web UI path from resources desktop-web", async () => {
     const packageRoot = await mkdtemp(path.join(os.tmpdir(), "neolix-config-packaged-"));
     roots.push(packageRoot);
-    await mkdir(path.join(packageRoot, "app-dist"), { recursive: true });
+    await mkdir(path.join(packageRoot, "desktop-web", "web"), { recursive: true });
 
     expect(
       resolveBundledWebUiDistDir({
@@ -259,7 +261,7 @@ describe("server config", () => {
         ),
         resourcesPath: packageRoot,
       }),
-    ).toBe(path.join(packageRoot, "app-dist"));
+    ).toBe(path.join(packageRoot, "desktop-web", "web"));
   });
 });
 

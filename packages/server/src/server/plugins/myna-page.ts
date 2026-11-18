@@ -1,14 +1,17 @@
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { MYNA_BRIDGE_SOURCE } from "./myna-bridge.js";
 
 /**
  * Conversion of myna's window contributions — `magpie.page`, `magpie.panels`,
- * `magpie.actions` and the reads `magpie.permissions` grants — into a Neolix
- * client plugin that renders the same HTML through `HtmlFrame`.
+ * `magpie.actions` and the reads `magpie.permissions` grants — into declarative
+ * Neolix contributions: a sandboxed web view served from the plugin package, a
+ * sidebar entry, panels inside the host's built-in pages, provider/agent row
+ * actions, and a generated server RPC shared by the page and its panels.
  *
- * The page keeps myna's `window.myna` bridge: the generated HTML carries a
- * copy of it, and the generated client answers `hello`, `options.get`,
- * `options.set`, `read` and sends `action` events.
+ * The page keeps myna's bridge: the converted HTML loads a script asset that
+ * exposes `window.myna` (and `window.owl`, myna's current name for it) on top of
+ * `window.neolix` and the plugin's own settings/read RPCs.
  */
 
 export const MYNA_PAGE_READS = ["usage:summary", "providers:list"] as const;
@@ -294,30 +297,25 @@ async function inlineStyleLink(
   return `<style data-myna-href="${reference}">${css}</style>`;
 }
 
-async function inlineScript(
+/**
+ * Keeps local scripts external. The sandboxed view runs under `script-src 'self'`, which accepts
+ * files served from the plugin package but not an inlined copy. The referenced file is still
+ * checked here so a missing or escaping asset fails the conversion.
+ */
+async function webScriptTag(
   directory: string,
   file: string,
   tag: string,
-  body: string,
   state: InlineState,
 ): Promise<string> {
   const src = /\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)')/i.exec(tag);
   const reference = src?.[1] ?? src?.[2] ?? "";
-  if (isRemote(reference)) return `${tag}${body}</script>`;
-  // myna serves its bridge at `_myna/bridge.js`; the converted page carries its own copy.
-  if (reference.startsWith("_myna/")) return "";
-  const type = /\btype\s*=\s*(?:"([^"]*)"|'([^']*)')/i.exec(tag);
-  const kind = (type?.[1] ?? type?.[2] ?? "").trim();
-  const source = (await readAsset(directory, path.dirname(file), reference, state)).data.toString(
-    "utf8",
-  );
-  if (kind === "module" && /(^|\n)\s*(import|export)\b/.test(source)) {
-    throw new Error(
-      `myna page script ${reference} is an ES module with imports; Neox's converter can only inline classic scripts`,
-    );
-  }
-  const attributes = tag.replace(/\s*\bsrc\s*=\s*(?:"[^"]*"|'[^']*')/i, "");
-  return `${attributes}>${source}</script>`;
+  // myna serves its bridge at `_myna/bridge.js`; current checkouts spell it `_owl/bridge.js`.
+  // The converted page loads the host's own bridge instead.
+  if (reference.startsWith("_myna/") || reference.startsWith("_owl/")) return "";
+  if (isRemote(reference)) return tag;
+  await readAsset(directory, path.dirname(file), reference, state);
+  return tag;
 }
 
 async function inlineMediaTag(
@@ -336,14 +334,15 @@ async function inlineMediaTag(
 }
 
 /**
- * The page's HTML with its local stylesheets, scripts and media inlined, and
- * myna's page bridge and base stylesheet added. A missing or escaping asset
- * fails the conversion instead of leaving a silently broken page.
+ * The page's HTML for the sandboxed view: local stylesheets and media are inlined (the view's
+ * CSP allows both), local scripts stay as files beside the page, myna's own bridge reference is
+ * replaced by the host's bridge asset, and the no-weight base stylesheet is added. A missing or
+ * escaping asset fails the conversion instead of leaving a silently broken page.
  */
 export async function renderMynaPageHtml(
   directory: string,
   file: string,
-  options: { baseStyle?: boolean } = {},
+  pluginId: string,
 ): Promise<string> {
   const absolute = path.join(directory, file);
   const html = await readFile(absolute, "utf8");
@@ -353,7 +352,7 @@ export async function renderMynaPageHtml(
   const pattern = /<(link|script|img|source|video|audio|input)\b[^>]*>/gi;
   for (const match of html.matchAll(pattern)) {
     if (match.index === undefined) continue;
-    // A match inside an already-inlined script or stylesheet is that file's own text.
+    // A match inside an already-inlined stylesheet is that file's own text.
     if (match.index < last) continue;
     const tag = match[0];
     const name = match[1].toLowerCase();
@@ -363,14 +362,11 @@ export async function renderMynaPageHtml(
     } else if (name === "script") {
       const close = html.indexOf("</script>", match.index + tag.length);
       if (close !== -1) {
-        const body = html.slice(match.index + tag.length, close);
-        const converted = await inlineScript(directory, file, tag, body, state);
+        const converted = await webScriptTag(directory, file, tag, state);
         output += html.slice(last, match.index) + converted;
         last = close + "</script>".length;
         continue;
       }
-    } else if (name === "img" || name === "source" || name === "input") {
-      replacement = await inlineMediaTag(directory, file, tag, state);
     } else {
       replacement = await inlineMediaTag(directory, file, tag, state);
     }
@@ -378,10 +374,7 @@ export async function renderMynaPageHtml(
     last = match.index + tag.length;
   }
   output += html.slice(last);
-  const withBridge = injectBeforeHeadEnd(output, mynaBridgeScript());
-  return options.baseStyle === false
-    ? withBridge
-    : injectBeforeHeadEnd(withBridge, mynaBaseStyle());
+  return injectBeforeHeadEnd(output, `${mynaBaseStyle()}${mynaBridgeScript(pluginId)}`);
 }
 
 function injectBeforeHeadEnd(html: string, snippet: string): string {
@@ -395,127 +388,15 @@ function injectBeforeHeadEnd(html: string, snippet: string): string {
   return `${snippet}${html}`;
 }
 
-/** myna's page side of the bridge: the same API, plus ReactNativeWebView transport. */
-export function mynaBridgeScript(): string {
-  return `<script data-myna="bridge">${MYNA_BRIDGE_SOURCE}</script>`;
+/** The bridge asset URL, absolute so a page in any package subdirectory resolves it. */
+export function mynaBridgeScript(pluginId: string): string {
+  return `<script data-myna="bridge" src="/plugin-web/${pluginId}/neolix-myna/bridge.js"></script>`;
 }
 
 /** myna's no-weight base stylesheet for what a page leaves unstyled. */
 export function mynaBaseStyle(): string {
   return `<style data-myna="base">${MYNA_BASE_CSS}</style>`;
 }
-
-const MYNA_BRIDGE_SOURCE = `(() => {
-  const waiting = new Map();
-  let next = 0;
-  const themed = [];
-  const watched = [];
-  let acting = null;
-  const acted = [];
-  const native = typeof window.ReactNativeWebView !== "undefined" && window.ReactNativeWebView;
-  function send(message) {
-    if (native && typeof native.postMessage === "function") native.postMessage(JSON.stringify(message));
-    else parent.postMessage(message, "*");
-  }
-  function call(method, params) {
-    const id = ++next;
-    return new Promise((resolve, reject) => {
-      waiting.set(id, { resolve, reject });
-      send({ myna: 1, id, method, params });
-    });
-  }
-  function paint(theme) {
-    const root = document.documentElement;
-    root.dataset.theme = theme.dark ? "dark" : "light";
-    root.style.colorScheme = theme.dark ? "dark" : "light";
-    root.lang = theme.lang || "en";
-    for (const [k, v] of Object.entries(theme.tokens || {})) root.style.setProperty("--myna-" + k, v);
-  }
-  function report(err) {
-    send({ myna: 1, method: "error", params: { message: String(err && err.message || err) } });
-  }
-  function act(data) {
-    try { Promise.resolve(acting(data)).catch(report); } catch (err) { report(err); }
-  }
-  function receive(raw) {
-    if (typeof raw === "string") {
-      try { raw = JSON.parse(raw); } catch { return; }
-    }
-    const m = raw;
-    if (!m || m.myna !== 1) return;
-    if (m.event === "theme") {
-      api.theme = m.data;
-      paint(m.data);
-      for (const fn of themed) { try { fn(m.data); } catch (err) { report(err); } }
-      return;
-    }
-    if (m.event === "visibility") {
-      api.visible = !!(m.data && m.data.visible);
-      for (const fn of watched) { try { fn(api.visible); } catch (err) { report(err); } }
-      return;
-    }
-    if (m.event === "action") {
-      if (acting) act(m.data); else acted.push(m.data);
-      return;
-    }
-    const w = waiting.get(m.id);
-    if (!w) return;
-    waiting.delete(m.id);
-    if (m.error) w.reject(new Error(m.error)); else w.resolve(m.result);
-  }
-  addEventListener("message", (e) => {
-    if (e.source && e.source !== window && e.source !== parent) return;
-    receive(e.data);
-  });
-  document.addEventListener("message", (e) => receive(e.data));
-  addEventListener("error", (e) => {
-    if (/ResizeObserver loop/.test(e.message)) { e.preventDefault(); return; }
-    report(e.error || (e.message === "Script error." ? "" : e.message));
-  });
-  addEventListener("unhandledrejection", (e) => report(e.reason));
-  const api = {
-    theme: null,
-    context: {},
-    service: "",
-    visible: true,
-    onTheme(fn) { themed.push(fn); },
-    onVisibility(fn) { watched.push(fn); },
-    onAction(fn) {
-      acting = fn;
-      for (const d of acted.splice(0)) act(d);
-    },
-    options: {
-      get: () => call("options.get"),
-      set: (options) => call("options.set", { options }),
-    },
-    read: (name, params) => call("read", { name, params }),
-  };
-  api.ready = call("hello").then((reply) => {
-    const { context, service, visible, action, ...theme } = reply;
-    api.theme = theme;
-    if (visible === false) api.visible = false;
-    api.context = context || {};
-    api.service = typeof service === "string" ? service : "";
-    paint(theme);
-    if (action) { if (acting) act(action); else acted.push(action); }
-    return theme;
-  });
-  let told = -1;
-  const size = () => {
-    const h = Math.ceil(document.documentElement.getBoundingClientRect().height);
-    if (h === told) return;
-    told = h;
-    send({ myna: 1, method: "size", params: { height: h } });
-  };
-  const watch = () => {
-    if (typeof ResizeObserver !== "undefined") {
-      new ResizeObserver(size).observe(document.documentElement);
-    }
-    size();
-  };
-  if (document.readyState === "loading") addEventListener("DOMContentLoaded", watch); else watch();
-  window.myna = api;
-})();`;
 
 const MYNA_BASE_CSS = `
 :where(html) { background: var(--myna-bg, Canvas); color: var(--myna-fg, CanvasText); font: 13px/1.45 var(--myna-font, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif); -webkit-font-smoothing: antialiased; }
@@ -542,362 +423,218 @@ const MYNA_BASE_CSS = `
 :where(::selection) { background: var(--myna-accent-soft, Highlight); }
 `;
 
-export interface MynaClientFiles {
-  /** Files written, relative to the package. */
-  files: string[];
+export interface MynaActionContribution {
+  id: string;
+  title: string;
+  action: {
+    kind: "openView";
+    view: string;
+    params: Record<string, string>;
+  };
 }
 
-/** Writes the generated page HTML modules and the client entry a converted package loads. */
-export async function writeMynaClient(
+export interface MynaPanelContribution {
+  id: string;
+  slot: MynaPanelSlot;
+  title: string;
+  view: string;
+}
+
+export interface MynaWebContributions {
+  sidebarItems: {
+    id: string;
+    title: string;
+    view: string;
+    section: "header" | "footer";
+    replaces?: MynaReplaceablePage;
+  }[];
+  panels: MynaPanelContribution[];
+  providerActions: MynaActionContribution[];
+  agentActions: MynaActionContribution[];
+}
+
+export interface MynaWebView {
+  id: string;
+  title: string;
+  entry: string;
+  /** Panels grant `resize` so the frame follows myna's "as tall as it draws" negotiation. */
+  permissions: ("rpc" | "resize")[];
+  rpcs: string[];
+}
+
+export interface MynaWebAssets {
+  views: MynaWebView[];
+  contributions: MynaWebContributions;
+}
+
+const PAGE_VIEW_ID = "page";
+/** The bridge asset lives at the package root so every converted page can reach it by URL. */
+const BRIDGE_ASSET = "neolix-myna/bridge.js";
+const ACTION_CONTRIBUTION_ID = /^[a-z][a-z0-9-]{0,63}$/;
+
+function titleText(value: string, fallback: string): string {
+  const title = value.trim() || fallback;
+  return title.slice(0, 200);
+}
+
+function pageSection(replaces: MynaReplaceablePage | null): "header" | "footer" {
+  return replaces === "usage" ? "footer" : "header";
+}
+
+/**
+ * Writes the bridge script and every converted page or panel beside its source, and returns the
+ * manifest declarations a web host renders: sandboxed views, a sidebar entry, slot panels, and
+ * the row actions that reopen the page with the row it was picked on.
+ *
+ * Views only get `rpc`, for the generated settings calls and `myna.read`; panels add `resize` so
+ * their frame follows myna's height negotiation. Both keep the host's `sandbox="allow-scripts"`
+ * and CSP unchanged.
+ */
+export async function writeMynaWebAssets(
   directory: string,
   window: MynaWindow,
   pluginId: string,
-): Promise<MynaClientFiles> {
-  const clientDirectory = path.join(directory, "client");
-  await mkdir(clientDirectory, { recursive: true });
+  name: string,
+): Promise<MynaWebAssets> {
+  const contributions: MynaWebContributions = {
+    sidebarItems: [],
+    panels: [],
+    providerActions: [],
+    agentActions: [],
+  };
+  if (window.page === null && window.panels.length === 0) return { views: [], contributions };
 
-  const sources: { file: string; html: string }[] = [];
+  const bridgeDirectory = path.dirname(BRIDGE_ASSET);
+  await mkdir(path.join(directory, bridgeDirectory), { recursive: true });
+  await writeFile(path.join(directory, BRIDGE_ASSET), `${MYNA_BRIDGE_SOURCE}\n`);
+
+  const rpcs = ["settings.options.read", "settings.options.write"];
+  if (window.reads.length > 0) rpcs.push("myna.read");
+
+  const views: MynaWebView[] = [];
+  const usedEntries = new Set<string>();
+  const usedViewIds = new Set<string>();
+
   if (window.page !== null) {
-    sources.push({
-      file: window.page.file,
-      html: await renderMynaPageHtml(directory, window.page.file),
+    const html = await renderMynaPageHtml(directory, window.page.file, pluginId);
+    const parsed = path.posix.parse(window.page.file);
+    let entry = path.posix.join(parsed.dir, `${parsed.name}.neolix.html`);
+    for (let suffix = 2; usedEntries.has(entry); suffix += 1) {
+      entry = path.posix.join(parsed.dir, `${parsed.name}.neolix-${suffix}.html`);
+    }
+    usedEntries.add(entry);
+    usedViewIds.add(PAGE_VIEW_ID);
+    await writeFile(path.join(directory, entry), html);
+
+    const title = titleText(window.page.title, name);
+    views.push({ id: PAGE_VIEW_ID, title, entry, permissions: ["rpc"], rpcs: [...rpcs] });
+    contributions.sidebarItems.push({
+      id: PAGE_VIEW_ID,
+      title,
+      view: PAGE_VIEW_ID,
+      section: pageSection(window.page.replaces),
+      ...(window.page.replaces === "sessions" || window.page.replaces === "usage"
+        ? { replaces: window.page.replaces }
+        : {}),
     });
   }
+
+  // Each panel is its own sandboxed view beside its source. `resize` is what myna's height
+  // negotiation becomes: a panel frame is as tall as it draws instead of a fixed box.
   for (const panel of window.panels) {
-    sources.push({ file: panel.file, html: await renderMynaPageHtml(directory, panel.file) });
-  }
-  const modules = sources
-    .map((source, index) => `export const PAGE_${index} = ${JSON.stringify(source.html)};`)
-    .join("\n\n");
-  await writeFile(path.join(clientDirectory, "myna-pages.ts"), `${modules}\n`);
+    const html = await renderMynaPageHtml(directory, panel.file, pluginId);
+    const parsed = path.posix.parse(panel.file);
+    let entry = path.posix.join(parsed.dir, `${parsed.name}.neolix.html`);
+    for (let suffix = 2; usedEntries.has(entry); suffix += 1) {
+      entry = path.posix.join(parsed.dir, `${parsed.name}.neolix-${suffix}.html`);
+    }
+    usedEntries.add(entry);
 
-  const entry = renderClientEntry(window, pluginId);
-  await writeFile(path.join(directory, "index.client.tsx"), entry);
-  return { files: ["index.client.tsx", "client/myna-pages.ts"] };
+    const baseId = `panel-${panel.slot}`;
+    let viewId = baseId;
+    for (let suffix = 2; usedViewIds.has(viewId); suffix += 1) viewId = `${baseId}-${suffix}`;
+    usedViewIds.add(viewId);
+    await writeFile(path.join(directory, entry), html);
+
+    const title = titleText(panel.title, name);
+    views.push({
+      id: viewId,
+      title,
+      entry,
+      permissions: ["rpc", "resize"],
+      rpcs: [...rpcs],
+    });
+    contributions.panels.push({ id: viewId, slot: panel.slot, title, view: viewId });
+  }
+
+  // myna allows an action id to start with a digit; a contribution id may not, so such an id
+  // gains a prefix. The page still receives myna's spelling in `params.action`.
+  const usedActionIds = new Set<string>(
+    [...contributions.sidebarItems, ...contributions.panels].map((entry) => entry.id),
+  );
+  for (const action of window.actions) {
+    const base = ACTION_CONTRIBUTION_ID.test(action.id) ? action.id : `action-${action.id}`;
+    let id = base;
+    for (let suffix = 2; usedActionIds.has(id); suffix += 1) {
+      id = `${base.slice(0, 56)}-${suffix}`;
+    }
+    usedActionIds.add(id);
+    const contribution: MynaActionContribution = {
+      id,
+      title: titleText(action.title, action.id),
+      action: {
+        kind: "openView",
+        view: PAGE_VIEW_ID,
+        params: { action: action.id },
+      },
+    };
+    if (action.menu === "provider") contributions.providerActions.push(contribution);
+    else contributions.agentActions.push(contribution);
+  }
+
+  return { views, contributions };
 }
 
-function titleResources(window: MynaWindow): Record<string, Record<string, string>> {
-  const resources: Record<string, Record<string, string>> = { en: {} };
-  function add(key: string, title: string, titles: Record<string, string>): void {
-    const english = title === "" ? key.replace(/_/g, " ") : title;
-    resources.en[key] = english;
-    for (const [language, value] of Object.entries(titles)) {
-      resources[language] ??= {};
-      resources[language][key] = value;
-      if (language === "zh") {
-        resources["zh-CN"] ??= {};
-        resources["zh-CN"][key] = value;
-      }
-    }
-  }
-  if (window.page !== null) add("title", window.page.title, window.page.titles);
-  window.panels.forEach((panel, index) => add(`panel_${index}`, panel.title, panel.titles));
-  window.actions.forEach((action) => add(`action_${action.id}`, action.title, action.titles));
-  return resources;
-}
-
-/** The client entry: screens, panels and row actions rendered through `HtmlFrame`. */
-export function renderClientEntry(window: MynaWindow, pluginId: string): string {
-  const resources = JSON.stringify(titleResources(window), null, 2);
-  const reads = JSON.stringify(window.reads);
-  const panelEntries = window.panels.map((panel, index) => ({
-    index,
-    slot: panel.slot,
-    id: `panel-${index}`,
-    htmlIndex: `PAGE_${window.page === null ? index : index + 1}`,
-    titleKey: `panel_${index}`,
-  }));
-  const actionEntries = window.actions.map((action) => ({
-    id: action.id,
-    menu: action.menu,
-    titleKey: `action_${action.id}`,
-  }));
-
-  const content: string[] = [];
-  if (window.page !== null) {
-    content.push(`  client.addScreen({
-    id: "page",
-    title: messages.message("title"),
-    Component: PageScreen,
-  });`);
-  }
-  if (window.page?.replaces === "sessions") {
-    content.push(`  client.addSidebarHeaderItem({
-    id: "page-sidebar",
-    title: messages.message("title"),
-    replaces: "sessions",
-    screen: "page",
-    Component: sidebarEntry("page"),
-  });`);
-  }
-  if (window.page?.replaces === "usage") {
-    content.push(`  client.addSidebarFooterItem({
-    id: "page-sidebar",
-    title: messages.message("title"),
-    replaces: "usage",
-    screen: "page",
-    Component: sidebarEntry("page"),
-  });`);
-  }
-  if (window.page?.replaces === "library" || window.page?.replaces === "routing") {
-    content.push(`  client.addSettingsScreen({
-    id: "page",
-    title: messages.message("title"),
-    icon: "Puzzle",
-    replaces: ${JSON.stringify(window.page.replaces)},
-    Component: PageScreen,
-  });`);
-  }
-  for (const panel of panelEntries) {
-    if (panel.slot === "provider") {
-      content.push(`  client.addProviderPanel({
-    id: ${JSON.stringify(panel.id)},
-    title: messages.message(${JSON.stringify(panel.titleKey)}),
-    icon: "Puzzle",
-    Component: panel(${panel.htmlIndex}),
-  });`);
-      continue;
-    }
-    content.push(`  client.addScreen({
-    id: ${JSON.stringify(panel.id)},
-    title: messages.message(${JSON.stringify(panel.titleKey)}),
-    Component: panel(${panel.htmlIndex}),
-  });`);
-    if (panel.slot === "settings" || panel.slot === "usage") {
-      content.push(`  client.addSettingsScreen({
-    id: ${JSON.stringify(panel.id)},
-    title: messages.message(${JSON.stringify(panel.titleKey)}),
-    icon: "Puzzle",
-    Component: panel(${panel.htmlIndex}),
-  });`);
-    }
-    if (panel.slot === "agents") {
-      content.push(`  client.addSidebarFooterItem({
-    id: ${JSON.stringify(panel.id)},
-    title: messages.message(${JSON.stringify(panel.titleKey)}),
-    screen: ${JSON.stringify(panel.id)},
-    Component: sidebarEntry(${JSON.stringify(panel.id)}),
-  });`);
-    }
-  }
-  for (const action of actionEntries) {
-    const menu = action.menu === "provider" ? "addProviderAction" : "addAgentAction";
-    const target = action.menu;
-    content.push(`  client.${menu}({
-    id: ${JSON.stringify(action.id)},
-    title: messages.message(${JSON.stringify(action.titleKey)}),
-    icon: "Puzzle",
-    onSelect({ ${target}, openScreen }) {
-      openScreen({
-        screenId: "page",
-        params: { action: ${JSON.stringify(action.id)}, ${target}: ${target}.id, name: ${target}.name },
-      });
-    },
-  });`);
-  }
-
-  return `// Generated by Neox's myna plugin converter. It is overwritten on every update.
-// myna window contributions (page, panels, actions) rendered through HtmlFrame.
-import { useEffect, useMemo, useRef } from "react";
-import {
-  defineTranslations,
-  useNeolix,
-  useSettings,
-  useTranslation,
-  type PluginClientContext,
-  type PluginHostProps,
-  type PluginScreenProps,
-  type PluginSidebarItemProps,
-} from "@neolix/plugin/client";
-import { defineSettings } from "@neolix/plugin";
-import { HtmlFrame, SidebarRow, type HtmlFrameHandle } from "@neolix/plugin/client/ui";
-import { z } from "zod";
-import { ${["PAGE_0", ...window.panels.map((_, index) => `PAGE_${index + 1}`)].join(", ")} } from "./client/myna-pages";
-
-const PLUGIN_ID = ${JSON.stringify(pluginId)};
-const READS = ${reads} as const;
-const messages = defineTranslations({ resources: ${resources} });
-const options = defineSettings({
-  id: "options",
-  scope: "host",
-  version: 1,
-  schema: z.record(z.string(), z.json()),
+/**
+ * The server half of the page bridge: one RPC over the reads `magpie.permissions` granted. The
+ * generated entries import `defineRpc` and `z`; this snippet is empty when the page reads
+ * nothing.
+ */
+export function renderPageReadCode(reads: readonly MynaPageRead[]): string {
+  if (reads.length === 0) return "";
+  return `const READS = ${JSON.stringify(reads)} as const;
+const PAGE_READ = defineRpc({
+  name: "myna.read",
+  input: z.object({ name: z.string(), params: z.record(z.string(), z.json()).optional() }),
+  output: z.json(),
 });
 
-function luminance(color: string): number {
-  const hex = /^#?([0-9a-f]{6})$/i.exec(color.trim());
-  if (!hex) return 1;
-  const value = Number.parseInt(hex[1], 16);
-  const parts = [(value >> 16) & 255, (value >> 8) & 255, value & 255].map((part) => {
-    const channel = part / 255;
-    return channel <= 0.03928 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
-  });
-  return 0.2126 * parts[0] + 0.7152 * parts[1] + 0.0722 * parts[2];
-}
-
-function themeReply(theme: PluginHostProps["theme"], lang: string) {
-  const dark = luminance(theme.colors.surface0) < 0.35;
-  return {
-    dark,
-    lang,
-    tokens: {
-      bg: theme.colors.surface0,
-      fg: theme.colors.foreground,
-      muted: theme.colors.foregroundMuted,
-      card: theme.colors.surface1,
-      line: theme.colors.border,
-      accent: theme.colors.accent,
-      "accent-soft": theme.colors.surface2,
-    },
-  };
-}
-
-function contextOf(params: Record<string, string>) {
-  if (params.provider) {
-    return { provider: { id: params.provider, name: params.name || params.provider } };
-  }
-  if (params.agent) {
-    return { agent: { id: params.agent, name: params.name || params.agent } };
-  }
-  return {};
-}
-
-function actionOf(params: Record<string, string>) {
-  if (!params.action) return undefined;
-  const target = params.provider
-    ? { provider: { id: params.provider, name: params.name || params.provider } }
-    : params.agent
-      ? { agent: { id: params.agent, name: params.name || params.agent } }
-      : {};
-  return { id: params.action, ...target };
-}
-
-async function readPage(
-  neolix: ReturnType<typeof useNeolix>,
-  name: unknown,
-  params: Record<string, unknown>,
-) {
-  if (typeof name !== "string" || !(READS as readonly string[]).includes(name)) {
-    throw new Error(\`this page cannot read \${String(name)}\`);
+async function pageRead(neolix: any, name: string, params: Record<string, unknown>) {
+  if (!(READS as readonly string[]).includes(name)) {
+    throw new Error("this page cannot read " + name);
   }
   if (name === "providers:list") return neolix.gateway.providers();
-  if (name === "usage:summary") {
-    const requested = typeof params.period === "string" ? params.period : "today";
-    const period = requested === "7d" || requested === "30d" ? requested : "today";
-    const { report } = await neolix.gateway.usage({ period });
-    if (!report) throw new Error("The gateway has no usage to read");
-    return {
-      period,
-      since: report.since,
-      calls: report.totals.calls,
-      errors: report.totals.failed,
-      input: report.totals.inputTokens,
-      output: report.totals.outputTokens,
-      cacheRead: report.totals.cacheReadTokens,
-      cost: report.totals.costUsd,
-      models: report.byModel.slice(0, 20).map((group) => ({
-        model: group.name || group.id,
-        calls: group.calls,
-        input: group.inputTokens,
-        output: group.outputTokens,
-        cost: group.costUsd,
-      })),
-    };
-  }
-  throw new Error(\`this page cannot read \${name}\`);
-}
-
-function PageFrame({
-  html,
-  theme,
-  params,
-  lang,
-  autoHeight = false,
-}: {
-  html: string;
-  theme: PluginHostProps["theme"];
-  params: Record<string, string>;
-  lang: string;
-  autoHeight?: boolean;
-}) {
-  const frame = useRef<HtmlFrameHandle>(null);
-  const neolix = useNeolix();
-  const optionsState = useSettings(options);
-  const context = useMemo(() => contextOf(params), [params]);
-  const action = useMemo(() => actionOf(params), [params]);
-  const reply = useMemo(() => themeReply(theme, lang), [theme, lang]);
-  const chat = async (raw: unknown) => {
-    if (typeof raw !== "object" || raw === null) throw new Error("bad message");
-    const message = raw as { method?: string; params?: Record<string, unknown> };
-    switch (message.method) {
-      case "hello":
-        return { ...reply, context, service: "", visible: true, action };
-      case "options.get":
-        return optionsState.status === "ready" ? optionsState.values : {};
-      case "options.set": {
-        if (optionsState.status !== "ready") throw new Error("Settings are still loading");
-        const values = (message.params?.options ?? {}) as Record<string, unknown>;
-        const saved = await optionsState.save(values, optionsState.revision);
-        if (!saved) throw new Error(optionsState.saveError ?? "Saving options failed");
-        return values;
-      }
-      case "read":
-        return readPage(neolix, message.params?.name, (message.params?.params ?? {}) as Record<string, unknown>);
-      case "size":
-      case "error":
-        return null;
-      default:
-        throw new Error(\`no method \${String(message.method)}\`);
-    }
+  const requested = typeof params.period === "string" ? params.period : "today";
+  const period = requested === "7d" || requested === "30d" ? requested : "today";
+  const { report } = await neolix.gateway.usage({ period });
+  if (!report) throw new Error("The gateway has no usage to read");
+  return {
+    period,
+    since: report.since,
+    calls: report.totals.calls,
+    errors: report.totals.failed,
+    input: report.totals.inputTokens,
+    output: report.totals.outputTokens,
+    cacheRead: report.totals.cacheReadTokens,
+    cost: report.totals.costUsd,
+    models: report.byModel.slice(0, 20).map((group: any) => ({
+      model: group.name || group.id,
+      calls: group.calls,
+      input: group.inputTokens,
+      output: group.outputTokens,
+      cost: group.costUsd,
+    })),
   };
-  useEffect(() => {
-    frame.current?.post({ event: "theme", data: reply });
-  }, [reply]);
-  return <HtmlFrame ref={frame} html={html} autoHeight={autoHeight} bridge={chat} />;
-}
-
-function PageScreen({ params = {}, theme }: PluginScreenProps) {
-  const { locale } = useTranslation(messages);
-  return <PageFrame html={PAGE_0} theme={theme} params={params} lang={locale} />;
-}
-
-function panel(html: string) {
-  return function PanelScreen({
-    params = {},
-    theme,
-    provider,
-  }: PluginScreenProps & { provider?: { id: string; name: string } }) {
-    const { locale } = useTranslation(messages);
-    const context = provider
-      ? { ...params, provider: provider.id, name: provider.name }
-      : params;
-    return (
-      <PageFrame
-        html={html}
-        theme={theme}
-        params={context}
-        lang={locale}
-        autoHeight={provider !== undefined}
-      />
-    );
-  };
-}
-
-function sidebarEntry(screenId: string) {
-  return function Entry({ currentScreen, openScreen }: PluginSidebarItemProps) {
-    return (
-      <SidebarRow
-        icon="Puzzle"
-        active={currentScreen?.screenId === screenId}
-        onPress={() => openScreen({ screenId })}
-      />
-    );
-  };
-}
-
-export default function contribute(client: PluginClientContext) {
-${content.join("\n")}
-  return () => {};
 }
 `;
 }

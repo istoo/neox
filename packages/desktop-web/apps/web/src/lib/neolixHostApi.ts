@@ -5,6 +5,8 @@ import {
   type NeolixBackupAuto,
   type NeolixBackupEntry,
   type NeolixBackupFile,
+  type NeolixBuiltinFeatureConfig,
+  type NeolixBuiltinFeatures,
   type NeolixCodexMoveResult,
   type NeolixExternalExport,
   type NeolixExternalSessionDelete,
@@ -13,6 +15,7 @@ import {
   type NeolixExternalSessions,
   type NeolixExternalSessionSearch,
   type NeolixExternalTranscript,
+  type NeolixHostFeatures,
   type NeolixHostStatus,
   type NeolixRelocateResult,
   type NeolixSessionReads,
@@ -21,6 +24,8 @@ import {
   type NeolixSyncConfig,
   type NeolixSyncRemoteVersion,
   type NeolixSyncStatus,
+  type NeolixSyncUsage,
+  type NeolixThirdPartyNotices,
   type NeolixWebPage,
 } from "@synara/contracts";
 
@@ -83,6 +88,7 @@ export interface NeolixHostConfigWire {
   readonly usageAlertPercent?: number;
   readonly balanceAlert?: number;
   readonly autoArchiveAfterMerge?: boolean;
+  readonly browserTools?: { readonly enabled?: boolean };
   readonly enableTerminalAgentHooks?: boolean;
   readonly idleRuntimeCleanup?: boolean;
   readonly resumeOnStartup?: boolean;
@@ -106,6 +112,10 @@ export interface NeolixHostConfigWire {
     readonly all?: boolean;
     readonly agents?: Readonly<Record<string, boolean>>;
   };
+  /** Plugins › Built-in switches; a missing id is on. */
+  readonly builtinFeatures?: NeolixBuiltinFeatures;
+  /** Per-feature settings kept beside the switches. */
+  readonly builtinFeatureConfig?: NeolixBuiltinFeatureConfig;
   readonly features?: {
     readonly dictation?: {
       readonly enabled: boolean;
@@ -121,6 +131,11 @@ export interface NeolixHostConfigWire {
 }
 
 export type NeolixHostConfigPatch = Record<string, unknown>;
+
+/** The host's advertised capability flags, for one-time feature gating. */
+export function getHostFeatures(): Promise<NeolixHostFeatures> {
+  return hostRequest(NEOLIX_HOST_WS_METHODS.getFeatures);
+}
 
 export function getHostConfig(): Promise<{ config: NeolixHostConfigWire }> {
   return hostRequest(NEOLIX_HOST_WS_METHODS.getConfig);
@@ -190,7 +205,11 @@ export function setSessionReads(input: {
 }
 
 export function listExternalSessions(agent?: string): Promise<NeolixExternalSessions> {
-  return hostRequest(NEOLIX_HOST_WS_METHODS.listExternalSessions, agent ? { agent } : {});
+  return hostRequest(NEOLIX_HOST_WS_METHODS.listExternalSessions, {
+    ...(agent ? { agent } : {}),
+    // A daemon without the capability ignores this and answers the full list.
+    fast: true,
+  });
 }
 
 export function searchExternalSessions(
@@ -300,6 +319,11 @@ export function getSyncStatus(): Promise<{ status: NeolixSyncStatus }> {
   return hostRequest(NEOLIX_HOST_WS_METHODS.getSyncStatus);
 }
 
+/** Every computer's shared usage, by day, as the Usage page draws it. */
+export function getSyncUsage(): Promise<NeolixSyncUsage> {
+  return hostRequest(NEOLIX_HOST_WS_METHODS.getSyncUsage);
+}
+
 export function listSyncRemote(): Promise<{
   versions: ReadonlyArray<NeolixSyncRemoteVersion>;
   error?: string;
@@ -397,6 +421,11 @@ export function setWebPage(
   patch: NeolixWebPagePatch,
 ): Promise<{ page: NeolixWebPage | null; error?: string }> {
   return hostRequest(NEOLIX_HOST_WS_METHODS.setWebPage, patch);
+}
+
+/** The build's third-party license list (Settings › About). */
+export function getThirdPartyNotices(): Promise<NeolixThirdPartyNotices> {
+  return hostRequest(NEOLIX_HOST_WS_METHODS.getThirdPartyNotices);
 }
 
 export function getLibraryGithubToken(): Promise<{

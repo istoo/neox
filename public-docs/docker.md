@@ -1,6 +1,6 @@
 ---
 title: Docker
-description: Run the Neox daemon and bundled web UI with the official Docker image.
+description: Run the Neox daemon with the official Docker image.
 nav: Docker
 order: 6
 category: Getting started
@@ -8,7 +8,7 @@ category: Getting started
 
 # Docker
 
-The official Neox Docker image runs the daemon and serves the bundled browser UI from the same HTTP origin. It is meant for servers, dev boxes, NAS devices, homelab hosts, and other places where you want Neox running without the desktop app.
+The official Neox Docker image runs the daemon. It is meant for servers, dev boxes, NAS devices, homelab hosts, and other places where you want Neox running without the desktop app. The web client is built and shipped by the desktop app; a custom image can add `packages/server/dist/server/web-app` to serve it from the daemon origin.
 
 Docker images follow the stable Neox release cadence. `ghcr.io/istoo/neox:latest` points at the latest stable release, not an arbitrary `main` build.
 
@@ -27,14 +27,13 @@ Then open:
 http://localhost:6868
 ```
 
-If you set `NEOLIX_PASSWORD`, use that same password when adding the direct daemon connection in the web UI, mobile app, or CLI.
+If you set `NEOLIX_PASSWORD`, use that same password when adding the direct daemon connection in a Neox client or the CLI.
 
 ## What the image includes
 
 The image:
 
 - installs the Neox daemon and CLI
-- serves the bundled web UI
 - listens on `0.0.0.0:6868` inside the container
 - stores daemon state under `/home/neolix/.neox`
 - runs the daemon and launched agents as the non-root `neolix` user
@@ -151,7 +150,7 @@ IPs and `localhost` are allowed by default.
 
 Set `NEOLIX_PASSWORD` for any published port or network-reachable deployment. Use HTTPS at your reverse proxy for browser access outside localhost.
 
-The static web UI is public on the daemon origin. The daemon API and WebSocket are protected by password auth when configured.
+Static web-app files, when present, are public on the daemon origin. The daemon API and WebSocket are protected by password auth when configured.
 
 Agents can access whatever you mount into `/workspace` and whatever credentials you place in `/home/neolix`. Keep those mounts scoped to what the agents should be able to use.
 

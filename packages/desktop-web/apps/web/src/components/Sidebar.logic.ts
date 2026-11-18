@@ -1354,6 +1354,30 @@ export const SIDEBAR_STATUS_BUCKET_LABEL_KEYS: Record<SidebarStatusBucket, strin
   done: "workspace:statusBucket_done",
 };
 
+/**
+ * Bucket threads for the status grouping. Empty buckets are dropped and the
+ * remaining sections always follow SIDEBAR_STATUS_BUCKET_ORDER regardless of
+ * the incoming thread order.
+ */
+export function groupSidebarThreadsByStatus<Thread>(input: {
+  readonly threads: readonly Thread[];
+  readonly bucketFor: (thread: Thread) => SidebarStatusBucket;
+  readonly labels: Readonly<Record<SidebarStatusBucket, string>>;
+}): Array<{ key: SidebarStatusBucket; label: string; threads: Thread[] }> {
+  const buckets = new Map<SidebarStatusBucket, Thread[]>();
+  for (const thread of input.threads) {
+    const bucket = input.bucketFor(thread);
+    const rows = buckets.get(bucket) ?? [];
+    rows.push(thread);
+    buckets.set(bucket, rows);
+  }
+  return SIDEBAR_STATUS_BUCKET_ORDER.flatMap((bucket) => {
+    const rows = buckets.get(bucket);
+    if (!rows || rows.length === 0) return [];
+    return [{ key: bucket, label: input.labels[bucket], threads: rows }];
+  });
+}
+
 export function resolveSidebarStatusBucket(input: {
   readonly status: Pick<ThreadStatusPill, "label"> | null;
   readonly sessionStatus?: string | null | undefined;

@@ -1,4 +1,12 @@
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
@@ -315,30 +323,29 @@ describe("neolix config file substrate", () => {
     );
   });
 
-  // POSIX-only: Windows mtime granularity can collapse the two revisions in this fixture.
-  it.skipIf(isPlatform("win32"))(
-    "rejects stale writes when the current revision changed before rename",
-    async () => {
-      writeFileSync(join(tempDir, "neox.json"), JSON.stringify({ worktree: { setup: "old" } }));
-      const expectedRevision = await statNeolixConfigPath(tempDir);
-      writeFileSync(join(tempDir, "neox.json"), JSON.stringify({ worktree: { setup: "new" } }));
-      const currentRevision = await statNeolixConfigPath(tempDir);
+  it("rejects stale writes when the current revision changed before rename", async () => {
+    writeFileSync(join(tempDir, "neox.json"), JSON.stringify({ worktree: { setup: "old" } }));
+    const expectedRevision = await statNeolixConfigPath(tempDir);
+    writeFileSync(join(tempDir, "neox.json"), JSON.stringify({ worktree: { setup: "new" } }));
+    // Same size and timestamp: only the content digest can tell the revisions apart.
+    const sameTime = new Date(expectedRevision?.mtimeMs ?? 0);
+    utimesSync(join(tempDir, "neox.json"), sameTime, sameTime);
+    const currentRevision = await statNeolixConfigPath(tempDir);
 
-      const result = await writeNeolixConfigForEdit({
-        repoRoot: tempDir,
-        config: { worktree: { setup: "from editor" } },
-        expectedRevision,
-      });
+    const result = await writeNeolixConfigForEdit({
+      repoRoot: tempDir,
+      config: { worktree: { setup: "from editor" } },
+      expectedRevision,
+    });
 
-      expect(result).toEqual({
-        ok: false,
-        error: { code: "stale_project_config", currentRevision },
-      });
-      expect(readFileSync(join(tempDir, "neox.json"), "utf8")).toBe(
-        JSON.stringify({ worktree: { setup: "new" } }),
-      );
-    },
-  );
+    expect(result).toEqual({
+      ok: false,
+      error: { code: "stale_project_config", currentRevision },
+    });
+    expect(readFileSync(join(tempDir, "neox.json"), "utf8")).toBe(
+      JSON.stringify({ worktree: { setup: "new" } }),
+    );
+  });
 
   it("round-trips unknown top-level, worktree, and script-entry fields", async () => {
     const config = {

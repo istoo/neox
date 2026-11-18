@@ -145,7 +145,10 @@ describe("mcpauth", () => {
     await finishSignIn(state.url ?? "");
 
     const file = path.join(neolixHome, "mcp-signins.json");
-    expect(statSync(file).mode & 0o777).toBe(0o600);
+    // Windows cannot express POSIX permissions; the file is private by location there.
+    if (process.platform !== "win32") {
+      expect(statSync(file).mode & 0o777).toBe(0o600);
+    }
     expect(JSON.parse(readFileSync(file, "utf8")).neon.access).toBe("access-1");
   });
 

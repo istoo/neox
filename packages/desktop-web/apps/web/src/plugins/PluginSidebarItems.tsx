@@ -27,10 +27,32 @@ function glyphFor(name: string | undefined): ComponentType<{ className?: string 
   return Glyph;
 }
 
-export function PluginSidebarItems({ section }: { readonly section: "header" | "footer" }) {
-  const plugins = useRunningPlugins();
+/** One manifest entry as a primary sidebar row; ordered by the sidebar nav model. */
+export function PluginSidebarEntryItem({ entry }: { readonly entry: PluginSidebarEntry }) {
   const navigate = useNavigate();
   const matchRoute = useMatchRoute();
+  return (
+    <SidebarPrimaryAction
+      icon={glyphFor(entry.contribution.icon)}
+      label={entry.contribution.title}
+      active={Boolean(
+        matchRoute({
+          to: "/plugin/$pluginId/$viewId",
+          params: { pluginId: entry.pluginId, viewId: entry.contribution.view },
+        }),
+      )}
+      onClick={() =>
+        void navigate({
+          to: "/plugin/$pluginId/$viewId",
+          params: { pluginId: entry.pluginId, viewId: entry.contribution.view },
+        })
+      }
+    />
+  );
+}
+
+export function PluginSidebarItems({ section }: { readonly section: "header" | "footer" }) {
+  const plugins = useRunningPlugins();
   const entries = useMemo(
     () =>
       buildPluginContributionIndex(plugins).sidebarItems.filter(
@@ -41,24 +63,8 @@ export function PluginSidebarItems({ section }: { readonly section: "header" | "
   if (entries.length === 0) return null;
   return (
     <>
-      {entries.map((entry: PluginSidebarEntry) => (
-        <SidebarPrimaryAction
-          key={`${entry.pluginId}:${entry.contribution.id}`}
-          icon={glyphFor(entry.contribution.icon)}
-          label={entry.contribution.title}
-          active={Boolean(
-            matchRoute({
-              to: "/plugin/$pluginId/$viewId",
-              params: { pluginId: entry.pluginId, viewId: entry.contribution.view },
-            }),
-          )}
-          onClick={() =>
-            void navigate({
-              to: "/plugin/$pluginId/$viewId",
-              params: { pluginId: entry.pluginId, viewId: entry.contribution.view },
-            })
-          }
-        />
+      {entries.map((entry) => (
+        <PluginSidebarEntryItem key={`${entry.pluginId}:${entry.contribution.id}`} entry={entry} />
       ))}
     </>
   );

@@ -64,7 +64,10 @@ describe("codex account store", () => {
     const file = join(tempDir(), "codex-accounts.json");
     const saved = account();
     await saveCodexAccounts(file, [saved]);
-    expect(statSync(file).mode & 0o777).toBe(0o600);
+    // Windows cannot express POSIX permissions; the file is private by location there.
+    if (process.platform !== "win32") {
+      expect(statSync(file).mode & 0o777).toBe(0o600);
+    }
     expect(await loadCodexAccounts(file)).toEqual([saved]);
   });
 

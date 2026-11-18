@@ -1,0 +1,85 @@
+{
+  "name": "@synara/client-runtime",
+  "version": "0.0.0-alpha.1",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./src/index.ts"
+    },
+    "./rpcRequestQueue": {
+      "types": "./src/rpcRequestQueue.ts",
+      "import": "./src/rpcRequestQueue.ts"
+    },
+    "./expensiveReadRetry": {
+      "types": "./src/expensiveReadRetry.ts",
+      "import": "./src/expensiveReadRetry.ts"
+    },
+    "./rpcTransportFailure": {
+      "types": "./src/rpcTransportFailure.ts",
+      "import": "./src/rpcTransportFailure.ts"
+    },
+    "./requestOutcome": {
+      "types": "./src/requestOutcome.ts",
+      "import": "./src/requestOutcome.ts"
+    },
+    "./threadDetailResumeCursors": {
+      "types": "./src/threadDetailResumeCursors.ts",
+      "import": "./src/threadDetailResumeCursors.ts"
+    },
+    "./wsTransport": {
+      "types": "./src/wsTransport.ts",
+      "import": "./src/wsTransport.ts"
+    },
+    "./wsTransportEvents": {
+      "types": "./src/wsTransportEvents.ts",
+      "import": "./src/wsTransportEvents.ts"
+    },
+    "./transportPlatform": {
+      "types": "./src/transportPlatform.ts",
+      "import": "./src/transportPlatform.ts"
+    },
+    "./environmentConnections": {
+      "types": "./src/environmentConnections.ts",
+      "import": "./src/environmentConnections.ts"
+    },
+    "./scopedKeys": {
+      "types": "./src/scopedKeys.ts",
+      "import": "./src/scopedKeys.ts"
+    },
+    "./executionContext": {
+      "types": "./src/executionContext.ts",
+      "import": "./src/executionContext.ts"
+    },
+    "./controlQueryScope": {
+      "types": "./src/controlQueryScope.ts",
+      "import": "./src/controlQueryScope.ts"
+    },
+    "./appearance": {
+      "types": "./src/appearance.ts",
+      "import": "./src/appearance.ts"
+    },
+    "./enrollment": {
+      "types": "./src/enrollment.ts",
+      "import": "./src/enrollment.ts"
+    }
+  },
+  "scripts": {
+    "typecheck": "node ../../node_modules/@typescript/native/bin/tsc --noEmit",
+    "typecheck:native": "bun run typecheck",
+    "typecheck:legacy": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@synara/contracts": "workspace:*",
+    "@synara/shared": "workspace:*",
+    "effect": "catalog:"
+  },
+  "devDependencies": {
+    "@effect/language-service": "catalog:",
+    "@types/node": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

@@ -96,8 +96,13 @@ function createQueryClient(commentsOverride?: GitPullRequestSnapshotResult["comm
   const snapshot = {
     pullRequest,
     checks: [
-      { name: "Test, lint, build, and smoke", status: "failure", url: "https://ci.example/1" },
-      { name: "Typecheck", status: "success", url: null },
+      {
+        name: "Test, lint, build, and smoke",
+        status: "failure",
+        url: "https://ci.example/1",
+        duration: "1m 4s",
+      },
+      { name: "Typecheck", status: "success", url: null, duration: "12s" },
     ],
     comments: commentsOverride ?? [
       {
@@ -200,6 +205,22 @@ describe("EnvironmentPullRequestSection", () => {
     await expect.element(checkbox).toHaveAttribute("aria-checked", "false");
     expect(client.getQueryData(pullRequestQueryKeys.autoFix(threadId))).toEqual({ states: [] });
   });
+
+  it("shows each check's name, status, and elapsed time", async () => {
+    const client = createQueryClient();
+    await renderSection(client);
+
+    await page.getByText("#321 Keep PR context visible", { exact: true }).click();
+    await page.getByText("Checks", { exact: true }).hover();
+
+    await expect.element(page.getByText("Test, lint, build, and smoke")).toBeVisible();
+    await expect.element(page.getByText("Failed", { exact: true })).toBeVisible();
+    await expect.element(page.getByText("1m 4s")).toBeVisible();
+    await expect.element(page.getByText("Typecheck")).toBeVisible();
+    await expect.element(page.getByText("Succeeded", { exact: true })).toBeVisible();
+    await expect.element(page.getByText("12s")).toBeVisible();
+  });
+
   afterEach(async () => {
     await cleanup();
     for (const queryClient of queryClients) {

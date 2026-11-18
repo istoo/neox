@@ -282,6 +282,8 @@ export const LibraryMarketServer = Schema.Struct({
   description: Schema.String,
   publisher: Schema.optional(Schema.String),
   icon: Schema.optional(Schema.String),
+  /** The icon for a dark theme; `icon` is the light one. */
+  iconDark: Schema.optional(Schema.String),
   homepage: Schema.optional(Schema.String),
   transport: LibraryTransport,
   runs: Schema.optional(Schema.String),

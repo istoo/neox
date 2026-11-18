@@ -6,6 +6,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 
+import { useBuiltinFeatures } from "~/hooks/useBuiltinFeatures";
 import { neolixGatewayApi } from "~/lib/neolixGatewayApi";
 import type { GatewayConfig, GatewayQuotaAccount, GatewayQuotaWindow } from "~/lib/gatewayTypes";
 import { useTranslation } from "~/i18n";
@@ -113,6 +114,7 @@ async function runAccountWarmSave(
 
 export function GatewayAllowancesPane({ config, apply }: GatewayAllowancesProps) {
   const { t } = useTranslation();
+  const { isEnabled } = useBuiltinFeatures();
   const [historyDays, setHistoryDays] = useState(2);
   const [reading, setReading] = useState(false);
   const quota = useQuery({
@@ -166,57 +168,59 @@ export function GatewayAllowancesPane({ config, apply }: GatewayAllowancesProps)
         )}
       </SettingsSection>
 
-      <SettingsSection title="gateway:warmup_title">
-        <GatewayRow
-          title={t("gateway:codex_warmup")}
-          description={t("gateway:warmup_hint")}
-          trailing={
-            <select
-              value={config.codexWarmup ?? "off"}
-              onChange={(event) =>
-                void apply((draft) => {
-                  draft.codexWarmup = event.currentTarget.value as GatewayConfig["codexWarmup"];
-                })
-              }
-              className="h-7 rounded-md border border-[color:var(--color-border)] bg-background px-2 text-ui-xs"
-            >
-              <option value="off">off</option>
-              <option value="week">week</option>
-              <option value="all">all</option>
-            </select>
-          }
-        />
-        <GatewayRow
-          title={t("gateway:claude_warmup")}
-          description={t("gateway:warmup_hint")}
-          trailing={
-            <select
-              value={config.claudeWarmup ?? "off"}
-              onChange={(event) =>
-                void apply((draft) => {
-                  draft.claudeWarmup = event.currentTarget.value as GatewayConfig["claudeWarmup"];
-                })
-              }
-              className="h-7 rounded-md border border-[color:var(--color-border)] bg-background px-2 text-ui-xs"
-            >
-              <option value="off">off</option>
-              <option value="week">week</option>
-              <option value="all">all</option>
-            </select>
-          }
-        />
-        <WarmAtRows
-          agent="codex"
-          value={(config.codexWarmAts as string[] | undefined) ?? []}
-          onSave={(ats) => neolixGatewayApi.setWarmAt({ agent: "codex", ats })}
-        />
-        <WarmAtRows
-          agent="claude"
-          value={(config.claudeWarmAts as string[] | undefined) ?? []}
-          onSave={(ats) => neolixGatewayApi.setWarmAt({ agent: "claude", ats })}
-        />
-        <AccountWarmRows config={config} />
-      </SettingsSection>
+      {isEnabled("warmups") ? (
+        <SettingsSection title="gateway:warmup_title">
+          <GatewayRow
+            title={t("gateway:codex_warmup")}
+            description={t("gateway:warmup_hint")}
+            trailing={
+              <select
+                value={config.codexWarmup ?? "off"}
+                onChange={(event) =>
+                  void apply((draft) => {
+                    draft.codexWarmup = event.currentTarget.value as GatewayConfig["codexWarmup"];
+                  })
+                }
+                className="h-7 rounded-md border border-[color:var(--color-border)] bg-background px-2 text-ui-xs"
+              >
+                <option value="off">off</option>
+                <option value="week">week</option>
+                <option value="all">all</option>
+              </select>
+            }
+          />
+          <GatewayRow
+            title={t("gateway:claude_warmup")}
+            description={t("gateway:warmup_hint")}
+            trailing={
+              <select
+                value={config.claudeWarmup ?? "off"}
+                onChange={(event) =>
+                  void apply((draft) => {
+                    draft.claudeWarmup = event.currentTarget.value as GatewayConfig["claudeWarmup"];
+                  })
+                }
+                className="h-7 rounded-md border border-[color:var(--color-border)] bg-background px-2 text-ui-xs"
+              >
+                <option value="off">off</option>
+                <option value="week">week</option>
+                <option value="all">all</option>
+              </select>
+            }
+          />
+          <WarmAtRows
+            agent="codex"
+            value={(config.codexWarmAts as string[] | undefined) ?? []}
+            onSave={(ats) => neolixGatewayApi.setWarmAt({ agent: "codex", ats })}
+          />
+          <WarmAtRows
+            agent="claude"
+            value={(config.claudeWarmAts as string[] | undefined) ?? []}
+            onSave={(ats) => neolixGatewayApi.setWarmAt({ agent: "claude", ats })}
+          />
+          <AccountWarmRows config={config} />
+        </SettingsSection>
+      ) : null}
     </div>
   );
 }
@@ -230,6 +234,8 @@ function windowTone(window: GatewayQuotaWindow): "ok" | "warn" | "error" | "mute
 
 function AllowanceCard({ account, reload }: { account: GatewayQuotaAccount; reload: () => void }) {
   const { t } = useTranslation();
+  const { isEnabled } = useBuiltinFeatures();
+  const warmupsOn = isEnabled("warmups");
   const [warmAt, setWarmAt] = useState<string | null>(null);
   const resting = account.restingUntil !== null && account.restingUntil > Date.now();
 
@@ -269,7 +275,7 @@ function AllowanceCard({ account, reload }: { account: GatewayQuotaAccount; relo
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-1">
-          {account.canWarm ? (
+          {warmupsOn && account.canWarm ? (
             <Button
               size="xs"
               variant="outline"
@@ -290,13 +296,19 @@ function AllowanceCard({ account, reload }: { account: GatewayQuotaAccount; relo
               {t("gateway:reset_quota")}
             </Button>
           ) : null}
-          <Button size="xs" variant="ghost" onClick={() => setWarmAt(warmAt === null ? "" : null)}>
-            {t("gateway:warm_at")}
-          </Button>
+          {warmupsOn ? (
+            <Button
+              size="xs"
+              variant="ghost"
+              onClick={() => setWarmAt(warmAt === null ? "" : null)}
+            >
+              {t("gateway:warm_at")}
+            </Button>
+          ) : null}
         </div>
       </div>
 
-      {warmAt !== null ? (
+      {warmupsOn && warmAt !== null ? (
         <div className="mt-2 flex flex-wrap items-end gap-2">
           <GatewayField
             label={t("gateway:warm_at_time")}

@@ -39,6 +39,7 @@ import { Button } from "~/components/ui/button";
 import { Switch } from "~/components/ui/switch";
 import { useProviderUsageSummary } from "~/hooks/useProviderUsageSummary";
 import { maskAccount } from "~/lib/maskAccount";
+import { usageSnapshotKey, usageSnapshotOwner } from "~/lib/providerUsageAccounts.logic";
 import { RotateCcwIcon, TriangleAlertIcon } from "~/lib/icons";
 import { deriveProviderUsageDisplayRows } from "~/lib/providerUsageDisplay";
 import {
@@ -223,7 +224,9 @@ export function ProviderUsageSettingsPanel() {
   // batch is still in flight. Keep cached usage visible until settings arrive.
   const activeSnapshots = serverSettingsQuery.data
     ? (usageQuery.data ?? []).filter((snapshot) => {
-        const instance = providerInstances.get(snapshot.instanceId ?? snapshot.provider);
+        // Account rows are split out of one provider's reports: their switch stays the
+        // instance's they were split from. A deleted instance's snapshot has no owner.
+        const instance = usageSnapshotOwner(snapshot, providerInstances);
         return instance?.enabled === true && instance.driver === snapshot.provider;
       })
     : (usageQuery.data ?? []);
@@ -366,15 +369,16 @@ export function ProviderUsageSettingsPanel() {
           <div className="flex flex-col gap-3">
             {cards.map((snapshot) => {
               const instanceId = snapshot.instanceId ?? snapshot.provider;
-              const instance = providerInstances.get(instanceId);
+              const instance = usageSnapshotOwner(snapshot, providerInstances);
               const accountLabel =
-                instanceId !== snapshot.provider
+                snapshot.accountLabel ??
+                (instanceId !== snapshot.provider
                   ? (instance?.displayName ?? instanceId)
                   : instance?.raw.displayName?.trim() ||
-                    (snapshot.instanceId ? t("common:defaultAccount") : null);
+                    (snapshot.instanceId ? t("common:defaultAccount") : null));
               return (
                 <ProviderUsageCard
-                  key={instanceId}
+                  key={usageSnapshotKey(snapshot)}
                   snapshot={snapshot}
                   accountLabel={
                     accountLabel && settings.maskAccounts ? maskAccount(accountLabel) : accountLabel

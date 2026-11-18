@@ -1,4 +1,4 @@
-import { mkdtemp, rm, readFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -14,6 +14,23 @@ test("offline pairing requires relay consent and saves it in the selected home",
       url: null,
     });
     expect(existsSync(home)).toBe(false);
+    // Relay offers need a configured relay endpoint and app address; there are
+    // no defaults, so an offline home must supply both before enabling it.
+    await mkdir(home, { recursive: true });
+    await writeFile(
+      path.join(home, "config.json"),
+      `${JSON.stringify({
+        version: 1,
+        app: { baseUrl: "https://app.example.test" },
+        daemon: {
+          relay: {
+            enabled: false,
+            endpoint: "relay.example.test:443",
+            publicEndpoint: "relay.example.test:443",
+          },
+        },
+      })}\n`,
+    );
     const offer = await resolveLocalPairingOffer({ neolixHome: home, enableRelay: true });
     expect(offer.relayEnabled).toBe(true);
     expect(offer.url).toContain("offer=");

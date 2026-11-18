@@ -17,8 +17,11 @@ describe("the signature store", () => {
     const key = keepSignature(value);
     expect(key).toMatch(new RegExp(`^[A-Za-z0-9_-]{${SIG_KEY_LENGTH}}$`));
     expect(keptSignature(key ?? "")).toBe(value);
-    const file = statSync(path.join(home, "gateway-sig", key ?? ""));
-    expect(file.mode & 0o777).toBe(0o600);
+    // Windows cannot express POSIX permissions; the file is private by location there.
+    if (process.platform !== "win32") {
+      const file = statSync(path.join(home, "gateway-sig", key ?? ""));
+      expect(file.mode & 0o777).toBe(0o600);
+    }
   });
 
   it("turns keeping off without a home", () => {

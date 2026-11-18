@@ -224,7 +224,7 @@ describe("WorkspaceReconciliationService", () => {
       expect(workspaces.get("w1")?.archivedAt).toBe(timestamp);
     } finally {
       gate.release.resolve();
-      service.dispose();
+      await service.dispose();
     }
   });
 
@@ -310,7 +310,7 @@ describe("WorkspaceReconciliationService", () => {
     } finally {
       release.resolve();
       clearInterval(probe);
-      service.dispose();
+      await service.dispose();
     }
   });
 
@@ -375,7 +375,7 @@ describe("WorkspaceReconciliationService", () => {
       expect(result.changesApplied).toEqual([]);
       expect(warnRecords.filter((record) => record.message.includes("saturated"))).toEqual([]);
     } finally {
-      service.dispose();
+      await service.dispose();
     }
   });
 
@@ -451,7 +451,7 @@ describe("WorkspaceReconciliationService", () => {
         null,
       ]);
     } finally {
-      service.dispose();
+      await service.dispose();
     }
   });
 
@@ -527,7 +527,7 @@ describe("WorkspaceReconciliationService", () => {
         expect(result.changesApplied).toEqual([]);
       } finally {
         release.resolve();
-        service.dispose();
+        await service.dispose();
       }
     },
   );
@@ -1974,5 +1974,60 @@ describe("WorkspaceReconciliationService", () => {
       isNeolixOwnedWorktree: true,
       mainRepoRoot: "/tmp/main-repo",
     });
+  });
+
+  test("dispose waits for an in-flight reconcile and writes nothing after", async () => {
+    const rootPath = realpathSync(mkdtempSync(path.join(tmpdir(), "reconcile-dispose-")));
+    tempDirs.push(rootPath);
+    const { projects, workspaces, projectRegistry, workspaceRegistry, holdNextArchive } =
+      createTestRegistries();
+    projects.set(
+      "p1",
+      createPersistedProjectRecord({
+        projectId: "p1",
+        rootPath,
+        projectKey: canonicalLocalProjectKey(rootPath),
+        kind: "non_git",
+        displayName: "project",
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      }),
+    );
+    workspaces.set(
+      "w1",
+      createPersistedWorkspaceRecord({
+        workspaceId: "w1",
+        projectId: "p1",
+        cwd: path.join(rootPath, "missing"),
+        kind: "directory",
+        displayName: "workspace",
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      }),
+    );
+    const service = new WorkspaceReconciliationService({
+      projectRegistry,
+      workspaceRegistry,
+      logger: createTestLogger(),
+    });
+
+    const gate = holdNextArchive();
+    const scan = service.reconcileNow();
+    await gate.started.promise;
+    const disposing = service.dispose();
+    expect(await Promise.race([disposing.then(() => "settled"), Promise.resolve("pending")])).toBe(
+      "pending",
+    );
+
+    gate.release.resolve();
+    await disposing;
+    // The archive in flight finished before dispose resolved.
+    expect(workspaces.get("w1")?.archivedAt).not.toBeNull();
+
+    const written = [...workspaces.values()].map((workspace) => workspace.archivedAt);
+    await service.reconcileNow();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect([...workspaces.values()].map((workspace) => workspace.archivedAt)).toEqual(written);
+    await scan;
   });
 });

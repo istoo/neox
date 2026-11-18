@@ -24,6 +24,7 @@ const RIGHT_DOCK_PANE_KINDS = [
   "pullRequest",
   "subagents",
   "pluginPanel",
+  "setup",
 ] as const;
 
 export type RightDockPaneKind = (typeof RIGHT_DOCK_PANE_KINDS)[number];

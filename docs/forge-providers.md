@@ -23,21 +23,9 @@ For forge `acme`, the expected end state is:
    beside it, and one `defaultForgeRegistry` entry in
    `packages/server/src/services/forge-registry.ts`.
 
-3. **App modules** - a forge splits into a pure logic half and a view half so
-   logic consumers (URL builders, merge-capability, native checks, and the
-   Node-based e2e harness) never pull the client rendering stack:
-   - `packages/app/src/git/forges/acme.ts` - logic: `id`, optional `urlGrammar`
-     (source links and pasted issue/change-request reference paths), optional
-     `facts` (schema, merge-capability, native-check fallbacks). No
-     React/React-Native imports. Register in `CLIENT_FORGE_LOGIC_MODULES` in
-     `packages/app/src/git/forges/index.ts`.
-   - `packages/app/src/git/forges/acme.view.tsx` - view: `icon` (SVG component
-     under `packages/app/src/components/icons/`), optional `brandColor`, optional
-     `paneContributions`. Register in `CLIENT_FORGE_VIEW_MODULES` in
-     `packages/app/src/git/forges/view.ts`.
-
-There should be no protocol typed-union arm, no central app icon/color/url/facts
-map, and no central server union of known forge facts.
+The web client renders a forge from the server's `ForgeService` plus the shared
+`FORGE_DEFINITIONS` manifest. There should be no protocol typed-union arm and no central
+server union of known forge facts.
 
 ## Protocol
 
@@ -113,44 +101,12 @@ host that is either a known cloud host or one the CLI is already authenticated
 to. Adapter probes must not make anonymous HTTP requests to remote-derived
 hosts, and adapters must not route credentials to an unauthenticated host.
 
-## App
+## Client rendering
 
-Each app forge splits into two modules so pure logic never imports the client
-rendering stack:
-
-`acme.ts` exports a `ClientForgeLogicModule`:
-
-- `id`
-- optional `urlGrammar` (including `referencePaths` for composer auto-attachment
-  and Markdown shorthand references)
-- optional `facts` registration (schema, merge-capability, native-check fallbacks)
-
-`acme.view.tsx` exports a `ClientForgeViewModule`:
-
-- `id`
-- `icon`
-- `brandColor` (`null` for neutral; GitHub intentionally uses `null`)
-- optional `paneContributions`
-
-Two registries live under `packages/app/src/git/forges/`:
-`CLIENT_FORGE_LOGIC_MODULES` (`index.ts`) drives URL grammar, merge-capability
-derivation, and native fallback checks; `CLIENT_FORGE_VIEW_MODULES` (`view.ts`)
-drives icon/color lookup and PR-pane contributions. Logic consumers must import
-the logic registry only — importing the view registry (or a `.view.tsx` module)
-from a logic path pulls react-native and breaks the Node-based e2e harness.
-
-Per-forge brand colors live on the module, not in `styles/theme.ts`. Use the
-Unistyles-safe pattern from `docs/unistyles.md`: no `useUnistyles()`. Brand icon
-call sites use `withUnistyles` and a `uniProps` mapping such as:
-
-```ts
-(theme) => ({ color: theme.colorScheme === "light" ? colors.light : colors.dark });
-```
-
-Facts modules use one source of truth: a Zod schema. Helpers like
-`defineForgeFacts`, `defineNativeFallbackCheck`, and `definePaneContribution`
-derive guards from `schema.safeParse` and re-parse before invoking typed
-derivers/renderers. That keeps typed derivers away from the open wire envelope.
+The web client renders a forge from the server's `ForgeService` and the shared
+`FORGE_DEFINITIONS` manifest: URL builders, merge capability, icon kind, brand color, and
+pane contributions are derived from those server-owned facts. Do not add a parallel client
+registry that redefines them.
 
 ## Checklist
 
@@ -161,13 +117,7 @@ To add `acme`:
 2. Add `acme-service.ts` implementing `ForgeService`.
 3. Add `acme-facts.ts` beside the adapter if it reports native facts.
 4. Add one `defaultForgeRegistry` entry.
-5. Add `packages/app/src/git/forges/acme.ts` (logic) and
-   `packages/app/src/git/forges/acme.view.tsx` (view).
-6. Add one `CLIENT_FORGE_LOGIC_MODULES` entry (`index.ts`) and one
-   `CLIENT_FORGE_VIEW_MODULES` entry (`view.ts`).
-7. Add/update the icon component only if the client bundle should show a brand
-   mark.
-8. If the forge's CI/data model does not fit an existing required
+5. If the forge's CI/data model does not fit an existing required
    `ForgeService` field, widen the shared interface (plus the protocol schema
    and its guards) instead of faking a value — e.g. Gitea Actions runs carry no
    check-run id, so `GetCheckDetailsOptions.checkRunId` became optional with
@@ -177,9 +127,8 @@ To add `acme`:
    already-shipped forges/GitHub call sites and the capability-gated RPC (e.g.
    `forgeCheckDetails`), so verify every consumer rather than assuming the change
    only reaches the new adapter.
-9. Run targeted tests: manifest/registry/resolver, the adapter test, protocol
-   checkout PR schema, app forge URL/presentation tests, app merge capability,
-   and any PR-pane native data tests touched.
+6. Run targeted tests: manifest/registry/resolver, the adapter test, the
+   protocol PR schema, and any merge-capability or PR-pane data tests touched.
 
 Run `npm run typecheck` after each implementation slice. If protocol or client
 declarations are stale, run `npm run build:client`; if server/CLI declarations
@@ -213,8 +162,8 @@ are stale, run `npm run build:server`.
   cross-repository `owner/repo#12`) come from the `sigil` on each
   `referencePaths` entry. Leave `sigil` off a kind the forge does not link in
   prose: GitHub has no `!`, and its `#` targets `/issues/`, which GitHub
-  redirects to the pull request. `packages/app/src/git/forge-shorthand` builds
-  the recognition pattern from the workspace descriptor's forge and remote.
+  redirects to the pull request. The client builds the recognition pattern from the
+  workspace descriptor's forge and remote.
 - GitLab pipeline status constants belong to the GitLab adapter/client module,
   not protocol.
 - GitLab `manual` jobs need `allow_failure` to distinguish optional gray jobs

@@ -1,27 +1,37 @@
 import { copyFile, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { PluginIdSchema } from "@neolix/protocol/messages";
-import { hasMynaWindow, readMynaWindow, writeMynaClient, type MynaWindow } from "./myna-page.js";
+import {
+  hasMynaWindow,
+  readMynaWindow,
+  renderPageReadCode,
+  writeMynaWebAssets,
+  type MynaWindow,
+} from "./myna-page.js";
 
 const NEOLIX_MANIFEST = "neox-plugin.json";
 const ADAPTER_ENTRY = "index.server.ts";
-const CLIENT_ENTRY = "index.client.tsx";
 const ENTRY_CANDIDATES = ["index.ts", "index.tsx", "index.js", "index.mjs", "index.cjs"];
 /** Neolix plugin modules must live in client/, server/, or shared/; myna packages live anywhere. */
 const VENDOR_DIR = "server/myna";
-const VENDOR_FILE_EXTENSIONS = new Set([".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx", ".json"]);
+const VENDOR_FILE_EXTENSIONS = new Set([
+  ".js",
+  ".mjs",
+  ".cjs",
+  ".jsx",
+  ".ts",
+  ".tsx",
+  ".mts",
+  ".cts",
+  ".json",
+]);
 const VENDOR_MAX_FILES = 2000;
 const VENDOR_MAX_BYTES = 20 * 1024 * 1024;
-
-/** myna manifest keys whose runtime Neolix has no equivalent for yet. */
-const UNSUPPORTED_CONTRIBUTIONS = [
-  "middleware",
-  "gateway",
-  "agent",
-  "hooks",
-  "provider",
-  "search",
-] as const;
+/** What a moejs gateway module may be, as myna compiles it. */
+const MIDDLEWARE_EXTENSIONS = /\.(?:js|mjs|cjs|ts)$/i;
+/** Bun runs TypeScript directly; myna accepts these for request hooks. */
+const HOOKS_EXTENSIONS = /\.(?:js|mjs|cjs|ts|mts|cts)$/i;
+const AGENT_EXTENSIONS = /\.(?:js|mjs|cjs|ts)$/i;
 
 interface MynaPackageJson {
   name?: string;
@@ -41,7 +51,14 @@ export interface MynaPackage {
   entryPath: string | null;
   /** myna's window contributions, already filtered to the ones Neolix can render. */
   window: MynaWindow;
-  unsupported: string[];
+  /** The moejs gateway module (`magpie.middleware`, or its `magpie.gateway` alias). */
+  middlewarePath: string | null;
+  /** The Bun asynchronous request hooks module (`magpie.hooks`). */
+  hooksPath: string | null;
+  /** The agent wiring module (`magpie.agent`). */
+  agentPath: string | null;
+  /** The package's options editor defaults (`magpie.options`). */
+  options: Record<string, unknown>;
 }
 
 async function isFile(target: string): Promise<boolean> {
@@ -108,9 +125,46 @@ function derivePluginId(name: string | undefined, directory: string): string {
   return PluginIdSchema.parse(withLetter);
 }
 
-function unsupportedKeys(magpie: Record<string, unknown>): string[] {
-  return UNSUPPORTED_CONTRIBUTIONS.filter(
-    (key) => Reflect.get(magpie, key) !== undefined && Reflect.get(magpie, key) !== null,
+function optionsDefaults(magpie: Record<string, unknown>): Record<string, unknown> {
+  const raw = Reflect.get(magpie, "options");
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return {};
+  return { ...(raw as Record<string, unknown>) };
+}
+
+/**
+ * The module a myna manifest key names, inside the package. myna treats a
+ * missing file as a plugin that will not load; the converter says so while the
+ * source is still being installed.
+ */
+async function declaredModule(
+  directory: string,
+  magpie: Record<string, unknown>,
+  key: string,
+  extensions: RegExp,
+): Promise<string | null> {
+  const raw = Reflect.get(magpie, key);
+  if (typeof raw !== "string" || raw.trim() === "") return null;
+  const resolved = path.resolve(directory, raw.trim());
+  if (!isInside(directory, resolved)) {
+    throw new Error(`myna ${key} leaves the package: ${raw}`);
+  }
+  if (!(await isFile(resolved))) {
+    throw new Error(`myna ${key} names a missing file: ${raw}`);
+  }
+  if (!extensions.test(resolved)) {
+    throw new Error(`myna ${key} names a file Neolix cannot load: ${raw}`);
+  }
+  return resolved;
+}
+
+/** myna prefers `magpie.middleware` and falls back to its `magpie.gateway` alias. */
+async function declaredMiddleware(
+  directory: string,
+  magpie: Record<string, unknown>,
+): Promise<string | null> {
+  return (
+    (await declaredModule(directory, magpie, "middleware", MIDDLEWARE_EXTENSIONS)) ??
+    (await declaredModule(directory, magpie, "gateway", MIDDLEWARE_EXTENSIONS))
   );
 }
 
@@ -133,7 +187,12 @@ export async function readMynaPackage(directory: string): Promise<MynaPackage | 
   if (!magpie || typeof magpie !== "object" || Array.isArray(magpie)) return null;
   const entry = await resolveEntry(packageJson, directory);
   const window = await readMynaWindow(directory, magpie);
-  if (!entry && !hasMynaWindow(window)) return null;
+  const middlewarePath = await declaredMiddleware(directory, magpie);
+  const hooksPath = await declaredModule(directory, magpie, "hooks", HOOKS_EXTENSIONS);
+  const agentPath = await declaredModule(directory, magpie, "agent", AGENT_EXTENSIONS);
+  if (!entry && !hasMynaWindow(window) && !middlewarePath && !hooksPath && !agentPath) {
+    return null;
+  }
   const name = packageJson.name ?? path.basename(directory);
   return {
     directory,
@@ -142,7 +201,10 @@ export async function readMynaPackage(directory: string): Promise<MynaPackage | 
     entry,
     entryPath: entry === null ? null : path.relative(directory, entry).split(path.sep).join("/"),
     window,
-    unsupported: unsupportedKeys(magpie),
+    middlewarePath,
+    hooksPath,
+    agentPath,
+    options: optionsDefaults(magpie),
   };
 }
 
@@ -155,9 +217,8 @@ function toolPrefix(pluginId: string): string {
  * Neolix-owned module directory. Relative imports keep working; node_modules, media, and the
  * adapter's own files are left out.
  */
-async function vendorSources(myna: MynaPackage): Promise<string> {
+async function vendorSources(myna: MynaPackage): Promise<string | null> {
   const entryPath = myna.entryPath;
-  if (entryPath === null) throw new Error(`myna plugin "${myna.name}" has no host entry`);
   const target = path.join(myna.directory, VENDOR_DIR);
   await rm(target, { recursive: true, force: true });
   await mkdir(target, { recursive: true });
@@ -195,47 +256,199 @@ async function vendorSources(myna: MynaPackage): Promise<string> {
   }
 
   await copyTree("");
-  return `./${VENDOR_DIR}/${entryPath}`;
+  return entryPath === null ? null : `./${VENDOR_DIR}/${entryPath}`;
 }
 
-function renderAdapter(myna: MynaPackage, entrySpecifier: string, withOptions: boolean): string {
-  return `// Generated by Neox's myna plugin converter. It is overwritten on every update.
-import {
-  defineAgentTool,
-  type AgentToolDefinition,
-  type AgentToolResult,
-  type PluginServerContext,
-} from "@neolix/plugin/server";
-import { defineSettings } from "@neolix/plugin";
-import { z } from "zod";
-import * as mynaEntry from ${JSON.stringify(entrySpecifier)};
+/** Where a vendored module is imported from, inside the Neolix-owned directory. */
+function vendoredSpecifier(myna: MynaPackage, absolute: string): string {
+  const relative = path.relative(myna.directory, absolute).split(path.sep).join("/");
+  return `./${VENDOR_DIR}/${relative}`;
+}
 
-const PACKAGE = ${JSON.stringify(myna.name)};${
-    withOptions
-      ? `\nconst OPTIONS = defineSettings({
+function renderAdapter(
+  myna: MynaPackage,
+  entrySpecifier: string | null,
+  middlewareSpecifier: string | null,
+  hooksSpecifier: string | null,
+  agentSpecifier: string | null,
+): string {
+  const hasEntry = entrySpecifier !== null;
+  const hasGateway = middlewareSpecifier !== null || hooksSpecifier !== null;
+  const hasAgent = agentSpecifier !== null;
+  const pageRead =
+    hasMynaWindow(myna.window) && myna.window.reads.length > 0
+      ? renderPageReadCode(myna.window.reads)
+      : "";
+  const imports = [
+    `import { defineSettings${pageRead === "" ? "" : ", defineRpc"} } from "@neolix/plugin";`,
+    `import type { PluginServerContext } from "@neolix/plugin/server";`,
+    `import { z } from "zod";`,
+  ];
+  if (hasEntry) {
+    imports.push(`import { defineAgentTool } from "@neolix/plugin/server";`);
+    imports.push(`import { openCodeSubscriptionProvider } from "@neolix/plugin/server/opencode";`);
+    imports.push(`import * as mynaEntry from ${JSON.stringify(entrySpecifier)};`);
+  }
+  if (middlewareSpecifier !== null) {
+    imports.push(`import * as mynaMiddleware from ${JSON.stringify(middlewareSpecifier)};`);
+  }
+  if (hooksSpecifier !== null) {
+    imports.push(`import * as mynaHooks from ${JSON.stringify(hooksSpecifier)};`);
+  }
+  if (agentSpecifier !== null) {
+    imports.push(`import * as mynaAgent from ${JSON.stringify(agentSpecifier)};`);
+  }
+  return `// Generated by Neox's myna plugin converter. It is overwritten on every update.
+${imports.join("\n")}
+
+const PACKAGE = ${JSON.stringify(myna.name)};
+const DEFAULTS: Record<string, unknown> = ${JSON.stringify(myna.options)};
+const OPTIONS = defineSettings({
   id: "options",
   scope: "host",
   version: 1,
   schema: z.record(z.string(), z.json()),
-});`
-      : ""
-  }
-const PREFIX = ${JSON.stringify(toolPrefix(myna.pluginId))};
-const MYNA_INPUT = {
-  client: {},
-  app: { log() {} },
-  $: undefined,
-  directory: process.cwd(),
-  worktree: process.cwd(),
-  myna: {
-    option() { return undefined; },
-    options() { return undefined; },
+});
+${pageRead}
+let optionsHandle: any = null;
+let accountsHandle: any = null;
+
+function isObject(value: any): boolean {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+async function optionsNow() {
+  let values: any = {};
+  try {
+    const state = await optionsHandle.read();
+    if (state.status === "ready" && isObject(state.values)) values = state.values;
+  } catch {}
+  return { ...DEFAULTS, ...values };
+}
+
+function mynaInput(options: Record<string, any>) {
+  const host = {
+    option: (key: string) => options[key],
+    options: () => ({ ...options }),
     async load() { return undefined; },
     async usage() { return undefined; },
     async account() { return undefined; },
-  },
-};
-const SUPPORTED_HOOKS = new Set(["tool"]);
+  };
+  return {
+    client: {
+      auth: {
+        async get(input: any) {
+          return accountsHandle === null ? null : accountsHandle.read(input.path.id);
+        },
+        async set(input: any) {
+          if (accountsHandle !== null) await accountsHandle.write(input.path.id, input.body);
+        },
+      },
+    },
+    app: { log() {} },
+    $: undefined,
+    directory: process.cwd(),
+    worktree: process.cwd(),
+    magpie: host,
+    myna: host,
+    owl: host,
+  };
+}
+
+function pick(module: any, name: string): any {
+  if (module == null) return undefined;
+  if (typeof module[name] === "function") return module[name];
+  if (isObject(module.default) && typeof module.default[name] === "function") {
+    return module.default[name];
+  }
+  return undefined;
+}
+
+function pickValue(module: any, name: string): any {
+  if (module == null) return undefined;
+  if (module[name] !== undefined) return module[name];
+  if (isObject(module.default)) return module.default[name];
+  return undefined;
+}
+${hasEntry ? renderAdapterEntry(myna) : ""}${hasGateway ? renderAdapterGateway(hooksSpecifier !== null, middlewareSpecifier !== null) : ""}${hasAgent ? renderAdapterAgent() : ""}
+export default async function contribute(server: PluginServerContext) {
+  optionsHandle = server.registerSettings(OPTIONS);
+  accountsHandle = server.accounts;${
+    pageRead === ""
+      ? ""
+      : `
+  server.handle(PAGE_READ, (input, context) =>
+    pageRead(context.neolix, input.name, input.params ?? {}),
+  );`
+  }${hasEntry ? "\n  await contributeEntry(server);" : ""}${
+    hasGateway ? "\n  contributeGateway(server);" : ""
+  }${hasAgent ? "\n  contributeAgent(server);" : ""}
+  return () => {};
+}
+`;
+}
+
+/** The entry's tool, search, subscription-provider and config hooks. */
+function renderAdapterEntry(myna: MynaPackage): string {
+  return `
+const PREFIX = ${JSON.stringify(toolPrefix(myna.pluginId))};
+const SUPPORTED_ENTRY_HOOKS = new Set([
+  "tool",
+  "search",
+  "auth",
+  "provider",
+  "config",
+  "chat.headers",
+]);
+let entryHooksPromise: Promise<any[]> | null = null;
+
+async function entryHooks(): Promise<any[]> {
+  entryHooksPromise ??= (async () => {
+    const options = await optionsNow();
+    const input = mynaInput(options);
+    const hooks: any[] = [];
+    for (const exported of Object.values(mynaEntry)) {
+      if (typeof exported !== "function") continue;
+      const contributed = await (exported as any)(input, options);
+      if (!isObject(contributed)) continue;
+      const unknown = Object.keys(contributed).filter(
+        (key) => !SUPPORTED_ENTRY_HOOKS.has(key),
+      );
+      if (unknown.length > 0) {
+        throw new Error(
+          "myna plugin " + PACKAGE + " contributes " + unknown.join(", ") + ", which Neox cannot run",
+        );
+      }
+      hooks.push(contributed);
+    }
+    const authIds = new Set<string>();
+    for (const hook of hooks) {
+      if (isObject(hook.auth) && typeof hook.auth.provider === "string" && hook.auth.provider) {
+        authIds.add(hook.auth.provider);
+      }
+    }
+    const orphan = hooks
+      .flatMap((hook) =>
+        isObject(hook.provider) && typeof hook.provider.id === "string" && hook.provider.id
+          ? [hook.provider.id]
+          : [],
+      )
+      .filter((id: string) => !authIds.has(id));
+    if (orphan.length > 0) {
+      throw new Error(
+        "myna plugin " + PACKAGE + " adds models to " + orphan.join(", ") +
+          " without signing in to it; Neox cannot change a provider the plugin does not own",
+      );
+    }
+    if (authIds.size === 0 && hooks.some((hook) => typeof hook.config === "function")) {
+      throw new Error(
+        "myna plugin " + PACKAGE + " changes Neox's built-in provider configuration, which Neox cannot run",
+      );
+    }
+    return hooks;
+  })();
+  return entryHooksPromise;
+}
 
 function normalizeName(raw) {
   const cleaned = String(raw)
@@ -262,27 +475,6 @@ function toolInput(schema) {
     throw new Error("This host's zod cannot convert JSON Schema tool arguments");
   }
   return fromJSONSchema(schema ?? { type: "object", properties: {} });
-}
-
-async function collectToolTable() {
-  const contributed = {};
-  for (const exported of Object.values(mynaEntry)) {
-    if (typeof exported !== "function") continue;
-    const hooks = await exported(MYNA_INPUT);
-    if (!hooks || typeof hooks !== "object") continue;
-    Object.assign(contributed, hooks);
-  }
-  const unsupported = Object.keys(contributed).filter((key) => !SUPPORTED_HOOKS.has(key));
-  if (unsupported.length > 0) {
-    throw new Error(
-      \`myna plugin \${PACKAGE} contributes \${unsupported.join(", ")}, which Neox cannot run yet\`,
-    );
-  }
-  const table = contributed.tool;
-  if (!table || typeof table !== "object") {
-    throw new Error(\`myna plugin \${PACKAGE} contributed no tools\`);
-  }
-  return table;
 }
 
 function toDefinitions(table) {
@@ -315,45 +507,585 @@ function toDefinitions(table) {
       }),
     );
   }
-  if (definitions.length === 0) throw new Error(\`myna plugin \${PACKAGE} contributed no tools\`);
   return definitions;
 }
 
 let definitions = null;
 
-function loadTools() {
-  definitions ??= collectToolTable().then(toDefinitions);
+async function loadTools() {
+  definitions ??= entryHooks().then((hooks) => {
+    const table = {};
+    for (const hook of hooks) {
+      if (isObject(hook.tool)) Object.assign(table, hook.tool);
+    }
+    return toDefinitions(table);
+  });
   return definitions;
 }
 
-export default function contribute(server: PluginServerContext) {
-  ${withOptions ? "server.registerSettings(OPTIONS);" : ""}
-  server.addHook("agent.open.before", async ({ request }) => {
-    if (request.purpose === "history") return;
-    return { ...request, tools: [...request.tools, ...(await loadTools())] };
+/** The entry's search hook, as the gateway's plugin search vendors. */
+async function contributeSearch(server: PluginServerContext) {
+  const hooks = await entryHooks();
+  const table = new Map<string, any>();
+  for (const hook of hooks) {
+    if (!isObject(hook.search)) continue;
+    for (const [id, definition] of Object.entries(hook.search)) {
+      if (!/^[a-z0-9][a-z0-9-]{0,31}$/.test(id)) continue;
+      if (isObject(definition) && typeof definition.execute === "function") {
+        table.set(id, definition);
+      }
+    }
+  }
+  for (const [id, definition] of table) {
+    server.registerSearchApi({
+      id,
+      name: typeof definition.name === "string" && definition.name ? definition.name : id,
+      ...(typeof definition.keysURL === "string" && /^https?:\\/\\//.test(definition.keysURL)
+        ? { keysURL: definition.keysURL }
+        : {}),
+      ...(definition.keyOptional === true ? { keyOptional: true } : {}),
+      ...(definition.url === true ? { needURL: true } : {}),
+      async execute(request: any) {
+        const output = await definition.execute(
+          { query: request.query, count: 6, key: request.key, url: request.url },
+          {
+            directory: process.cwd(),
+            worktree: process.cwd(),
+            abort: AbortSignal.timeout(60_000),
+          },
+        );
+        const pages = Array.isArray(output)
+          ? output
+          : isObject(output) && Array.isArray(output.results)
+            ? output.results
+            : [];
+        return pages
+          .filter(
+            (page: any) =>
+              isObject(page) &&
+              typeof page.title === "string" &&
+              typeof page.url === "string",
+          )
+          .map((page: any) => ({
+            title: page.title,
+            url: page.url,
+            text: typeof page.text === "string" ? page.text : "",
+            ...(typeof page.age === "string" ? { age: page.age } : {}),
+          }));
+      },
+    });
+  }
+}
+
+function protocolOfProvider(config: any, id: string): string {
+  const provider = isObject(config) && isObject(config.provider) ? config.provider[id] : undefined;
+  const npm = isObject(provider) ? String(provider.npm ?? "") : "";
+  if (npm.includes("anthropic")) return "anthropic";
+  if (npm.includes("google") || npm.includes("gemini")) return "gemini";
+  return "openai";
+}
+
+function authMethodsOf(auth: any): any[] {
+  return (Array.isArray(auth.methods) ? auth.methods : []).map((method: any) => {
+    if (!isObject(method)) return method;
+    if (method.type !== "api" || typeof method.authorize === "function") return method;
+    const prompts = Array.isArray(method.prompts) ? [...method.prompts] : [];
+    if (!prompts.some((prompt: any) => isObject(prompt) && prompt.key === "key")) {
+      prompts.push({
+        type: "text",
+        key: "key",
+        message:
+          typeof method.label === "string" && method.label ? method.label : "API key",
+      });
+    }
+    return {
+      ...method,
+      prompts,
+      async authorize(inputs: Record<string, string>) {
+        const metadata = Object.fromEntries(
+          Object.entries(inputs).filter(([key]) => key !== "key"),
+        );
+        return {
+          type: "success",
+          key: inputs.key,
+          ...(Object.keys(metadata).length === 0 ? {} : { metadata }),
+        };
+      },
+    };
   });
-  return () => {};
+}
+
+/** The entry's auth/provider hooks, as the gateway's subscription providers. */
+async function contributeProviders(server: PluginServerContext) {
+  const hooks = await entryHooks();
+  const auths = new Map<string, any>();
+  for (const hook of hooks) {
+    if (isObject(hook.auth) && typeof hook.auth.provider === "string" && hook.auth.provider) {
+      auths.set(hook.auth.provider, hook.auth);
+    }
+  }
+  if (auths.size === 0) return;
+  const config: any = {};
+  for (const hook of hooks) {
+    if (typeof hook.config !== "function") continue;
+    try {
+      await hook.config(config);
+    } catch {}
+  }
+  const modelsHooks = new Map<string, any>();
+  for (const hook of hooks) {
+    if (isObject(hook.provider) && typeof hook.provider.id === "string" && hook.provider.id) {
+      modelsHooks.set(hook.provider.id, hook.provider);
+    }
+  }
+  for (const [id, auth] of auths) {
+    const providerHook = modelsHooks.get(id);
+    const configured = isObject(config) && isObject(config.provider) ? config.provider[id] : undefined;
+    const label =
+      isObject(configured) && typeof configured.name === "string" && configured.name
+        ? configured.name
+        : typeof auth.name === "string" && auth.name
+          ? auth.name
+          : id;
+    // myna hands a models hook the provider's info object, not its config entry.
+    if (!isObject(config.provider)) config.provider = {};
+    const providerInfo: any = isObject(configured) ? { ...configured } : {};
+    providerInfo.id = id;
+    providerInfo.name = label;
+    if (!isObject(providerInfo.models)) providerInfo.models = {};
+    config.provider[id] = providerInfo;
+    const registration = await openCodeSubscriptionProvider({
+      accounts: server.accounts,
+      id,
+      label,
+      protocol: protocolOfProvider(config, id) as any,
+      plugin: async () => ({
+        config(target: any) {
+          Object.assign(target, structuredClone(config));
+        },
+        auth: { ...auth, methods: authMethodsOf(auth) },
+        ...(providerHook === undefined || typeof providerHook.models !== "function"
+          ? {}
+          : {
+              provider: {
+                id,
+                models(given: any, input: any) {
+                  const next = providerHook.models(providerInfo, input);
+                  return next === undefined ? providerInfo.models : next;
+                },
+              },
+            }),
+      }),
+    });
+    server.registerSubscriptionProvider(registration);
+  }
+}
+
+/** The entry's chat.headers hooks, as headers added to one outgoing request. */
+async function contributeChatHeaders(server: PluginServerContext) {
+  const hooks = await entryHooks();
+  const functions = hooks
+    .map((hook) => hook["chat.headers"])
+    .filter((contributed) => typeof contributed === "function");
+  if (functions.length === 0) return;
+  server.registerGatewayMiddleware({
+    id: "chat-headers",
+    async onHeaders(input: any) {
+      const model = { id: input.model, name: input.model, providerID: input.providerId };
+      const provider = {
+        source: "custom",
+        info: { id: input.providerId, name: input.providerId, models: {} },
+        options: {},
+      };
+      const message = {
+        id: "",
+        sessionID: "",
+        role: "user",
+        time: { created: Date.now() },
+        agent: "build",
+        model: { providerID: input.providerId, modelID: input.model },
+      };
+      const headers: Record<string, string> = {};
+      for (const fn of functions) {
+        const output: any = { headers: {} };
+        try {
+          await fn({ sessionID: "", agent: "build", model, provider, message }, output);
+        } catch {}
+        if (!isObject(output.headers)) continue;
+        for (const [name, value] of Object.entries(output.headers)) {
+          if (typeof value === "string") headers[name] = value;
+        }
+      }
+      return { headers };
+    },
+  });
+}
+
+/** Loads the entry once at start, then registers what it contributes. */
+async function contributeEntry(server: PluginServerContext) {
+  await entryHooks();
+  await contributeProviders(server);
+  await contributeSearch(server);
+  await contributeChatHeaders(server);
+  server.addHook("agent.open.before", async ({ request }: any) => {
+    if (request.purpose === "history") return;
+    const tools = await loadTools();
+    if (tools.length === 0) return;
+    return { ...request, tools: [...request.tools, ...tools] };
+  });
 }
 `;
 }
 
-/** The server entry of a page-only package: the options the page bridge reads and writes. */
-function renderSettingsEntry(): string {
-  return `// Generated by Neox's myna plugin converter. It is overwritten on every update.
-import { defineSettings } from "@neolix/plugin";
-import type { PluginServerContext } from "@neolix/plugin/server";
-import { z } from "zod";
+/** The gateway modules: myna's synchronous middleware and its Bun request hooks. */
+function renderAdapterGateway(hasHooks: boolean, hasMiddleware: boolean): string {
+  const middlewareValues = hasMiddleware
+    ? `
+const middlewareOnRequest = pick(mynaMiddleware, "onRequest");
+const middlewareOnProvider = pick(mynaMiddleware, "onProvider");
+const middlewareOnAccount = pick(mynaMiddleware, "onAccount");
+const middlewareOnEvent = pick(mynaMiddleware, "onEvent");
+const middlewareOnResponse = pick(mynaMiddleware, "onResponse");
+const usageHook = pick(mynaMiddleware, "onUsage");
+const eventNames = pickValue(mynaMiddleware, "events");
+const strategyTable = pickValue(mynaMiddleware, "strategies");
+`
+    : "";
+  const hookValues = hasHooks
+    ? `
+const hookOnRequest = pick(mynaHooks, "onRequest");
+const hookOnResponse = pick(mynaHooks, "onResponse");
+`
+    : "";
+  const hookRegistration = hasHooks
+    ? `
+  if (hookOnRequest || hookOnResponse) {
+    server.registerGatewayMiddleware({
+      id: "hooks",
+      ...(hookOnRequest === undefined
+        ? {}
+        : {
+            async onRequest(input: any) {
+              const before = input.body;
+              const result = await hookOnRequest(
+                JSON.parse(JSON.stringify(before)),
+                asyncHookCtx(input, await optionsNow(), {}),
+              );
+              if (!isObject(result)) return undefined;
+              for (const key of [
+                "tools",
+                "tool_choice",
+                "function_call",
+                "functions",
+                "toolConfig",
+                "model",
+                "stream",
+              ]) {
+                if (JSON.stringify(result[key]) !== JSON.stringify(before[key])) return undefined;
+              }
+              if (
+                JSON.stringify(result.config?.tools) !== JSON.stringify(before.config?.tools) ||
+                JSON.stringify(result.config?.toolConfig) !==
+                  JSON.stringify(before.config?.toolConfig)
+              ) {
+                return undefined;
+              }
+              return { body: result };
+            },
+          }),
+      ...(hookOnResponse === undefined
+        ? {}
+        : {
+            async onResponse(input: any) {
+              if (typeof input.body !== "string" || input.body === "") return undefined;
+              let reply: any;
+              try {
+                reply = JSON.parse(input.body);
+              } catch {
+                return undefined;
+              }
+              if (!isObject(reply)) return undefined;
+              await hookOnResponse(
+                reply,
+                asyncHookCtx(input, await optionsNow(), {
+                  success: input.status >= 200 && input.status < 400,
+                }),
+              );
+              return undefined;
+            },
+          }),
+    });
+  }
+`
+    : "";
+  const middlewareRegistration = hasMiddleware
+    ? `
+  if (
+    middlewareOnRequest ||
+    middlewareOnProvider ||
+    middlewareOnAccount ||
+    middlewareOnEvent ||
+    middlewareOnResponse
+  ) {
+    server.registerGatewayMiddleware({
+      id: "middleware",
+      ...(middlewareOnRequest === undefined
+        ? {}
+        : {
+            async onRequest(input: any) {
+              let rejected: any = null;
+              const ctx = middlewareCtx(input, await optionsNow(), {
+                reject(status: any, message: any) {
+                  rejected ??= {
+                    ...(typeof status === "number" ? { status } : {}),
+                    ...(typeof message === "string" ? { message } : {}),
+                  };
+                },
+              });
+              const result = await middlewareOnRequest(input.body, ctx);
+              if (rejected !== null) return { reject: rejected };
+              return isObject(result) ? { body: result } : undefined;
+            },
+          }),
+      ...(middlewareOnProvider === undefined
+        ? {}
+        : {
+            async onProvider(input: any) {
+              const ctx = middlewareCtx(input, await optionsNow(), {
+                provider: providerContext(input),
+              });
+              const result = await middlewareOnProvider(input.body, ctx);
+              return isObject(result) ? { body: result } : undefined;
+            },
+          }),
+      ...(middlewareOnAccount === undefined
+        ? {}
+        : {
+            async onAccount(input: any) {
+              const account = accountContext(input);
+              const result = await middlewareOnAccount(
+                account,
+                middlewareCtx(input, await optionsNow(), { account }),
+              );
+              return isObject(result) && result.skip === true ? { skip: true } : undefined;
+            },
+          }),
+      ...(middlewareOnEvent === undefined
+        ? {}
+        : {
+            async onEvent(input: any) {
+              if (!wantsEvent(eventNames, input.event)) return undefined;
+              const ctx = middlewareCtx(input, await optionsNow(), {
+                ...(input.accountId ? { account: accountContext(input) } : {}),
+              });
+              const result = await middlewareOnEvent(input.event, ctx);
+              if (result === null) return { event: null };
+              return isObject(result) ? { event: result } : undefined;
+            },
+          }),
+      ...(middlewareOnResponse === undefined
+        ? {}
+        : {
+            async onResponse(input: any) {
+              if (typeof input.body !== "string" || input.body === "") return undefined;
+              let parsed: any;
+              try {
+                parsed = JSON.parse(input.body);
+              } catch {
+                return undefined;
+              }
+              if (!isObject(parsed)) return undefined;
+              const ctx = middlewareCtx(input, await optionsNow(), {
+                status: input.status,
+                ...(input.accountId ? { account: accountContext(input) } : {}),
+              });
+              const result = await middlewareOnResponse(parsed, ctx);
+              return isObject(result) ? { body: JSON.stringify(result) } : undefined;
+            },
+          }),
+    });
+  }
+  if (isObject(strategyTable)) {
+    for (const [name, entry] of Object.entries(strategyTable)) {
+      const order =
+        typeof entry === "function"
+          ? entry
+          : isObject(entry) && typeof entry.order === "function"
+            ? entry.order
+            : undefined;
+      if (order === undefined) continue;
+      server.registerRoutingStrategy({
+        id: name,
+        async order(input: any) {
+          return order(input.pool, input.seats, await optionsNow());
+        },
+      });
+    }
+  }
+  if (typeof usageHook === "function") {
+    server.registerGatewayUsageObserver({
+      id: "usage",
+      async onUsage(row: any) {
+        await usageHook(usageRow(row), await optionsNow());
+      },
+    });
+  }
+`
+    : "";
+  return `${middlewareValues}${hookValues}
+function middlewareCtx(input: any, options: any, extra: any) {
+  return {
+    protocol: input.protocol,
+    model: input.model,
+    stream: isObject(input.body) && input.body.stream === true,
+    options,
+    state: input.state ?? {},
+    reject() {},
+    ...extra,
+  };
+}
 
-const OPTIONS = defineSettings({
-  id: "options",
-  scope: "host",
-  version: 1,
-  schema: z.record(z.string(), z.json()),
-});
+function asyncHookCtx(input: any, options: any, extra: any) {
+  return {
+    protocol: input.protocol,
+    model: input.model,
+    stream: isObject(input.body) && input.body.stream === true,
+    options,
+    state: input.state ?? {},
+    signal: AbortSignal.timeout(250),
+    report() {},
+    ...extra,
+  };
+}
 
-export default function contribute(server: PluginServerContext) {
-  server.registerSettings(OPTIONS);
-  return () => {};
+function providerContext(input: any) {
+  return {
+    id: input.providerId,
+    name: input.providerId,
+    ...(typeof input.accountId === "string" && input.accountId !== ""
+      ? { account: input.accountId }
+      : {}),
+    model: input.model,
+  };
+}
+
+function accountContext(input: any) {
+  return {
+    ref: input.accountId,
+    provider: input.providerId,
+    name: input.accountId,
+    kind: "",
+    model: input.model,
+  };
+}
+
+function wantsEvent(names: any, event: any): boolean {
+  if (!Array.isArray(names)) return true;
+  const type = isObject(event) && typeof event.type === "string" ? event.type : "";
+  return names.includes(type);
+}
+
+function usageRow(row: any): any {
+  const output: any = {
+    time: typeof row.time === "string" ? Date.parse(row.time) || 0 : 0,
+    provider: row.provider,
+    model: row.model,
+    requested: row.requested,
+    status: row.status,
+    input: row.inputTokens,
+    output: row.outputTokens,
+    ms: row.durationMs,
+    tries: row.attempts,
+    cost: row.priced === false ? null : row.costUsd,
+  };
+  if (typeof row.account === "string") output.providerAccount = row.account;
+  for (const key of ["operation", "agent", "errType", "kind"]) {
+    if (row[key] !== undefined) output[key] = row[key];
+  }
+  if (row.rejected !== undefined) output.rejected = row.rejected;
+  return output;
+}
+
+function contributeGateway(server: PluginServerContext) {${hookRegistration}${middlewareRegistration}}
+`;
+}
+
+/** The `magpie.agent` module as a Neox agent integration. */
+function renderAdapterAgent(): string {
+  return `
+const agentDescriptor = isObject(mynaAgent.agent)
+  ? mynaAgent.agent
+  : isObject(mynaAgent.default) && isObject(mynaAgent.default.agent)
+    ? mynaAgent.default.agent
+    : null;
+const agentConnect = pick(mynaAgent, "connect");
+
+function agentFormatOf(descriptor: any): "json" | "yaml" | "env" | undefined {
+  if (descriptor.format === "json" || descriptor.format === "yaml" || descriptor.format === "env") {
+    return descriptor.format;
+  }
+  const config = typeof descriptor.config === "string" ? descriptor.config.toLowerCase() : "";
+  const base = config.split("/").pop() ?? "";
+  if (base.startsWith(".env")) return "env";
+  if (base.endsWith(".yaml") || base.endsWith(".yml")) return "yaml";
+  if (base.endsWith(".json") || base.endsWith(".jsonc")) return "json";
+  return undefined;
+}
+
+function contributeAgent(server: PluginServerContext) {
+  const descriptor = agentDescriptor;
+  if (!isObject(descriptor)) {
+    throw new Error("myna plugin " + PACKAGE + " has no agent object");
+  }
+  const id = typeof descriptor.id === "string" ? descriptor.id.trim() : "";
+  if (!/^[a-z0-9][a-z0-9._-]{0,63}$/.test(id)) {
+    throw new Error("myna plugin " + PACKAGE + " has an invalid agent.id: " + id);
+  }
+  const config = typeof descriptor.config === "string" ? descriptor.config.trim() : "";
+  if (config === "") throw new Error("myna plugin " + PACKAGE + " names no agent.config");
+  const modelPath = typeof descriptor.model === "string" ? descriptor.model.trim() : "";
+  if (modelPath === "" && agentConnect === undefined) {
+    throw new Error("myna plugin " + PACKAGE + " names no agent.model and has no connect");
+  }
+  const prefix = typeof descriptor.prefix === "string" ? descriptor.prefix : "";
+  const format = agentFormatOf(descriptor);
+  server.registerAgentIntegration({
+    id,
+    label:
+      typeof descriptor.name === "string" && descriptor.name.trim() ? descriptor.name.trim() : id,
+    config,
+    ...(format === undefined ? {} : { format }),
+    ...(prefix === "" && modelPath !== "" ? { model: modelPath } : {}),
+    async connect(input) {
+      const mynaWiring: any = {
+        gateway: { url: input.gateway.v1, v1: input.gateway.v1, key: input.gateway.key },
+        models: input.models.map((entry: string) => ({
+          id: entry,
+          name: entry,
+          context: 0,
+          output: 0,
+          images: false,
+          efforts: [],
+        })),
+        agent: { id, config },
+      };
+      if (modelPath !== "") {
+        mynaWiring.model = {
+          id: input.model,
+          name: input.model,
+          context: 0,
+          output: 0,
+          images: false,
+          efforts: [],
+        };
+      }
+      const output = agentConnect === undefined ? {} : await agentConnect(mynaWiring);
+      const settings: Record<string, any> = isObject(output) ? { ...output } : {};
+      if (modelPath !== "") delete settings[modelPath];
+      if (modelPath !== "" && prefix !== "") settings[modelPath] = prefix + input.model;
+      return settings;
+    },
+  });
 }
 `;
 }
@@ -371,24 +1103,24 @@ export interface MynaConversion {
 export async function convertMynaPackage(directory: string): Promise<MynaConversion | null> {
   const myna = await readMynaPackage(directory);
   if (!myna) return null;
-  if (myna.unsupported.length > 0) {
-    throw new Error(
-      `myna plugin "${myna.name}" contributes ${myna.unsupported.join(", ")}, which Neox does not support yet. Tools, pages, panels and row actions can be converted.`,
-    );
-  }
+  const hasRuntime =
+    myna.entry !== null ||
+    myna.middlewarePath !== null ||
+    myna.hooksPath !== null ||
+    myna.agentPath !== null;
   if (
-    (myna.entry !== null || hasMynaWindow(myna.window)) &&
+    (hasRuntime || hasMynaWindow(myna.window)) &&
     (await isFile(path.join(directory, ADAPTER_ENTRY)))
   ) {
     throw new Error(
       `myna plugin "${myna.name}" already has ${ADAPTER_ENTRY}; Neox cannot add its converter entry`,
     );
   }
-  if (hasMynaWindow(myna.window) && (await isFile(path.join(directory, CLIENT_ENTRY)))) {
-    throw new Error(
-      `myna plugin "${myna.name}" already has ${CLIENT_ENTRY}; Neox cannot add its converter entry`,
-    );
-  }
+  const windowAssets = hasMynaWindow(myna.window)
+    ? await writeMynaWebAssets(directory, myna.window, myna.pluginId, myna.name)
+    : null;
+  const hasWindowContributions =
+    windowAssets !== null && windowAssets.views.length > 0 ? windowAssets.contributions : null;
   await writeFile(
     path.join(directory, NEOLIX_MANIFEST),
     `${JSON.stringify(
@@ -397,22 +1129,25 @@ export async function convertMynaPackage(directory: string): Promise<MynaConvers
         name: myna.name,
         description: `Converted myna plugin: ${myna.name}`,
         requirements: { neolix: ">=0.15.0" },
+        ...(hasWindowContributions ? { contributions: hasWindowContributions } : {}),
+        ...(windowAssets && windowAssets.views.length > 0
+          ? { web: { views: windowAssets.views } }
+          : {}),
       },
       null,
       2,
     )}\n`,
   );
-  if (myna.entry !== null) {
-    const entrySpecifier = await vendorSources(myna);
+  if (hasRuntime || hasMynaWindow(myna.window)) {
+    const entrySpecifier = hasRuntime ? await vendorSources(myna) : null;
+    const middlewareSpecifier =
+      myna.middlewarePath === null ? null : vendoredSpecifier(myna, myna.middlewarePath);
+    const hooksSpecifier = myna.hooksPath === null ? null : vendoredSpecifier(myna, myna.hooksPath);
+    const agentSpecifier = myna.agentPath === null ? null : vendoredSpecifier(myna, myna.agentPath);
     await writeFile(
       path.join(directory, ADAPTER_ENTRY),
-      renderAdapter(myna, entrySpecifier, hasMynaWindow(myna.window)),
+      renderAdapter(myna, entrySpecifier, middlewareSpecifier, hooksSpecifier, agentSpecifier),
     );
-  } else if (hasMynaWindow(myna.window)) {
-    await writeFile(path.join(directory, ADAPTER_ENTRY), renderSettingsEntry());
-  }
-  if (hasMynaWindow(myna.window)) {
-    await writeMynaClient(directory, myna.window, myna.pluginId);
   }
   return { pluginId: myna.pluginId, name: myna.name };
 }
@@ -425,6 +1160,6 @@ export async function assertDirectoryMynaSupport(directory: string): Promise<voi
   const myna = await readMynaPackage(directory);
   if (!myna) return;
   throw new Error(
-    `"${myna.name}" is a myna plugin. Neox can convert its tools, pages, panels and row actions only for npm or git sources, where it writes the adapter into a managed copy; install it from npm or port it to a Neox plugin.`,
+    `"${myna.name}" is a myna plugin. Neox can convert its tools, search, providers, gateway middleware, agent wiring and pages only for npm or git sources, where it writes the adapter into a managed copy; install it from npm or port it to a Neox plugin.`,
   );
 }

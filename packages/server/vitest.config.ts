@@ -1,6 +1,8 @@
 import path from "node:path";
 import { defineConfig } from "vitest/config";
 
+import { vitestMaxWorkers } from "../../scripts/vitest-max-workers.mjs";
+
 export default defineConfig({
   resolve: {
     alias: {
@@ -19,6 +21,7 @@ export default defineConfig({
     setupFiles: [path.resolve(__dirname, "./src/test-utils/vitest-setup.ts")],
     pool: "forks",
     fileParallelism: false,
+    maxWorkers: vitestMaxWorkers(),
     exclude: ["**/node_modules/**", "**/dist/**", "**/.claude/**", "**/.dev/**"],
   },
 });

@@ -19,7 +19,7 @@ function getLogger(logger: LoggerLike): LoggerLike {
 }
 
 type AgentStoragePersistence = Pick<AgentStorage, "applySnapshot">;
-type AgentManagerStateSource = Pick<AgentManager, "subscribe">;
+type AgentManagerStateSource = Pick<AgentManager, "subscribe" | "isShuttingDown">;
 
 interface BuildSessionConfigOptions {
   validProviders?: Iterable<AgentProvider>;
@@ -55,9 +55,13 @@ export function attachAgentStoragePersistence(
     if (event.agent.lifecycle === "closed") {
       return;
     }
-    void storage.applySnapshot(event.agent).catch((error) => {
-      log.error({ err: error, agentId: event.agent.id }, "Failed to persist agent snapshot");
-    });
+    void storage
+      .applySnapshot(event.agent, {
+        preserveResumeOnStartup: agentManager.isShuttingDown(),
+      })
+      .catch((error) => {
+        log.error({ err: error, agentId: event.agent.id }, "Failed to persist agent snapshot");
+      });
   });
 
   return unsubscribe;

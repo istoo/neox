@@ -11,6 +11,7 @@ import {
   type ThreadId,
   type WsWelcomePayload,
   WS_METHODS,
+  NEOLIX_HOST_WS_METHODS,
 } from "@synara/contracts";
 import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
 import { ws, http, HttpResponse } from "msw";
@@ -277,7 +278,9 @@ const worker = setupWorker(
         // and fills the run with schema errors about an Exit whose Success
         // value is `{}` where Void was expected.
         method === DEVICE_WS_METHODS.subscribeEvents ||
-        method === COMPUTER_WS_METHODS.subscribeEvents
+        method === COMPUTER_WS_METHODS.subscribeEvents ||
+        method === NEOLIX_HOST_WS_METHODS.subscribeFeatures ||
+        method === NEOLIX_HOST_WS_METHODS.subscribeUpdateProgress
       ) {
         return;
       }

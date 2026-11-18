@@ -198,7 +198,10 @@ it("saves provider CPU priority opt-out and exposes reset to the default", async
 it("shows installation and auth beside activity switches with visible setup guides", async () => {
   await render(<ProvidersSettingsPanel {...props} />);
   expect(activityRow("OpenCode").textContent).toContain("Unavailable");
-  expect(activityRow("OpenCode").textContent).toContain("not installed or not on PATH");
+  const openCodeStatus =
+    activityRow("OpenCode").querySelector<HTMLElement>("[data-provider-status]")!;
+  expect(openCodeStatus.textContent).toBe("Unavailable");
+  expect(openCodeStatus.getAttribute("title")).toContain("not installed or not on PATH");
   expect(activityRow("Claude").textContent).toContain("Needs sign-in");
   expect(activityRow("Codex").textContent).toContain("Connected");
   await page.getByRole("button", { name: /Disabled providers/u }).click();
@@ -225,6 +228,48 @@ it("shows installation and auth beside activity switches with visible setup guid
     }
     await expect.element(guide).toBeVisible();
     expect(guide.element().getAttribute("href")).toBe(descriptor.setupDocsHref);
+  }
+
+  // The full diagnostic belongs to the detail pane, not the narrow list row.
+  await page.getByRole("button", { name: "Select OpenCode", exact: true }).click();
+  await expect
+    .element(page.getByRole("region", { name: "OpenCode settings" }))
+    .toHaveTextContent("not installed or not on PATH");
+});
+
+it("keeps the provider list status to one line", async () => {
+  await render(<ProvidersSettingsPanel {...props} />);
+  const status = activityRow("OpenCode").querySelector<HTMLElement>("[data-provider-status]")!;
+  const style = getComputedStyle(status);
+  expect(style.whiteSpace).toBe("nowrap");
+  expect(style.overflow).toBe("hidden");
+  expect(status.textContent).toBe("Unavailable");
+});
+
+it("lets the provider detail grow with the page instead of scrolling inside the card", async () => {
+  await render(<ProvidersSettingsPanel {...props} />);
+  const detail = document.querySelector<HTMLElement>("[data-provider-detail]")!;
+  expect(detail).not.toBeNull();
+  expect(getComputedStyle(detail).overflowY).toBe("visible");
+  expect(detail.scrollHeight).toBeLessThanOrEqual(detail.clientHeight + 1);
+});
+
+it("stacks account tabs above the editor when the content is narrow and columns them when wide", async () => {
+  await page.viewport(920, 1000);
+  const mounted = await render(<ProvidersSettingsPanel {...props} />);
+  try {
+    const layout = document.querySelector<HTMLElement>('[data-slot="provider-accounts-layout"]')!;
+    const list = document.querySelector<HTMLElement>('[data-slot="provider-account-list"]')!;
+    await expect.poll(() => getComputedStyle(layout).flexDirection).toBe("column");
+    expect(getComputedStyle(list).display).toBe("flex");
+    expect(getComputedStyle(list).flexDirection).toBe("row");
+
+    await page.viewport(1400, 1000);
+    await expect.poll(() => getComputedStyle(layout).flexDirection).toBe("row");
+    await expect.poll(() => getComputedStyle(list).display).toBe("block");
+  } finally {
+    await mounted.unmount();
+    await page.viewport(1280, 800);
   }
 });
 
@@ -281,7 +326,10 @@ it("restores provider options and saved configuration after re-enabling", async 
   expect(page.getByRole("button", { name: "Reorder Codex", exact: true }).elements()).toHaveLength(
     0,
   );
-  expect(page.getByRole("button", { name: /Codex Custom/u }).elements()).toHaveLength(0);
+  // Disabled providers drop their editor too; the list keeps a recovery switch.
+  await expect
+    .element(page.getByRole("region", { name: "Codex settings" }))
+    .toHaveTextContent("This provider is disabled.");
   await page.getByRole("button", { name: /Disabled providers/u }).click();
   await page.getByRole("switch", { name: "Enable Codex", exact: true }).click();
   await expect
@@ -291,12 +339,46 @@ it("restores provider options and saved configuration after re-enabling", async 
     .element(page.getByRole("switch", { name: "Show Codex in the provider picker", exact: true }))
     .not.toBeChecked();
   await expect
-    .element(page.getByRole("button", { name: /Codex Custom/u }))
-    .toHaveAttribute("aria-expanded", "true");
+    .element(page.getByRole("list", { name: "Codex accounts", exact: true }))
+    .toBeVisible();
   const binaryPath = page
     .getByRole("group", { name: "Codex account", exact: true })
     .getByRole("textbox", { name: /^Codex binary path/u });
   await expect.element(binaryPath).toHaveValue("/custom/codex");
+});
+
+it("opens a provider editor from the master list", async () => {
+  await render(<ProvidersSettingsPanel {...props} />);
+
+  await expect
+    .element(page.getByRole("list", { name: "Provider list", exact: true }))
+    .toBeVisible();
+  const claude = page
+    .getByRole("list", { name: "Provider list", exact: true })
+    .getByRole("button", { name: "Select Claude", exact: true });
+  await expect.element(claude).toHaveAttribute("aria-pressed", "false");
+  claude.element().focus();
+  expect(document.activeElement).toBe(claude.element());
+
+  await claude.click();
+  await expect.element(page.getByRole("region", { name: "Claude settings" })).toBeVisible();
+  await expect
+    .element(page.getByRole("list", { name: "Claude accounts", exact: true }))
+    .toBeVisible();
+  await expect.element(claude).toHaveAttribute("aria-pressed", "true");
+});
+
+it("turns a disabled provider back on from its editor", async () => {
+  const updateSettingsAndWait = vi.fn(async () => {});
+  await render(<ProvidersSettingsPanel {...props} updateSettingsAndWait={updateSettingsAndWait} />);
+
+  await page.getByRole("button", { name: /Disabled providers/u }).click();
+  await page.getByRole("button", { name: "Select Oh My Pi", exact: true }).click();
+  await expect
+    .element(page.getByRole("region", { name: "Oh My Pi settings" }))
+    .toHaveTextContent("This provider is disabled.");
+  await page.getByRole("button", { name: "Enable Oh My Pi", exact: true }).click();
+  expect(updateSettingsAndWait).toHaveBeenCalledWith({ disabledProviders: [] });
 });
 
 it("allows recovering after every provider is disabled", async () => {
@@ -444,6 +526,7 @@ function accountProps(settings: Partial<typeof defaults> = {}) {
 
 function codexAccountRow(name: string) {
   return page
+    .getByRole("list", { name: "Codex accounts", exact: true })
     .getByRole("button", { name: `Select ${name}`, exact: true })
     .element()
     .closest<HTMLElement>('[role="listitem"]')!;
@@ -762,6 +845,43 @@ it("closes a late authentication open after the settings dialog is cancelled", a
     exitSignal: null,
   });
   await expect.poll(() => harness.api.terminal.close.mock.calls.length).toBeGreaterThan(beforeLate);
+});
+
+it("captures the provider master-detail in light, dark, and narrow layouts", async () => {
+  await page.viewport(1280, 1000);
+  const mounted = await render(<ProvidersSettingsPanel {...props} />);
+  await expect.element(page.getByRole("region", { name: "Codex settings" })).toBeVisible();
+
+  await page.screenshot({ path: "node_modules/.cache/providers-redesign-light.png" });
+
+  // The app normally repaints its inline theme tokens when the theme changes. Drop that
+  // inline layer so the stylesheet's own `.dark` tokens apply, then restore it.
+  const previousStyle = document.documentElement.getAttribute("style");
+  document.documentElement.removeAttribute("style");
+  document.documentElement.classList.add("dark");
+  try {
+    await page.viewport(1279, 1000);
+    expect(getComputedStyle(document.documentElement).getPropertyValue("--background").trim()).toBe(
+      "#0e0e0e",
+    );
+    await page.screenshot({ path: "node_modules/.cache/providers-redesign-dark.png" });
+  } finally {
+    document.documentElement.classList.remove("dark");
+    if (previousStyle === null) {
+      document.documentElement.removeAttribute("style");
+    } else {
+      document.documentElement.setAttribute("style", previousStyle);
+    }
+  }
+
+  await page.viewport(920, 1000);
+  const accountsLayout = document.querySelector<HTMLElement>(
+    '[data-slot="provider-accounts-layout"]',
+  )!;
+  await expect.poll(() => getComputedStyle(accountsLayout).flexDirection).toBe("column");
+  await page.screenshot({ path: "node_modules/.cache/providers-redesign-narrow.png" });
+  await page.viewport(1280, 800);
+  await mounted.unmount();
 });
 
 it.each(["ready", "error", "exited"] as const)(

@@ -1,17 +1,14 @@
+import "./clientRuntime.node.ts";
+
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import { Effect, Layer } from "effect";
-import * as os from "node:os";
-import * as path from "node:path";
 
+import { createBridgeApp } from "./app.ts";
 import { makeBridgeServerLayer } from "./server.ts";
-import { makeHandlers } from "./handlers.ts";
-import { connectNeolix } from "./neolix.ts";
-import { BridgeModel } from "./model.ts";
-import { DraftThreads } from "./draftThreads.ts";
-import { ProjectPins } from "./projectPins.ts";
-import { HostRegistry, httpBaseForConnection, makeHostRegistryHandlers } from "./multihost.ts";
 import { patchBunWebSocketCloseEventCompatibility } from "./bunWebSocketCompatibility.ts";
-import { bridgeError } from "./rpcErrors.ts";
+
+// Standalone bridge for `bun src/main.ts` development. The daemon mounts the same routes
+// on its own HTTP server instead (see embed.ts).
 
 // Bun's ws shim emits close events without a code, which the RPC socket rejects and crashes on.
 patchBunWebSocketCloseEventCompatibility();
@@ -38,76 +35,17 @@ if (!neolixHome) {
 }
 
 const program = Effect.gen(function* () {
-  const neolix = yield* Effect.promise(() =>
-    connectNeolix({ host: daemonHost, home: neolixHome, log }),
-  );
-  const environmentId = `neolix-${daemonHost.replace(/[^A-Za-z0-9]/g, "-")}`;
-  // Pins are keyed by environment so each host this bridge serves keeps its own set.
-  const projectPins = new ProjectPins({
-    file: path.join(neolixHome, "desktop-web", "project-pins.json"),
-    scope: environmentId,
-    log,
-  });
-  yield* Effect.promise(() => projectPins.load());
-  const draftThreads = new DraftThreads({
-    file: path.join(neolixHome, "desktop-web", "draft-threads.json"),
-    scope: environmentId,
-    log,
-  });
-  // The controller daemon runs on this machine, so its home folder is this process's.
-  const model = new BridgeModel(neolix, log, os.homedir(), projectPins, draftThreads);
-  yield* Effect.promise(() => model.load());
-  const label = os.hostname() || "Neox";
-  // Backups download through the daemon's token route, which is plain HTTP. A socket or
-  // SSH target has no reachable origin, and the handler reports that instead of guessing.
-  const daemonHttpBase = httpBaseForConnection(daemonHost);
-  const registry = new HostRegistry(neolix, {
-    home: neolixHome,
-    environmentId,
-    label,
-    log,
-    buildHandlers: makeHandlers,
-  });
-  log(`connected to ${daemonHost}; serving ws://${host}:${port}/ws`);
-  const server = makeBridgeServerLayer({
-    host,
-    port,
-    handlers: {
-      ...makeHandlers(model, {
-        environmentId,
-        home: neolixHome,
-        log,
-        label,
-        projectPins,
-        ...(daemonHttpBase ? { daemonHttpBase } : {}),
-      }),
-      ...makeHostRegistryHandlers(registry),
-    },
-    resolveHostHandlers: (hostId) => registry.handlersFor(hostId),
-    ...(webDistDir ? { webDistDir } : {}),
-    uploadTerminalFile: async (input) => {
-      const result = await neolix.uploadFile(input);
-      if (result.error || !result.file) {
-        throw bridgeError(
-          "file.terminal-upload-failed",
-          result.error ?? `Uploading "${input.fileName}" failed.`,
-          { name: input.fileName, ...(result.error ? { detail: result.error } : {}) },
-        );
-      }
-      return result.file.path;
-    },
-    threadExport: {
-      loadThread: async (threadId) => {
-        const snapshot = await model.threadDetail(threadId);
-        return snapshot ? snapshot.thread : null;
-      },
-    },
-    pluginWeb: {
-      readAsset: (pluginId, assetPath) => neolix.getPluginWebAsset(pluginId, assetPath),
+  const app = yield* Effect.promise(() =>
+    createBridgeApp({
+      daemonHost,
+      neolixHome,
+      ...(webDistDir ? { webDistDir } : {}),
       frameAncestorOrigins,
-    },
-    log,
-  });
+      log,
+    }),
+  );
+  log(`connected to ${daemonHost}; serving ws://${host}:${port}/rpc`);
+  const server = makeBridgeServerLayer({ ...app.routes, host, port });
   // The handler map is assembled per tag at runtime, so its requirements are not tracked
   // statically; every handler closes over `model` and needs no services.
   return yield* Layer.launch(server as Layer.Layer<never, unknown, never>);

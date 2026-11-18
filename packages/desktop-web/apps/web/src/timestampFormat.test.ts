@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { getFormatLocale } from "./i18n";
 import { formatDayAwareTimestamp, formatShortTimestamp } from "./timestampFormat";
 
 // Build ISO strings from local wall-clock components so expectations are
@@ -26,7 +27,7 @@ describe("formatDayAwareTimestamp", () => {
 
   it("prefixes the weekday name for messages from earlier this week", () => {
     const isoDate = localIso(2026, 2, 16, 23, 59); // Monday, one calendar day earlier
-    const weekday = new Intl.DateTimeFormat(undefined, { weekday: "long" }).format(
+    const weekday = new Intl.DateTimeFormat(getFormatLocale(), { weekday: "long" }).format(
       new Date(isoDate),
     );
     expect(formatDayAwareTimestamp(isoDate, "24-hour", now)).toBe(
@@ -36,7 +37,7 @@ describe("formatDayAwareTimestamp", () => {
 
   it("uses the weekday name up to six calendar days back", () => {
     const isoDate = localIso(2026, 2, 11, 8, 30); // Wednesday, six days earlier
-    const weekday = new Intl.DateTimeFormat(undefined, { weekday: "long" }).format(
+    const weekday = new Intl.DateTimeFormat(getFormatLocale(), { weekday: "long" }).format(
       new Date(isoDate),
     );
     expect(formatDayAwareTimestamp(isoDate, "24-hour", now)).toBe(
@@ -46,9 +47,10 @@ describe("formatDayAwareTimestamp", () => {
 
   it("switches to a short date once the weekday name becomes ambiguous", () => {
     const isoDate = localIso(2026, 2, 10, 8, 30); // seven days earlier, same weekday as `now`
-    const dayLabel = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(
-      new Date(isoDate),
-    );
+    const dayLabel = new Intl.DateTimeFormat(getFormatLocale(), {
+      month: "short",
+      day: "numeric",
+    }).format(new Date(isoDate));
     expect(formatDayAwareTimestamp(isoDate, "24-hour", now)).toBe(
       `${dayLabel} ${formatShortTimestamp(isoDate, "24-hour")}`,
     );
@@ -56,7 +58,7 @@ describe("formatDayAwareTimestamp", () => {
 
   it("includes the year for messages from another year", () => {
     const isoDate = localIso(2025, 11, 31, 18, 45);
-    const dayLabel = new Intl.DateTimeFormat(undefined, {
+    const dayLabel = new Intl.DateTimeFormat(getFormatLocale(), {
       month: "short",
       day: "numeric",
       year: "numeric",
@@ -68,9 +70,10 @@ describe("formatDayAwareTimestamp", () => {
 
   it("dates future days instead of borrowing a weekday name", () => {
     const isoDate = localIso(2026, 2, 19, 10, 0); // two days ahead of `now`
-    const dayLabel = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(
-      new Date(isoDate),
-    );
+    const dayLabel = new Intl.DateTimeFormat(getFormatLocale(), {
+      month: "short",
+      day: "numeric",
+    }).format(new Date(isoDate));
     expect(formatDayAwareTimestamp(isoDate, "24-hour", now)).toBe(
       `${dayLabel} ${formatShortTimestamp(isoDate, "24-hour")}`,
     );

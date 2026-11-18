@@ -1,3 +1,4 @@
+import type { GatewayCandidate } from "./catalog.js";
 import { codexCreditsPlan } from "./codex-credits.js";
 import { codexLimitsOf } from "./codex-limits.js";
 import { providerAccounts, type GatewayAccount, type GatewayProvider } from "./config.js";
@@ -10,7 +11,7 @@ import {
   spendCapReached,
   type UsageWindow,
 } from "./provider-limits.js";
-import type { RestTable } from "./routing.js";
+import type { ModelLoad, RestTable } from "./routing.js";
 import { windowsFromCodexLimits } from "./warm-windows.js";
 
 export function accountKey(provider: GatewayProvider, account: GatewayAccount): string {
@@ -112,6 +113,45 @@ function usageReadingOf(
       resetsAt: window.resetsAt,
     })),
   };
+}
+
+/**
+ * How busy each candidate's upstream is now, for `busyLoad`: the share of
+ * the concurrency its accounts declare (`maxConcurrency`) that is in flight
+ * in this process. myna reads a load its provider plugin reports; without
+ * one, this is the same signal the gateway itself can see — a seat with
+ * every lane taken is what the vendor would queue behind. A provider that
+ * declares no (or not every) seat's capacity has no load: unknown is never
+ * read as idle (myna's plugin.LoadFresh).
+ */
+export function candidateLoads(input: {
+  candidates: readonly GatewayCandidate[];
+  state: AccountRoutingState;
+  now: number;
+}): ReadonlyMap<string, ModelLoad> {
+  const loads = new Map<string, ModelLoad>();
+  for (const candidate of input.candidates) {
+    const provider = candidate.provider;
+    const accounts = routableAccounts(provider).filter(
+      (account) => account.enabled !== false && servesModel(account, candidate.model.id),
+    );
+    if (accounts.length === 0 || accounts.some((account) => account.maxConcurrency === undefined)) {
+      continue;
+    }
+    const capacity = accounts.reduce((total, account) => total + (account.maxConcurrency ?? 0), 0);
+    if (capacity <= 0) {
+      continue;
+    }
+    const inflight = accounts.reduce(
+      (total, account) => total + (input.state.inflight.get(accountKey(provider, account)) ?? 0),
+      0,
+    );
+    loads.set(`${provider.id}/${candidate.model.id}`, {
+      percent: (inflight / capacity) * 100,
+      at: input.now,
+    });
+  }
+  return loads;
 }
 
 export function createAccountRoutingState(rest: RestTable): AccountRoutingState {

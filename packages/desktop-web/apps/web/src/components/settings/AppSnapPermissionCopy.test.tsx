@@ -32,7 +32,7 @@ describe("AppSnap permission copy", () => {
         "Open Screen Recording settings",
       ],
     ],
-    ["zh-CN", ["打开 辅助功能 设置", "打开 输入监控 设置", "打开 屏幕录制 设置"]],
+    ["zh-CN", ["打开辅助功能设置", "打开输入监控设置", "打开屏幕录制设置"]],
   ] as const)(
     "walks through localized System Settings without claiming a live dialog (%s)",
     (language, labels) => {

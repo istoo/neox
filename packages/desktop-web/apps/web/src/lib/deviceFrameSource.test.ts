@@ -59,7 +59,7 @@ describe("deviceFrameSocketUrl", () => {
   it("targets the shared frame path with the device in the query", () => {
     const url = new URL(deviceFrameSocketUrl({ udid: UDID, explicitUrl: EXPLICIT_URL }));
 
-    expect(url.pathname).toBe("/ws/device-frames");
+    expect(url.pathname).toBe("/rpc/device-frames");
     expect(url.searchParams.get("udid")).toBe(UDID);
   });
 });

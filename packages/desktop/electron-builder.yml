@@ -22,7 +22,7 @@ files:
   - "!node_modules/@neolix/*/src/**"
   - "!node_modules/@neolix/**/*.test.*"
   - "!node_modules/@neolix/**/*.spec.*"
-  - "!node_modules/@neolix/server/dist/server/web-ui/**"
+  - "!node_modules/@neolix/server/dist/server/web-app/**"
   - "!node_modules/@neolix/server/dist/server/builtin-plugins/**"
   # Workspace packages are symlinked, so anything a dev generates inside them
   # lands in the asar. CI never has these; a local .debug run adds gigabytes.
@@ -46,13 +46,10 @@ extraResources:
   # Preserve physical compiler inputs, including .d.ts files omitted from packaged node_modules.
   - from: ../server/dist/server/builtin-plugins
     to: builtin-plugins
-  - from: ../app/dist
-    to: app-dist
-  # Forked web renderer served by the Node-compatible bridge bundle. The bridge
-  # runs under Electron's own binary with ELECTRON_RUN_AS_NODE, so no Bun runtime
-  # is shipped. Produced by `npm run build:desktop-web`.
-  - from: ../desktop-web/apps/bridge/dist/main.js
-    to: desktop-web/bridge/main.js
+  # Web module the daemon loads in-process. Produced by `npm run
+  # build:desktop-web`; the daemon serves it alongside its own routes.
+  - from: ../desktop-web/apps/bridge/dist/embed.js
+    to: desktop-web/bridge/embed.js
   - from: ../desktop-web/apps/web/dist
     to: desktop-web/web
   - from: assets/editor-targets

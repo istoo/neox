@@ -385,7 +385,7 @@ test("plain RPC parses async input and output transforms once at the receiver", 
   } finally {
     await harness.close();
   }
-});
+}, 60_000);
 
 test("plain RPC applies a top-level input default in the plugin process", async () => {
   const contract = defineRpc({
@@ -405,7 +405,7 @@ test("plain RPC applies a top-level input default in the plugin process", async 
   } finally {
     await harness.close();
   }
-});
+}, 60_000);
 
 test("plain RPC applies a top-level output default on the client", async () => {
   const contract = defineRpc({

@@ -45,6 +45,26 @@ describe("library", () => {
     await rm(root, { recursive: true, force: true });
   });
 
+  test("waits for a load in flight and writes nothing once disposed", async () => {
+    const paths = resolveLibraryPaths(neolixHome);
+    // warm() starts load(), which creates $NEOLIX_HOME/library.
+    const warming = service.warm();
+
+    await service.dispose();
+    await expect(warming).resolves.toBeUndefined();
+    // dispose() resolved only after the in-flight load's mkdir landed.
+    await expect(stat(paths.dir)).resolves.toBeDefined();
+
+    await expect(service.warm()).rejects.toThrow("disposed");
+    await expect(service.refreshTargets()).rejects.toThrow("disposed");
+    await expect(service.getSnapshot()).rejects.toThrow("disposed");
+
+    // Nothing is left writing after dispose: the removed directory stays gone.
+    await rm(paths.dir, { recursive: true, force: true });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await expect(stat(paths.dir)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   test("writes the shared instructions between its markers and keeps the user's text", async () => {
     const file = path.join(home, ".claude", "CLAUDE.md");
     await mkdir(path.dirname(file), { recursive: true });
@@ -341,8 +361,13 @@ describe("library", () => {
       agents: ["claude"],
     });
 
-    expect((await stat(file)).mode & 0o777).toBe(0o600);
-    expect((await stat(path.join(neolixHome, "library", "library.json"))).mode & 0o777).toBe(0o600);
+    // Windows cannot express POSIX permissions; the files are private by location there.
+    if (process.platform !== "win32") {
+      expect((await stat(file)).mode & 0o777).toBe(0o600);
+      expect((await stat(path.join(neolixHome, "library", "library.json"))).mode & 0o777).toBe(
+        0o600,
+      );
+    }
   });
 
   test("reports no RTK when it is not on PATH", async () => {

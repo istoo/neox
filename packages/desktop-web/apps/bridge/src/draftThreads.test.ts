@@ -41,6 +41,45 @@ describe("DraftThreads", () => {
     expect(b.map((shell) => shell.id)).toEqual(["b1"]);
   });
 
+  it("moves drafts from the address-derived scope to the stable one", async () => {
+    const file = await makeFile();
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(
+      file,
+      JSON.stringify({ "neolix-host-reg-1": [draft("old"), draft("same")] }),
+    );
+
+    const store = new DraftThreads({
+      file,
+      scope: "srv-remote",
+      legacyScopes: ["neolix-host-reg-1"],
+      log: () => {},
+    });
+    const loaded = await store.load();
+    expect(loaded.map((shell) => shell.id)).toEqual(["old", "same"]);
+
+    const stored = JSON.parse(await fs.readFile(file, "utf8")) as Record<string, unknown>;
+    expect((stored["srv-remote"] as Array<{ id: string }>).map((row) => row.id)).toEqual([
+      "old",
+      "same",
+    ]);
+    // The legacy key stays readable so a downgraded bridge still sees the draft.
+    expect((stored["neolix-host-reg-1"] as Array<{ id: string }>).map((row) => row.id)).toEqual([
+      "old",
+      "same",
+    ]);
+
+    // Deleting a migrated draft must stick; a stale legacy copy cannot bring it back.
+    await new DraftThreads({ file, scope: "srv-remote", log: () => {} }).save([draft("same")]);
+    const restarted = new DraftThreads({
+      file,
+      scope: "srv-remote",
+      legacyScopes: ["neolix-host-reg-1"],
+      log: () => {},
+    });
+    expect((await restarted.load()).map((shell) => shell.id)).toEqual(["same"]);
+  });
+
   it("applies saves in order", async () => {
     const file = await makeFile();
     const store = new DraftThreads({ file, scope: "host-a", log: () => {} });

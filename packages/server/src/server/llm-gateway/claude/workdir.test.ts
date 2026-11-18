@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { claudeWorkDirName, ensureClaudeWorkDir } from "./workdir.js";
 
 const cleanup: string[] = [];
+const ownerUid = typeof process.getuid === "function" ? process.getuid() : 501;
 
 afterEach(async () => {
   for (const dir of cleanup.splice(0)) {
@@ -31,19 +32,21 @@ describe("claudeWorkDirName", () => {
 });
 
 describe("ensureClaudeWorkDir", () => {
-  it("creates a folder only its owner can use", async () => {
+  // Windows has no POSIX mode bits; ensureClaudeWorkDir skips these checks there
+  // (see "skips POSIX ownership checks on Windows").
+  it.skipIf(process.platform === "win32")("creates a folder only its owner can use", async () => {
     const tmpDir = await tempDir();
-    const dir = await ensureClaudeWorkDir({ tmpDir, platform: "linux", uid: 501 });
+    const dir = await ensureClaudeWorkDir({ tmpDir, platform: "linux", uid: ownerUid });
     const stats = await lstat(dir);
     expect(stats.isDirectory()).toBe(true);
     expect(stats.mode & 0o777).toBe(0o700);
   });
 
-  it("refuses a folder others can write to", async () => {
+  it.skipIf(process.platform === "win32")("refuses a folder others can write to", async () => {
     const tmpDir = await tempDir();
-    const dir = await ensureClaudeWorkDir({ tmpDir, platform: "linux", uid: 501 });
+    const dir = await ensureClaudeWorkDir({ tmpDir, platform: "linux", uid: ownerUid });
     await chmod(dir, 0o770);
-    await expect(ensureClaudeWorkDir({ tmpDir, platform: "linux", uid: 501 })).rejects.toThrow(
+    await expect(ensureClaudeWorkDir({ tmpDir, platform: "linux", uid: ownerUid })).rejects.toThrow(
       "can be written by others",
     );
   });

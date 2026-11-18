@@ -102,7 +102,10 @@ describe("batch 16 external agents", () => {
       max_input_length: 1048576,
       max_output_length: 8192,
     });
-    expect((await fs.stat(providerPath)).mode & 0o777).toBe(0o600);
+    // Windows cannot express POSIX permissions; the file is private by location there.
+    if (process.platform !== "win32") {
+      expect((await fs.stat(providerPath)).mode & 0o777).toBe(0o600);
+    }
     expect(await target.read(connectEnvironment)).toMatchObject({
       connected: true,
       model: "model-one",

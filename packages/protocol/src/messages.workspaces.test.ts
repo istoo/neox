@@ -668,7 +668,7 @@ describe("workspace message schemas", () => {
       projectId: "project",
       projectDisplayName: "repo",
       projectRootPath: "/repo",
-      workspaceDirectory: "/neox/worktrees/project/feature/packages/app",
+      workspaceDirectory: "/neox/worktrees/project/feature/packages/server",
       worktreeSlug: "feature",
       projectKind: "git",
       workspaceKind: "worktree",

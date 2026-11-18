@@ -9,12 +9,13 @@ import { type KeyboardEvent as ReactKeyboardEvent, useState } from "react";
 
 import { CentralIcon } from "~/lib/central-icons";
 import { cn } from "~/lib/utils";
+import { useBuiltinFeatures } from "~/hooks/useBuiltinFeatures";
 import { SearchInput } from "./ui/search-input";
 import { SidebarLeadingIcon } from "./SidebarLeadingIcon";
 import {
   SETTINGS_PAGE_GROUPS,
-  SETTINGS_PAGES,
   settingsPageForSection,
+  settingsPagesWithoutSections,
   type SettingsSectionId,
 } from "../settingsNavigation";
 import {
@@ -95,17 +96,18 @@ export function SettingsSidebarNav(props: {
   searchContext?: SettingsSearchContext | undefined;
 }) {
   const { t } = useTranslation();
+  const { settingsSections: hiddenSections } = useBuiltinFeatures();
+  const pages = settingsPagesWithoutSections(hiddenSections);
 
   const { onSelectSection } = props;
   const activePage = settingsPageForSection(props.activeSection);
   const [query, setQuery] = useState("");
   const trimmedQuery = query.trim();
   const isSearching = trimmedQuery.length > 0;
-  const results = rankSettingsSearchEntries(
-    trimmedQuery,
-    SETTINGS_SEARCH_RESULTS_LIMIT,
-    props.searchContext,
-  );
+  const results = rankSettingsSearchEntries(trimmedQuery, SETTINGS_SEARCH_RESULTS_LIMIT, {
+    computerBackendIsVisibleDesktop: props.searchContext?.computerBackendIsVisibleDesktop ?? false,
+    hiddenSettingsSections: hiddenSections,
+  });
 
   const handleSelectResult = (entry: SettingsSearchEntry) => {
     const target = settingsSearchEntryTarget(entry);
@@ -162,8 +164,8 @@ export function SettingsSidebarNav(props: {
       ) : (
         <nav aria-label={t("settings:settings_sections")} className="flex flex-col">
           {SETTINGS_PAGE_GROUPS.map((group) => {
-            const pages = SETTINGS_PAGES.filter((page) => page.group === group.id);
-            if (pages.length === 0) {
+            const groupPages = pages.filter((page) => page.group === group.id);
+            if (groupPages.length === 0) {
               return null;
             }
 
@@ -180,7 +182,7 @@ export function SettingsSidebarNav(props: {
                   {t(group.label)}
                 </h2>
                 <ul className={cn("flex flex-col", SETTINGS_SIDEBAR_LIST_GAP_CLASS_NAME)}>
-                  {pages.map((page) => {
+                  {groupPages.map((page) => {
                     const isActive = page.id === activePage.id;
                     return (
                       <li key={page.id}>

@@ -60,6 +60,8 @@ export type ProjectNormalizationInput = Pick<
   | "workspaceRoot"
   | "defaultModelSelection"
   | "scripts"
+  | "worktreeSetup"
+  | "worktreeTeardown"
   | "isPinned"
   | "spaceId"
   | "createdAt"
@@ -417,6 +419,8 @@ export function normalizeProject(
       ? null
       : normalizeModelSelection(incoming.defaultModelSelection, previous?.defaultModelSelection);
   const scripts = normalizeProjectScripts(incoming.scripts, previous?.scripts);
+  const worktreeSetup = incoming.worktreeSetup ?? null;
+  const worktreeTeardown = incoming.worktreeTeardown ?? null;
   // Keep the previous array when nothing changed so a resync stays a no-op.
   const incomingAdditionalFolders = incoming.additionalFolders ?? [];
   const additionalFolders =
@@ -463,6 +467,8 @@ export function normalizeProject(
     previous.createdAt === incoming.createdAt &&
     previous.updatedAt === incoming.updatedAt &&
     previous.scripts === scripts &&
+    (previous.worktreeSetup ?? null) === worktreeSetup &&
+    (previous.worktreeTeardown ?? null) === worktreeTeardown &&
     previous.additionalFolders === additionalFolders &&
     (previous.rootMissing ?? false) === (incoming.rootMissing ?? false)
   ) {
@@ -485,6 +491,8 @@ export function normalizeProject(
     createdAt: incoming.createdAt,
     updatedAt: incoming.updatedAt,
     scripts,
+    ...(worktreeSetup !== null ? { worktreeSetup } : {}),
+    ...(worktreeTeardown !== null ? { worktreeTeardown } : {}),
     additionalFolders,
     ...(incoming.rootMissing ? { rootMissing: true } : {}),
   };

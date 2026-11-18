@@ -5,8 +5,13 @@
 
 import { useEffect, useId, useRef, useState } from "react";
 
+import { useHostFeatures } from "~/hooks/useHostFeatures";
+import { readExecutionContext } from "~/lib/hosts/executionContext";
 import type { ProjectAppearance } from "~/lib/projectAppearance";
+import { importProjectIconFromUrl, projectIconFromFile } from "~/lib/projectIcons.logic";
+import { useProjectIcon, useSetProjectIcon } from "~/lib/projectIcons.query";
 import { PROJECT_DIALOG_FIELD_CONTROL_CLASS_NAME } from "./CreateGitHubProjectFields";
+import { HostUpdateNotice } from "./hosts/HostUpdateNotice";
 import { ProjectAppearancePicker } from "./ProjectAppearancePicker";
 import { ProjectSidebarIcon } from "./ProjectSidebarIcon";
 import { Button } from "./ui/button";
@@ -18,6 +23,7 @@ import {
   DialogPopup,
   DialogTitle,
 } from "./ui/dialog";
+import { Input } from "./ui/input";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "./ui/input-group";
 import { Popover, PopoverPopup, PopoverTrigger } from "./ui/popover";
 import { useTranslation } from "~/i18n";
@@ -31,6 +37,8 @@ export interface EditProjectValue {
 export interface EditProjectDialogProps {
   open: boolean;
   cwd: string;
+  /** The daemon project whose custom icon this dialog reads and writes. */
+  projectId?: string | undefined;
   /** Placeholder for the name field: what the project is called with no local name. */
   folderName: string;
   initialValue: EditProjectValue;
@@ -41,6 +49,7 @@ export interface EditProjectDialogProps {
 export function EditProjectDialog({
   open,
   cwd,
+  projectId,
   folderName,
   initialValue,
   onOpenChange,
@@ -58,6 +67,7 @@ export function EditProjectDialog({
             transition, so each open seeds a fresh draft from initialValue. */}
         <EditProjectForm
           cwd={cwd}
+          projectId={projectId}
           folderName={folderName}
           initialValue={initialValue}
           onOpenChange={onOpenChange}
@@ -70,6 +80,7 @@ export function EditProjectDialog({
 
 function EditProjectForm({
   cwd,
+  projectId,
   folderName,
   initialValue,
   onOpenChange,
@@ -80,8 +91,37 @@ function EditProjectForm({
   const [name, setName] = useState(initialValue.name);
   const [appearance, setAppearance] = useState(initialValue.appearance);
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [imageUrl, setImageUrl] = useState("");
+  const [imageBusy, setImageBusy] = useState(false);
+  const [imageError, setImageError] = useState<string | null>(null);
   const nameInputId = useId();
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const hostFeatures = useHostFeatures();
+  const { iconDataUri, supportsCustomIcons } = useProjectIcon({
+    environmentId: readExecutionContext()?.execution.environmentId ?? "local",
+    projectId,
+    cwd,
+  });
+  const customIconsUnavailable =
+    !supportsCustomIcons && hostFeatures.featureStatus("projectCustomIcon") === "unavailable";
+  const setProjectIcon = useSetProjectIcon();
+
+  const applyIconSource = async (source: Parameters<typeof setProjectIcon>[1]) => {
+    if (!projectId || imageBusy) return;
+    setImageBusy(true);
+    setImageError(null);
+    try {
+      await setProjectIcon(projectId, source);
+      // A custom image replaces the local emoji/icon choice so the preview and
+      // every other glyph show the same thing.
+      setAppearance(null);
+    } catch (error) {
+      setImageError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setImageBusy(false);
+    }
+  };
 
   useEffect(() => {
     // Deferred a frame: the dialog moves focus itself on open. Matches RenameDialog.
@@ -130,7 +170,12 @@ function EditProjectForm({
                   }
                 >
                   <span className="relative flex size-4 items-center justify-center">
-                    <ProjectSidebarIcon cwd={cwd} expanded={false} appearance={appearance} />
+                    <ProjectSidebarIcon
+                      cwd={cwd}
+                      projectId={projectId}
+                      expanded={false}
+                      appearance={appearance}
+                    />
                   </span>
                 </PopoverTrigger>
               </InputGroupAddon>
@@ -160,6 +205,84 @@ function EditProjectForm({
             />
           </PopoverPopup>
         </Popover>
+
+        {customIconsUnavailable ? (
+          <HostUpdateNotice compact className="mt-3" />
+        ) : supportsCustomIcons ? (
+          <div className="mt-3 flex flex-col gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*"
+                className="sr-only"
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  event.target.value = "";
+                  if (!file) return;
+                  void projectIconFromFile(file)
+                    .then((data) => applyIconSource({ type: "upload", data }))
+                    .catch((error: unknown) =>
+                      setImageError(error instanceof Error ? error.message : String(error)),
+                    );
+                }}
+              />
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={imageBusy}
+                onClick={() => fileInputRef.current?.click()}
+              >
+                {t("workspace:projectImage_choose")}
+              </Button>
+              {iconDataUri ? (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  disabled={imageBusy}
+                  onClick={() => void applyIconSource({ type: "automatic" })}
+                >
+                  {t("workspace:projectImage_useAutomatic")}
+                </Button>
+              ) : null}
+            </div>
+            <div className="flex items-center gap-2">
+              <Input
+                type="url"
+                value={imageUrl}
+                onChange={(event) => setImageUrl(event.target.value)}
+                placeholder={t("workspace:projectImage_url")}
+                aria-label={t("workspace:projectImage_url")}
+                className="min-w-0 flex-1"
+              />
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={imageBusy || imageUrl.trim().length === 0}
+                onClick={() => {
+                  void importProjectIconFromUrl(imageUrl)
+                    .then((data) => {
+                      setImageUrl("");
+                      return applyIconSource({ type: "upload", data });
+                    })
+                    .catch((error: unknown) =>
+                      setImageError(error instanceof Error ? error.message : String(error)),
+                    );
+                }}
+              >
+                {t("workspace:projectImage_import")}
+              </Button>
+            </div>
+            {imageError ? (
+              <p role="alert" className="text-ui-xs text-destructive">
+                {imageError}
+              </p>
+            ) : null}
+          </div>
+        ) : null}
       </DialogPanel>
       <DialogFooter>
         <Button variant="outline" size="sm" onClick={() => onOpenChange(false)}>

@@ -44,6 +44,8 @@ export const gitQueryKeys = {
   branches: (cwd: string | null) => ["git", "branches", cwd] as const,
   recentCommits: (cwd: string | null, limit: number) =>
     ["git", "recent-commits", cwd, limit] as const,
+  commits: (cwd: string | null) => ["git", "commits", cwd] as const,
+  commitDiff: (cwd: string | null, sha: string | null) => ["git", "commit-diff", cwd, sha] as const,
   pullRequest: (cwd: string | null) => ["git", "pull-request", cwd] as const,
   workingTreeDiffs: (cwd: string | null) => ["git", "working-tree-diff", cwd] as const,
   workingTreeDiff: (
@@ -210,6 +212,11 @@ async function refreshGitAvailability(
       queryKey: ["git", "recent-commits", cwd] as const,
       refetchType: "none",
     }),
+    queryClient.invalidateQueries({
+      queryKey: gitQueryKeys.commits(cwd),
+      exact: true,
+      refetchType: "none",
+    }),
   ]);
   await Promise.all([
     includeRemote
@@ -220,6 +227,10 @@ async function refreshGitAvailability(
     ...queryClient
       .getQueryCache()
       .findAll({ queryKey: ["git", "recent-commits", cwd] as const, type: "active" })
+      .map((query) => refetchFreshGitQueries(queryClient, query.queryKey)),
+    ...queryClient
+      .getQueryCache()
+      .findAll({ queryKey: gitQueryKeys.commits(cwd), type: "active" })
       .map((query) => refetchFreshGitQueries(queryClient, query.queryKey)),
   ]);
 }
@@ -542,6 +553,42 @@ export function gitRecentCommitsQueryOptions(input: {
     staleTime: GIT_BRANCHES_STALE_TIME_MS,
     refetchOnWindowFocus: true,
     refetchOnReconnect: true,
+  });
+}
+
+/** Commit history with each commit's file stats, for the diff panel's commit picker. */
+export function gitCommitsQueryOptions(input: { cwd: string | null; enabled?: boolean }) {
+  return queryOptions({
+    queryKey: gitQueryKeys.commits(input.cwd),
+    queryFn: async () => {
+      const api = ensureNativeApi();
+      if (!input.cwd) throw new Error("Git commits are unavailable.");
+      return api.git.listCommits({ cwd: input.cwd });
+    },
+    enabled: (input.enabled ?? true) && input.cwd !== null,
+    staleTime: GIT_BRANCHES_STALE_TIME_MS,
+    refetchOnWindowFocus: true,
+    refetchOnReconnect: true,
+  });
+}
+
+/** A single commit's unified patch. Commits are immutable, so the response never goes stale. */
+export function gitCommitDiffQueryOptions(input: {
+  cwd: string | null;
+  sha: string | null;
+  enabled?: boolean;
+}) {
+  return queryOptions({
+    queryKey: gitQueryKeys.commitDiff(input.cwd, input.sha),
+    queryFn: async () => {
+      const api = ensureNativeApi();
+      if (!input.cwd || !input.sha) throw new Error("Commit diff is unavailable.");
+      return api.git.commitDiff({ cwd: input.cwd, sha: input.sha });
+    },
+    enabled: (input.enabled ?? true) && input.cwd !== null && input.sha !== null,
+    staleTime: Number.POSITIVE_INFINITY,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
   });
 }
 

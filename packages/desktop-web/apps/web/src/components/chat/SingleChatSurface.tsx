@@ -162,6 +162,11 @@ const DockFilePane = lazy(() =>
     default: module.DockFilePane,
   })),
 );
+const DockSetupPane = lazy(() =>
+  import("./DockSetupPane").then((module) => ({
+    default: module.DockSetupPane,
+  })),
+);
 
 const DIFF_INLINE_DEFAULT_WIDTH = "max(28rem, calc(50vw - 8rem))";
 const SINGLE_PANEL_MIN_WIDTH = 26 * 16;
@@ -256,12 +261,25 @@ export function SingleChatSurface(props: {
     isGitRepo: hasGitRepository,
   });
   const hasDeviceSupport = useDeviceSupport();
+  const neolixWorkspaceId = useStore(
+    (store) => store.threadShellById?.[props.threadId]?.neolixWorkspaceId ?? null,
+  );
+  const hasNeolixWorkspace = Boolean(neolixWorkspaceId);
+  // A draft chat has no daemon workspace until its first message creates the agent.
+  // Terminal opens fail before then because the daemon cannot bind a terminal to a
+  // cwd it has never opened; disable the entry and say why instead.
+  const terminalNeedsWorkspace = isDraftThread && !hasNeolixWorkspace;
+  const terminalNeedsWorkspaceReason = terminalNeedsWorkspace
+    ? t("chat:workspaceNeedsFirstMessage")
+    : undefined;
   const dockLauncherItems = resolveRightDockLauncherItems(
     {
       hasWorkspace: workspaceRoot !== null,
       hasGitRepository,
       hasReview: dockDiffTotals.fileCount > 0,
       hasDeviceSupport,
+      hasWorkspaceSetup: hasNeolixWorkspace,
+      hasTerminalWorkspace: !terminalNeedsWorkspace,
     },
     t,
   );
@@ -938,6 +956,7 @@ export function SingleChatSurface(props: {
   });
 
   const handleAddDockPane = (kind: RightDockPaneKind) => {
+    if (kind === "terminal" && terminalNeedsWorkspace) return;
     if (kind === "sidechat") {
       void createDockSidechat();
       return;
@@ -947,6 +966,7 @@ export function SingleChatSurface(props: {
   };
 
   const handleAddTerminalProfile = (profile: TerminalProfileWire) => {
+    if (terminalNeedsWorkspace) return;
     requestImmediateDockHydration("terminal");
     openPane(props.threadId, {
       kind: "terminal",
@@ -959,6 +979,8 @@ export function SingleChatSurface(props: {
       key: `terminal-profile:${profile.id}`,
       label: profile.name,
       icon: <TerminalIcon className="size-3.5 shrink-0" />,
+      disabled: terminalNeedsWorkspace,
+      disabledReason: terminalNeedsWorkspace ? terminalNeedsWorkspaceReason : undefined,
       onSelect: () => handleAddTerminalProfile(profile),
     })),
     {
@@ -1187,6 +1209,12 @@ export function SingleChatSurface(props: {
         );
       case "subagents":
         return <SubagentsDockPane hostThreadId={props.threadId} />;
+      case "setup":
+        return (
+          <Suspense fallback={<PanelStateMessage>{t("workspace:setupWaiting")}</PanelStateMessage>}>
+            <DockSetupPane workspaceId={neolixWorkspaceId ?? null} />
+          </Suspense>
+        );
       case "pluginPanel":
         return (
           <PluginDockPane
@@ -1414,6 +1442,9 @@ export function SingleChatSurface(props: {
           widthStorageKey={`chat_right_dock_width:${props.threadId}`}
           shouldAcceptWidth={shouldAcceptDockWidth}
           addMenuKinds={availableDockPaneKinds}
+          {...(terminalNeedsWorkspaceReason
+            ? { addMenuDisabledReasons: { terminal: terminalNeedsWorkspaceReason } }
+            : {})}
           addMenuItems={dockAddMenuItems}
           launcherItems={dockLauncherItems}
           launcherExtraItems={pluginPanelAddMenuItems}

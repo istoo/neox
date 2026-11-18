@@ -21,6 +21,7 @@ import {
   type IrToolChoice,
   type IrUsage,
 } from "./ir.js";
+import { GeminiGrounding } from "./search-events.js";
 import { SseParser, type SseEvent } from "./sse.js";
 
 const DEFAULT_MAX_TOKENS = 4096;
@@ -340,12 +341,26 @@ function buildGeminiResponseBody(
   response: IrResponse,
   requestedModel: string,
 ): Record<string, unknown> {
+  // A reply that cited pages says so as Gemini does: groundingMetadata with
+  // the queries it ran and the span of text that cited each page.
+  const grounding = new GeminiGrounding();
+  let citedOffset = 0;
+  for (const part of response.parts) {
+    if (part.type === "search") {
+      grounding.search(part.query);
+    } else if (part.type === "text") {
+      grounding.cite(part.text, part.citations ?? [], citedOffset);
+      citedOffset += [...part.text].length;
+    }
+  }
+  const metadata = grounding.metadata();
   return {
     candidates: [
       {
         content: { role: "model", parts: response.parts.flatMap((part) => buildGeminiPart(part)) },
         finishReason: response.stopReason === "max_tokens" ? "MAX_TOKENS" : "STOP",
         index: 0,
+        ...(metadata === null ? {} : { groundingMetadata: metadata }),
       },
     ],
     usageMetadata: {
@@ -433,6 +448,9 @@ class GeminiStreamEncoder implements StreamEncoder {
   private usage: IrUsage = { inputTokens: 0, outputTokens: 0 };
   private readonly toolIds = new Map<string, string>();
   private finished = false;
+  /** The grounding the streamed text earns, told in the closing frame. */
+  private readonly grounding = new GeminiGrounding();
+  private textLength = 0;
 
   constructor(requestedModel: string) {
     this.requestedModel = requestedModel;
@@ -448,8 +466,17 @@ class GeminiStreamEncoder implements StreamEncoder {
 
   public push(event: IrEvent): string {
     switch (event.type) {
-      case "text_delta":
-        return event.text.length === 0 ? "" : this.chunk([{ text: event.text }]);
+      case "text_delta": {
+        if (event.text.length === 0) {
+          return "";
+        }
+        this.grounding.cite(event.text, event.citations ?? [], this.textLength);
+        this.textLength += [...event.text].length;
+        return this.chunk([{ text: event.text }]);
+      }
+      case "search":
+        this.grounding.search(event.query);
+        return "";
       case "tool_call_start": {
         this.toolIds.set(event.id, event.name);
         return "";
@@ -471,7 +498,6 @@ class GeminiStreamEncoder implements StreamEncoder {
       case "thinking_delta":
       case "signature_delta":
       case "redacted_thinking":
-      case "search":
       case "reasoning_item":
       case "start":
         return "";
@@ -496,8 +522,16 @@ class GeminiStreamEncoder implements StreamEncoder {
       return "";
     }
     this.finished = true;
+    const metadata = this.grounding.metadata();
     const payload = {
-      candidates: [{ content: { role: "model", parts: [] }, finishReason: "STOP", index: 0 }],
+      candidates: [
+        {
+          content: { role: "model", parts: [] },
+          finishReason: "STOP",
+          index: 0,
+          ...(metadata === null ? {} : { groundingMetadata: metadata }),
+        },
+      ],
       modelVersion: this.requestedModel,
       responseId: this.responseId,
       usageMetadata: {

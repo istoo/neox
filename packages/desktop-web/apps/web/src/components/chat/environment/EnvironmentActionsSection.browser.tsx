@@ -16,7 +16,7 @@ import { EnvironmentActionsSection } from "./EnvironmentActionsSection";
 
 const EMPTY_KEYBINDINGS: ResolvedKeybindingsConfig = [];
 
-async function mountActionsSection(scripts: ProjectScript[] = []) {
+async function mountActionsSection(scripts: ProjectScript[] = [], runDisabledReason?: string) {
   const onRunScript = vi.fn();
   const onAddScript = vi.fn<(input: NewProjectScriptInput) => void>();
   const onUpdateScript = vi.fn<(scriptId: string, input: NewProjectScriptInput) => void>();
@@ -28,6 +28,7 @@ async function mountActionsSection(scripts: ProjectScript[] = []) {
       scripts={scripts}
       keybindings={EMPTY_KEYBINDINGS}
       onRunScript={onRunScript}
+      runDisabledReason={runDisabledReason}
       onAddScript={onAddScript}
       onUpdateScript={onUpdateScript}
       onDeleteScript={onDeleteScript}
@@ -93,6 +94,29 @@ describe("EnvironmentActionsSection", () => {
     }
   });
 
+  it("disables an action while the chat has no workspace", async () => {
+    const script: ProjectScript = {
+      id: "web",
+      name: "web",
+      command: "pnpm run web",
+      icon: "play",
+      runOnWorktreeCreate: false,
+      type: "service",
+    };
+    const reason = "Send a message first to create this chat's workspace.";
+    const section = await mountActionsSection([script], reason);
+    try {
+      await page.getByRole("button", { name: "Actions", exact: true }).click();
+      const run = page.getByRole("button", { name: "Run web" });
+      await expect.element(run).toBeDisabled();
+      await expect.element(run).toHaveAttribute("title", reason);
+      await run.click({ force: true });
+      expect(section.onRunScript).not.toHaveBeenCalled();
+    } finally {
+      await section.cleanup();
+    }
+  });
+
   it("creates an action through the shared dialog", async () => {
     const section = await mountActionsSection();
     try {
@@ -100,8 +124,8 @@ describe("EnvironmentActionsSection", () => {
       await page.getByRole("button", { name: "Add action" }).click();
       await expect.poll(() => document.body.textContent).toContain("Add Action");
 
-      await page.getByLabelText("Name").fill("Deploy");
-      await page.getByLabelText("Command").fill("bun run deploy");
+      await page.getByRole("textbox", { name: "Name", exact: true }).fill("Deploy");
+      await page.getByRole("textbox", { name: "Command", exact: true }).fill("bun run deploy");
       await page.getByRole("button", { name: "Save action" }).click();
 
       expect(section.onAddScript).toHaveBeenCalledWith({
@@ -109,6 +133,8 @@ describe("EnvironmentActionsSection", () => {
         command: "bun run deploy",
         icon: "play",
         runOnWorktreeCreate: false,
+        runAsService: false,
+        port: "",
         keybinding: null,
       });
     } finally {

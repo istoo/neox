@@ -348,41 +348,7 @@ const PROVIDER_CLIENT_FACTORIES: Record<string, ProviderClientFactory> = {
 
 The factory is invoked with `(logger, runtimeSettings, options)`; `options.workspaceGitService` is also available if you need it (see the `codex` factory for an example). The registry already passes the per-provider runtime settings slice through, so you don't index into the map yourself.
 
-### 4. Add a provider icon (app)
-
-Create `packages/app/src/components/icons/my-provider-icon.tsx` following the pattern from existing icons (e.g., `claude-icon.tsx`):
-
-```tsx
-import Svg, { Path } from "react-native-svg";
-
-interface MyProviderIconProps {
-  size?: number;
-  color?: string;
-}
-
-export function MyProviderIcon({ size = 16, color = "currentColor" }: MyProviderIconProps) {
-  return (
-    <Svg width={size} height={size} viewBox="0 0 24 24" fill={color}>
-      <Path d="..." />
-    </Svg>
-  );
-}
-```
-
-Then register it in `packages/app/src/components/provider-icons.ts` by adding an entry to the existing `PROVIDER_ICONS` map (which already covers the built-in providers):
-
-```ts
-import { MyProviderIcon } from "@/components/icons/my-provider-icon";
-
-const PROVIDER_ICONS: Record<string, typeof Bot> = {
-  // ... existing entries ...
-  "my-provider": MyProviderIcon as unknown as typeof Bot,
-};
-```
-
-If no icon is registered, `getProviderIcon()` falls back to a generic `Bot` icon from lucide.
-
-### 5. Add E2E test config
+### 4. Add E2E test config
 
 In `packages/server/src/server/daemon-e2e/agent-configs.ts`, add your provider:
 
@@ -423,7 +389,7 @@ export const allProviders: AgentProvider[] = [
 ];
 ```
 
-### 6. Run typecheck
+### 5. Run typecheck
 
 ```bash
 npm run typecheck

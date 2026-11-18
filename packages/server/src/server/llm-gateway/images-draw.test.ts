@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingHttpHeaders, type Server } from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -11,6 +11,11 @@ import { drawImageFor, imageMechanismOf, type ImageDrawTiming } from "./images-d
 import { Masker } from "./masking.js";
 import { createGatewayRouter } from "./routes.js";
 import { createGatewayRuntime } from "./runtime.js";
+import {
+  saveSubscriptionAccounts,
+  subscriptionAccountsFile,
+  type GoogleSubscriptionAccount,
+} from "./subscription-store.js";
 import { UsageLedger } from "./usage.js";
 
 const logger = pino({ level: "silent" });
@@ -109,6 +114,7 @@ async function draw(input: {
   account?: GatewayAccount;
   model?: string;
   body: Record<string, unknown>;
+  gatewayDir?: string;
 }): Promise<{ status: number; json: Record<string, unknown> }> {
   const response = await drawImageFor({
     provider: input.provider,
@@ -116,6 +122,7 @@ async function draw(input: {
     model: input.model ?? String(input.body.model),
     body: input.body,
     timing: fast,
+    ...(input.gatewayDir === undefined ? {} : { gatewayDir: input.gatewayDir }),
   });
   if (response === null) {
     throw new Error("no adapter took the provider");
@@ -200,6 +207,26 @@ describe("imageMechanismOf", () => {
       expect(imageMechanismOf(who, model)).toBe(want);
     });
   }
+  it("tells a Google sign-in's Code Assist from Gemini's own API", () => {
+    const code = provider({
+      id: "google",
+      protocol: "gemini",
+      baseUrl: "https://cloudcode-pa.googleapis.com",
+    });
+    expect(imageMechanismOf(code, "gemini-3-pro-image", { id: "g1", agent: "gemini" })).toBe(
+      "codeassist",
+    );
+    expect(imageMechanismOf(code, "gemini-3-pro-image", { id: "a1", agent: "antigravity" })).toBe(
+      "codeassist",
+    );
+    expect(imageMechanismOf(code, "gemini-3-pro-image")).toBe(null);
+    const api = provider({
+      id: "google",
+      protocol: "gemini",
+      baseUrl: "https://generativelanguage.googleapis.com/v1beta",
+    });
+    expect(imageMechanismOf(api, "gemini-3-pro-image", { id: "k", apiKey: "key" })).toBe("gemini");
+  });
   it("leaves a provider no adapter serves alone", async () => {
     const response = await drawImageFor({
       provider: provider({ id: "openai", baseUrl: "https://api.openai.com/v1" }),
@@ -662,6 +689,195 @@ describe("OpenRouter, Grok, Copilot, Gemini and chat", () => {
     const data = answer.json.data;
     const second = Array.isArray(data) ? data[1] : undefined;
     expect(isRecord(second) ? second.b64_json : "").toBe(Buffer.from("chat").toString("base64"));
+  });
+});
+
+describe("Code Assist", () => {
+  const dirs: string[] = [];
+
+  afterEach(() => {
+    for (const dir of dirs.splice(0)) {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  async function googleSignIn(
+    agent: "gemini" | "antigravity",
+    project: string | null,
+  ): Promise<string> {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "neolix-codeassist-"));
+    dirs.push(dir);
+    const signIn: GoogleSubscriptionAccount = {
+      agent,
+      id: `${agent}:1`,
+      user: "me@example.test",
+      plan: "Google AI Pro",
+      addedAt: 1,
+      lapsed: null,
+      accessToken: "google-access",
+      refreshToken: "google-refresh",
+      expiresAt: Date.now() + 3_600_000,
+      project,
+    };
+    await saveSubscriptionAccounts(subscriptionAccountsFile(dir, agent), [signIn]);
+    return dir;
+  }
+
+  function codeAssistProvider(url: string): GatewayProvider {
+    return provider({ id: "google", protocol: "gemini", baseUrl: url });
+  }
+
+  const image = (text: string): Record<string, unknown> => ({
+    inlineData: { mimeType: "image/png", data: Buffer.from(text).toString("base64") },
+  });
+
+  it("draws on Code Assist in the account's envelope, images beside text", async () => {
+    const vendor = await startVendor(() => ({
+      body: {
+        response: {
+          candidates: [
+            {
+              content: {
+                parts: [image("png"), { thought: true, text: "thinking" }, { text: "here" }],
+              },
+            },
+          ],
+          usageMetadata: { promptTokenCount: 3, candidatesTokenCount: 4 },
+        },
+      },
+    }));
+    const dir = await googleSignIn("gemini", "proj-1");
+    const reference = Buffer.from("reference").toString("base64");
+    const answer = await draw({
+      provider: codeAssistProvider(vendor.url),
+      account: { id: "g1", agent: "gemini" },
+      gatewayDir: dir,
+      body: {
+        model: "gemini-3-pro-image",
+        prompt: "a cat",
+        size: "1024x1024",
+        image: `data:image/png;base64,${reference}`,
+      },
+    });
+    expect(answer.status).toBe(200);
+    expect(vendor.requests[0]?.url).toBe("/v1internal:generateContent");
+    expect(vendor.requests[0]?.headers.authorization).toBe("Bearer google-access");
+    expect(String(vendor.requests[0]?.headers["user-agent"])).toMatch(/^GeminiCLI\//);
+    expect(vendor.requests[0]?.body).toMatchObject({
+      model: "gemini-3-pro-image",
+      project: "proj-1",
+      request: {
+        contents: [
+          {
+            role: "user",
+            parts: [
+              { text: "a cat\n\nAspect ratio: 1:1." },
+              { inlineData: { mimeType: "image/png", data: reference } },
+            ],
+          },
+        ],
+        generationConfig: { responseModalities: ["TEXT", "IMAGE"] },
+      },
+    });
+    expect(vendor.requests[0]?.body.user_prompt_id).toMatch(/^[A-Za-z0-9_-]{16}$/);
+    expect(vendor.requests[0]?.body.requestType).toBeUndefined();
+    const first = Array.isArray(answer.json.data) ? answer.json.data[0] : undefined;
+    expect(isRecord(first) ? first.b64_json : "").toBe(Buffer.from("png").toString("base64"));
+    expect(answer.json.text).toBe("here");
+  });
+
+  it("says it is Antigravity to an Antigravity account", async () => {
+    const vendor = await startVendor(() => ({
+      body: { response: { candidates: [{ content: { parts: [image("ag")] } }] } },
+    }));
+    const dir = await googleSignIn("antigravity", "ag-proj");
+    const answer = await draw({
+      provider: codeAssistProvider(vendor.url),
+      account: { id: "a1", agent: "antigravity" },
+      gatewayDir: dir,
+      body: { model: "gemini-3-pro-image", prompt: "a cat" },
+    });
+    expect(answer.status).toBe(200);
+    expect(String(vendor.requests[0]?.headers["user-agent"])).toMatch(/^antigravity\/hub\//);
+    expect(vendor.requests[0]?.body).toMatchObject({
+      project: "ag-proj",
+      userAgent: "antigravity",
+      requestType: "agent",
+    });
+    expect(vendor.requests[0]?.body.requestId).toMatch(/^agent-[A-Za-z0-9_-]{16}$/);
+    const request = vendor.requests[0]?.body.request as Record<string, unknown> | undefined;
+    expect(request?.sessionId).toMatch(/^-\d+$/);
+  });
+
+  it("asks once for each image and reads every candidate", async () => {
+    const vendor = await startVendor(() => ({
+      body: { response: { candidates: [{ content: { parts: [image("one")] } }] } },
+    }));
+    const dir = await googleSignIn("gemini", "proj-1");
+    const answer = await draw({
+      provider: codeAssistProvider(vendor.url),
+      account: { id: "g1", agent: "gemini" },
+      gatewayDir: dir,
+      body: { model: "gemini-3-pro-image", prompt: "a cat", n: 2 },
+    });
+    expect(answer.status).toBe(200);
+    expect(vendor.requests).toHaveLength(2);
+    const data = Array.isArray(answer.json.data) ? answer.json.data : [];
+    expect(data).toHaveLength(2);
+  });
+
+  it("reads Code Assist's own refusal for a status", async () => {
+    const vendor = await startVendor(() => ({
+      body: { error: { message: "Quota exceeded for quota metric" } },
+    }));
+    const dir = await googleSignIn("gemini", "proj-1");
+    const answer = await draw({
+      provider: codeAssistProvider(vendor.url),
+      account: { id: "g1", agent: "gemini" },
+      gatewayDir: dir,
+      body: { model: "gemini-3-pro-image", prompt: "a cat" },
+    });
+    expect(answer.status).toBe(429);
+  });
+
+  it("reads a refusal Code Assist wrapped in the envelope", async () => {
+    const vendor = await startVendor(() => ({
+      body: { response: { error: { message: "RESOURCE_EXHAUSTED: quota used up" } } },
+    }));
+    const dir = await googleSignIn("gemini", "proj-1");
+    const answer = await draw({
+      provider: codeAssistProvider(vendor.url),
+      account: { id: "g1", agent: "gemini" },
+      gatewayDir: dir,
+      body: { model: "gemini-3-pro-image", prompt: "a cat" },
+    });
+    expect(answer.status).toBe(429);
+  });
+
+  it("passes on an HTTP refusal as it came", async () => {
+    const vendor = await startVendor(() => ({
+      status: 403,
+      body: { error: { message: "The caller does not have permission" } },
+    }));
+    const dir = await googleSignIn("gemini", "proj-1");
+    const answer = await draw({
+      provider: codeAssistProvider(vendor.url),
+      account: { id: "g1", agent: "gemini" },
+      gatewayDir: dir,
+      body: { model: "gemini-3-pro-image", prompt: "a cat" },
+    });
+    expect(answer.status).toBe(403);
+  });
+
+  it("leaves the drawing alone until it is told where the sign-ins are", async () => {
+    const response = await drawImageFor({
+      provider: codeAssistProvider("https://cloudcode-pa.googleapis.com"),
+      account: { id: "g1", agent: "gemini" },
+      model: "gemini-3-pro-image",
+      body: { model: "gemini-3-pro-image", prompt: "a cat" },
+      timing: fast,
+    });
+    expect(response).toBeNull();
   });
 });
 

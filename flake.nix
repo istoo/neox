@@ -25,7 +25,11 @@
         system:
         let
           pkgs = pkgsFor system;
-          neolix = pkgs.callPackage ./nix/package.nix { };
+          bun = pkgs.callPackage ./nix/bun-bin.nix { };
+          desktopWebDeps = pkgs.callPackage ./nix/desktop-web-deps.nix { inherit bun; };
+          neolix = pkgs.callPackage ./nix/package.nix {
+            inherit bun desktopWebDeps;
+          };
           versionParts = pkgs.lib.splitString "." neolix.version;
           sourceRevision = if self ? revCount && self.revCount != null then self.revCount else 0;
           buildRevision = sourceRevision - (sourceRevision / 10000) * 10000;
@@ -38,8 +42,11 @@
         {
           default = neolix;
           neolix = neolix;
+          # Exposed so scripts/update-nix.sh can force a rebuild after a lockfile
+          # change and read the new hash from the mismatch error.
+          desktop-web-deps = desktopWebDeps;
           desktop = pkgs.callPackage ./nix/desktop-package.nix {
-            inherit neolix;
+            inherit neolix bun desktopWebDeps;
             buildVersion = desktopBuildVersion;
           };
         }

@@ -1,7 +1,7 @@
 import { Command } from "commander";
 import { join } from "node:path";
 import type { Logger } from "pino";
-import { runCodexRelay } from "@neolix/server";
+import { runCodexRelay } from "@neolix/server/codex-relay";
 import { resolveNeolixHome } from "@neolix/server/daemon-control";
 import { accountDiscoveryOn, GatewayConfigStore } from "@neolix/server/gateway-config";
 

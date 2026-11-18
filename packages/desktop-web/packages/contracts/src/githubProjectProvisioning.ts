@@ -70,3 +70,36 @@ export const GitHubProjectProvisionProgressEvent = Schema.Union([
   }),
 ]);
 export type GitHubProjectProvisionProgressEvent = typeof GitHubProjectProvisionProgressEvent.Type;
+
+/**
+ * `projects.searchGitHubRepositories`: the daemon's `gh`-backed repository search, used to
+ * suggest repositories while adding a GitHub project instead of requiring `owner/repo`.
+ */
+export const GitHubRepositorySummary = Schema.Struct({
+  id: TrimmedNonEmptyString,
+  name: TrimmedNonEmptyString,
+  nameWithOwner: TrimmedNonEmptyString,
+  description: Schema.NullOr(Schema.String),
+  visibility: Schema.Literals(["public", "private", "internal"]),
+  updatedAt: Schema.String,
+  cloneUrl: TrimmedNonEmptyString,
+});
+export type GitHubRepositorySummary = typeof GitHubRepositorySummary.Type;
+
+export const GitHubRepositorySearchInput = Schema.Struct({
+  query: Schema.String,
+  limit: Schema.optional(
+    Schema.Number.check(Schema.isInt()).check(Schema.isBetween({ minimum: 1, maximum: 50 })),
+  ),
+});
+export type GitHubRepositorySearchInput = typeof GitHubRepositorySearchInput.Type;
+
+export const GitHubRepositorySearchResult = Schema.Struct({
+  status: Schema.Literals(["success", "unavailable", "unauthenticated", "error"]),
+  repositories: Schema.Array(GitHubRepositorySummary),
+  available: Schema.Boolean,
+  error: Schema.NullOr(Schema.String),
+  /** `gh_missing` when the daemon reports the `unavailable` status. */
+  reason: Schema.optional(Schema.NullOr(Schema.String)),
+});
+export type GitHubRepositorySearchResult = typeof GitHubRepositorySearchResult.Type;

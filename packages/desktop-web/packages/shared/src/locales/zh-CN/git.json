@@ -338,6 +338,14 @@
   "checksBriefPending": "{{value0}} 个待处理",
   "checksBriefSuccessful": "{{value0}} 个成功",
   "checksBriefSkipped": "{{value0}} 个已跳过",
+  "pipeline": "流水线",
+  "pipelineNumber": "流水线 #{{value0}}",
+  "pipelineOpen": "打开流水线",
+  "pipelineLoadingJobs": "正在加载流水线任务…",
+  "pipelineNoJobs": "该流水线没有任务。",
+  "pipelineJobsLoadFailed": "无法加载流水线任务。",
+  "pipelineAllowedToFail": "允许失败",
+  "pipelineOpenJobLogs": "打开任务日志",
   "closed": "已关闭",
   "needsMyReview": "需要我审查",
   "everythingElse": "其他所有",
@@ -489,5 +497,12 @@
   "diffUnavailable": "当前没有可用的仓库差异。",
   "diffCollapsedLines_one": "{{count}} 行未修改",
   "diffCollapsedLines_other": "{{count}} 行未修改",
-  "diffMoreContext": "可能还有更多未修改的上下文"
+  "diffMoreContext": "可能还有更多未修改的上下文",
+  "autoMergeEnable": "启用自动合并（{{value0}}）",
+  "autoMergeDisable": "禁用自动合并",
+  "autoMergeEnabled": "已启用自动合并",
+  "prApprovals": "{{given}} / {{required}} 批准",
+  "autoMergeDisabled": "已禁用自动合并",
+  "searchingGitHubRepositories": "正在搜索 GitHub 仓库…",
+  "githubRepositorySearchUnavailable": "GitHub 仓库搜索不可用。"
 }

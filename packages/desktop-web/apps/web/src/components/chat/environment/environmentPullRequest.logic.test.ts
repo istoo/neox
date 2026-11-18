@@ -22,6 +22,7 @@ import {
   buildResolveConflictsPrompt,
   describePullRequestComment,
   FIX_PROMPT_MAX_COMMENTS,
+  formatPullRequestCheckDuration,
   summarizePullRequestRepairs,
   type PullRequestCardSource,
   summarizePullRequestChecks,
@@ -686,5 +687,19 @@ describe("GitHub item cards (Send to agent / Ask)", () => {
     );
     expect(prCard).not.toHaveProperty("itemKind");
     expect(prCard.subtitle).toBe("Pull request in o/r");
+  });
+});
+
+describe("formatPullRequestCheckDuration", () => {
+  it("labels a running check's elapsed time instead of showing a finished duration", () => {
+    expect(formatPullRequestCheckDuration({ status: "pending", duration: "7m" })).toBe(
+      "running 7m",
+    );
+    expect(formatPullRequestCheckDuration({ status: "success", duration: "1m 4s" })).toBe("1m 4s");
+  });
+
+  it("returns null when the forge reported no duration", () => {
+    expect(formatPullRequestCheckDuration({ status: "success" })).toBeNull();
+    expect(formatPullRequestCheckDuration({ status: "pending", duration: "  " })).toBeNull();
   });
 });

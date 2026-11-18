@@ -27,9 +27,9 @@ export function BrowserDataSettingsSection() {
     setClearing(true);
     try {
       // The forked renderer keeps every browser in the one shared profile, so []
-      // is all it has to name. debt: leftover `persist:neolix-browser-<id>`
-      // partitions from the retired native app are only cleared when main can
-      // enumerate them; the preload takes that list but nothing produces it.
+      // is all it has to name. The main process also enumerates leftover
+      // `persist:neolix-browser-<id>` partitions from the retired native app and
+      // clears those in the same pass.
       await clearProfile([]);
       toastManager.add({ type: "success", title: t("settings:browserDataCleared") });
     } catch (error) {

@@ -222,5 +222,8 @@ assert.deepEqual(build("mcp__neox__send_agent_prompt", { prompt: "Hello", agentI
     } finally {
       rmSync(fixture, { recursive: true, force: true });
     }
-  }, 30_000);
+    // Compiles the package with tsc and then a consumer. A cold tsc build of
+    // every generated validator takes about 33s on a shared CI runner, so the
+    // old 30s budget raced the build rather than a hang.
+  }, 120_000);
 });

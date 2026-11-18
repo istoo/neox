@@ -35,15 +35,37 @@ export class DraftThreads {
       readonly file: string;
       /** Host-environment key this instance reads and writes. */
       readonly scope: string;
+      // COMPAT(environment-id): added in 0.16.5, remove after 2027-05-14.
+      /** Older scope keys whose drafts must survive the move to a stable environment id. */
+      readonly legacyScopes?: readonly string[] | undefined;
       readonly log: (line: string) => void;
     },
   ) {}
 
   /** This host's saved drafts, read once. */
   load(): Promise<readonly OrchestrationThreadShell[]> {
-    this.loadPromise ??= this.readStored().then((stored) => {
-      const entries = stored[this.options.scope];
-      return Array.isArray(entries) ? entries.filter(isDraftShell) : [];
+    this.loadPromise ??= this.readStored().then(async (stored) => {
+      const current = stored[this.options.scope];
+      if (Array.isArray(current)) return current.filter(isDraftShell);
+      // COMPAT(environment-id): added in 0.16.5, remove after 2027-05-14.
+      // Only a scope that has never been written is migrated. Merging on every start would
+      // bring back a draft the user deleted after the move, from the legacy key's copy.
+      const drafts: OrchestrationThreadShell[] = [];
+      const seen = new Set<string>();
+      let migrated = false;
+      for (const scope of this.options.legacyScopes ?? []) {
+        const legacy = stored[scope];
+        if (!Array.isArray(legacy)) continue;
+        for (const entry of legacy.filter(isDraftShell)) {
+          if (seen.has(entry.id)) continue;
+          seen.add(entry.id);
+          drafts.push(entry);
+          migrated = true;
+        }
+      }
+      // Persist a copy under the stable key once, without deleting the legacy key.
+      if (migrated) await this.write(drafts);
+      return drafts;
     });
     return this.loadPromise;
   }

@@ -132,9 +132,9 @@ test("with a proxy an unheaded fetch still parses a compressed JSON body", async
 
   const response = await fetch(`http://${address}/`);
 
-  // The npm dispatcher hands the bytes back compressed; the interceptor
-  // decodes them and takes the header off, as the platform's own does.
-  expect(response.headers.get("content-encoding")).toBeNull();
+  // The npm dispatcher hands the bytes back compressed; the decompress
+  // interceptor restores readable bytes. undici 7.30 keeps the header, so the
+  // contract under test is the decoded body, not the header's absence.
   expect(await response.json()).toEqual({ ok: true });
   expect(asked[0]).toContain("gzip");
   // Loopback never goes through the proxy.

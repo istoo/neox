@@ -20,12 +20,6 @@ export NEOLIX_ELECTRON_USER_DATA_DIR="$(node -e 'process.stdout.write(JSON.parse
 unset NEOLIX_DEV_RUNTIME_FALLBACK_ROOT
 mkdir -p "$NEOLIX_ELECTRON_USER_DATA_DIR"
 
-if [ -z "${EXPO_PORT:-}" ]; then
-  EXPO_PORT=$(NO_COLOR=1 FORCE_COLOR=0 "$ROOT_DIR/node_modules/.bin/get-port" 8082 8083 8084 8085 8086 8087 8088 8089)
-fi
-export EXPO_PORT
-export EXPO_DEV_URL="http://localhost:${EXPO_PORT}"
-
 DAEMON_ENDPOINT="$(resolve_dev_daemon_endpoint)"
 export NEOLIX_DAEMON_ENDPOINT="$DAEMON_ENDPOINT"
 
@@ -36,7 +30,7 @@ npm --prefix "$DESKTOP_DIR" run build:main
 echo "══════════════════════════════════════════════════════"
 echo "  Neolix Desktop Dev"
 echo "══════════════════════════════════════════════════════"
-echo "  Metro:      ${EXPO_DEV_URL}"
+echo "  Web UI:     ${NEOLIX_DESKTOP_WEB_URL:-daemon ${NEOLIX_LISTEN}}"
 echo "  Daemon:     ${NEOLIX_LISTEN}"
 echo "  Home:       ${NEOLIX_HOME}"
 echo "  userData:   ${NEOLIX_ELECTRON_USER_DATA_DIR}"

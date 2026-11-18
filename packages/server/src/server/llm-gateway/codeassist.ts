@@ -1,3 +1,5 @@
+import { createHash, randomBytes } from "node:crypto";
+
 /**
  * Google Code Assist, which serves Gemini CLI's and Antigravity's
  * subscriptions (`internal/gateway/codeassist.go:22-28`). It is not
@@ -29,15 +31,65 @@ export interface CodeAssistEnvelopeInput {
   project?: string | null;
   /** The Gemini request, already shaped as a Gemini API body. */
   request: Record<string, unknown>;
+  /** The app the account is signed in to; the ids it sends along differ. */
+  agent?: CodeAssistAgent;
 }
 
-/** The envelope Code Assist takes (`internal/gateway/codeassist.go:288-...`). */
+/**
+ * The envelope Code Assist takes (`internal/gateway/codeassist.go:288-...`),
+ * finished with the ids its app sends (`internal/provider/google.go:1527-1556`):
+ * Gemini CLI names the prompt with `user_prompt_id`; Antigravity says what
+ * an agent request is, names it with `requestId`, and names the
+ * conversation in the request's `sessionId`.
+ */
 export function codeAssistEnvelope(input: CodeAssistEnvelopeInput): Record<string, unknown> {
   const envelope: Record<string, unknown> = { model: input.model, request: input.request };
   if (input.project !== undefined && input.project !== null && input.project !== "") {
     envelope.project = input.project;
   }
+  if (input.agent === "antigravity") {
+    envelope.userAgent = "antigravity";
+    envelope.requestType = "agent";
+    envelope.requestId = `agent-${randomToken(12)}`;
+    envelope.request = { ...input.request, sessionId: antigravitySession(input.request) };
+  } else if (input.agent === "gemini") {
+    envelope.user_prompt_id = randomToken(12);
+  }
   return envelope;
+}
+
+/** A URL-safe token of `bytes` random bytes, as myna's randomToken makes one. */
+function randomToken(bytes: number): string {
+  return randomBytes(bytes).toString("base64url");
+}
+
+/**
+ * The conversation's name as Antigravity makes it: the hash of its first
+ * user message, so every turn of one conversation keeps the same id, or of
+ * a random token when the conversation has no user text
+ * (`internal/provider/google.go:1558-1588`).
+ */
+function antigravitySession(request: Record<string, unknown>): string {
+  let first = "";
+  const contents = Array.isArray(request.contents) ? request.contents : [];
+  for (const content of contents) {
+    if (!isRecord(content) || content.role !== "user") {
+      continue;
+    }
+    const parts = Array.isArray(content.parts) ? content.parts : [];
+    for (const part of parts) {
+      if (isRecord(part) && typeof part.text === "string" && part.text !== "") {
+        first = part.text;
+        break;
+      }
+    }
+    break;
+  }
+  if (first === "") {
+    first = randomToken(16);
+  }
+  const sum = createHash("sha256").update(first).digest();
+  return `-${(sum.readBigUInt64BE(0) & 0x7fffffffffffffffn).toString()}`;
 }
 
 export type CodeAssistAnswer =

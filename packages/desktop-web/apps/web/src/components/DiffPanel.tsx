@@ -6,10 +6,20 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "@tanstack/react-router";
 import { ThreadId, type ResolvedKeybindingsConfig, type TurnId } from "@synara/contracts";
 import type { FileDiffMetadata } from "@pierre/diffs/react";
-import { Columns2Icon, CopyIcon, EllipsisIcon, FolderIcon, Rows3Icon } from "~/lib/icons";
+import {
+  Columns2Icon,
+  CopyIcon,
+  EllipsisIcon,
+  FolderIcon,
+  GitCommitIcon,
+  Rows3Icon,
+  XIcon,
+} from "~/lib/icons";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   gitBranchesQueryOptions,
+  gitCommitDiffQueryOptions,
+  gitCommitsQueryOptions,
   refreshGitAfterFileWrite,
   gitStatusQueryOptions,
   gitWorkingTreeDiffQueryOptions,
@@ -94,6 +104,7 @@ import {
 } from "./DiffPanel.logic";
 import { resolveDraftFallbackModelSelection } from "./ChatView.logic";
 import { DiffPanelChangeMarkers } from "./DiffPanelChangeMarkers";
+import { DiffPanelCommitsMenuSection } from "./DiffPanelCommitsMenu";
 import {
   DiffPanelChangeNavigationButtons,
   type DiffPanelChangeNavigation,
@@ -155,6 +166,9 @@ function EditorDiffOptionsMenu(props: {
   scopePickerValue: string | null;
   scopeFileCounts: Partial<Record<RepoDiffScope, number>>;
   activeCwd: string | null;
+  activeCommit: { sha: string; shortSha: string; subject: string } | null;
+  onSelectCommit: (sha: string) => void;
+  onClearCommit: () => void;
   compareRef: string | null;
   scopeIsRef: boolean;
   selectedTurnId: TurnId | null;
@@ -213,6 +227,13 @@ function EditorDiffOptionsMenu(props: {
         }
       />
       <ComposerPickerMenuPopup align="end" side="bottom" sideOffset={6} className="w-64 min-w-64">
+        <DiffPanelCommitsMenuSection
+          cwd={props.activeCwd}
+          open={optionsOpen}
+          activeCommitSha={props.activeCommit?.sha ?? null}
+          onSelectCommit={props.onSelectCommit}
+          onClearCommit={props.onClearCommit}
+        />
         <MenuGroup>
           <MenuGroupLabel>{t("common:workspaceFilePreviewHeader_source")}</MenuGroupLabel>
           <MenuRadioGroup
@@ -371,6 +392,9 @@ function EditorDiffControls(props: {
   scopePickerValue: string | null;
   scopeFileCounts: Partial<Record<RepoDiffScope, number>>;
   activeCwd: string | null;
+  activeCommit: { sha: string; shortSha: string; subject: string } | null;
+  onSelectCommit: (sha: string) => void;
+  onClearCommit: () => void;
   compareRef: string | null;
   scopeIsRef: boolean;
   selectedTurnId: TurnId | null;
@@ -408,6 +432,9 @@ function EditorDiffControls(props: {
         scopePickerValue={props.scopePickerValue}
         scopeFileCounts={props.scopeFileCounts}
         activeCwd={props.activeCwd}
+        activeCommit={props.activeCommit}
+        onSelectCommit={props.onSelectCommit}
+        onClearCommit={props.onClearCommit}
         compareRef={props.compareRef}
         scopeIsRef={props.scopeIsRef}
         selectedTurnId={props.selectedTurnId}
@@ -491,6 +518,8 @@ export default function DiffPanel({
   const [diffIgnoreWhitespace, setDiffIgnoreWhitespace] = useState(true);
   const [changeMarkersEnabled, setChangeMarkersEnabled] = useState(true);
   const [scopePickerOpen, setScopePickerOpen] = useState(false);
+  // The commit whose own diff the panel shows; null means the normal working-tree/turn source.
+  const [activeCommitSha, setActiveCommitSha] = useState<string | null>(null);
   const handleScopePickerOpenChange = useCallback((open: boolean) => {
     setScopePickerOpen((previous) => (previous === open ? previous : open));
   }, []);
@@ -788,10 +817,46 @@ export default function DiffPanel({
       cwd: activeCwd ?? null,
       scope: repoDiffScope,
       compareRef: repoDiffCompareRef,
-      enabled: diffQueriesEnabled && !diffEnvironmentPending && diffViewKind === "repo",
-      refetchInterval: repoDiffLiveRefreshIntervalMs,
+      enabled:
+        activeCommitSha === null &&
+        diffQueriesEnabled &&
+        !diffEnvironmentPending &&
+        diffViewKind === "repo",
+      refetchInterval: activeCommitSha === null ? repoDiffLiveRefreshIntervalMs : false,
     }),
   );
+  const commitListQuery = useQuery(
+    gitCommitsQueryOptions({
+      cwd: activeCwd ?? null,
+      enabled: diffQueriesEnabled && activeCommitSha !== null,
+    }),
+  );
+  const activeCommit = useMemo(() => {
+    if (activeCommitSha === null) {
+      return null;
+    }
+    const commit = commitListQuery.data?.commits.find((entry) => entry.sha === activeCommitSha);
+    return commit
+      ? { sha: commit.sha, shortSha: commit.shortSha, subject: commit.subject }
+      : { sha: activeCommitSha, shortSha: activeCommitSha.slice(0, 7), subject: "" };
+  }, [activeCommitSha, commitListQuery.data?.commits]);
+  const commitDiffQuery = useQuery(
+    gitCommitDiffQueryOptions({
+      cwd: activeCommitSha === null ? null : activeCwd,
+      sha: activeCommitSha,
+      enabled: diffQueriesEnabled && !diffEnvironmentPending,
+    }),
+  );
+  const isCommitView = activeCommitSha !== null;
+  const commitPatch = isCommitView ? commitDiffQuery.data?.patch : undefined;
+  const hasResolvedCommitPatch = typeof commitPatch === "string";
+  const hasNoCommitChanges = hasResolvedCommitPatch && commitPatch.trim().length === 0;
+  const commitDiffError =
+    commitDiffQuery.error instanceof Error
+      ? commitDiffQuery.error.message
+      : commitDiffQuery.error
+        ? t("common:diff_commitDiffError")
+        : null;
   const repoPatch = repoDiffQuery.data?.patch;
   const hasResolvedRepoPatch = typeof repoPatch === "string";
   const hasNoRepoChanges = hasResolvedRepoPatch && repoPatch.trim().length === 0;
@@ -805,6 +870,7 @@ export default function DiffPanel({
 
   useEffect(() => {
     if (
+      !isCommitView &&
       diffOpen &&
       diffViewKind === "repo" &&
       repoDiffScope === "workingTree" &&
@@ -819,10 +885,21 @@ export default function DiffPanel({
     diffOpen,
     diffViewKind,
     hasNoRepoChanges,
+    isCommitView,
     hasResolvedRepoPatch,
     repoDiffScope,
     setRepoDiffScope,
   ]);
+
+  // A commit sha belongs to one checkout; switching threads/workspaces must not keep it.
+  const previousCommitCwdRef = useRef(activeCwd);
+  useEffect(() => {
+    if (previousCommitCwdRef.current === activeCwd) {
+      return;
+    }
+    previousCommitCwdRef.current = activeCwd;
+    setActiveCommitSha(null);
+  }, [activeCwd]);
 
   const viewSource = useMemo(
     () =>
@@ -833,17 +910,41 @@ export default function DiffPanel({
       }),
     [diffViewKind, repoDiffScope, selectedTurnId],
   );
-  const activeReviewPatch = diffViewKind === "repo" ? repoPatch : selectedPatch;
-  const activeReviewTruncated = diffViewKind === "repo" && repoDiffQuery.data?.truncated === true;
-  const activeReviewError = diffViewKind === "repo" ? repoDiffError : checkpointDiffError;
-  const activeReviewIsLoading =
-    diffViewKind === "repo" ? repoDiffQuery.isLoading : isLoadingCheckpointDiff;
-  const activeDiffIsFetching =
-    diffViewKind === "repo" ? repoDiffQuery.isFetching : activeCheckpointDiffQuery.isFetching;
+  const activeReviewPatch = isCommitView
+    ? commitPatch
+    : diffViewKind === "repo"
+      ? repoPatch
+      : selectedPatch;
+  const activeReviewTruncated = isCommitView
+    ? commitDiffQuery.data?.truncated === true
+    : diffViewKind === "repo" && repoDiffQuery.data?.truncated === true;
+  const activeReviewError = isCommitView
+    ? commitDiffError
+    : diffViewKind === "repo"
+      ? repoDiffError
+      : checkpointDiffError;
+  const activeReviewIsLoading = isCommitView
+    ? commitDiffQuery.isLoading
+    : diffViewKind === "repo"
+      ? repoDiffQuery.isLoading
+      : isLoadingCheckpointDiff;
+  const activeDiffIsFetching = isCommitView
+    ? commitDiffQuery.isFetching
+    : diffViewKind === "repo"
+      ? repoDiffQuery.isFetching
+      : activeCheckpointDiffQuery.isFetching;
   const handleDiffReload = useCallback(() => {
-    void (diffViewKind === "repo" ? repoDiffQuery.refetch() : activeCheckpointDiffQuery.refetch());
-  }, [activeCheckpointDiffQuery, diffViewKind, repoDiffQuery]);
-  const activeReviewHasNoChanges = diffViewKind === "repo" ? hasNoRepoChanges : hasNoNetChanges;
+    void (isCommitView
+      ? commitDiffQuery.refetch()
+      : diffViewKind === "repo"
+        ? repoDiffQuery.refetch()
+        : activeCheckpointDiffQuery.refetch());
+  }, [activeCheckpointDiffQuery, commitDiffQuery, diffViewKind, isCommitView, repoDiffQuery]);
+  const activeReviewHasNoChanges = isCommitView
+    ? hasNoCommitChanges
+    : diffViewKind === "repo"
+      ? hasNoRepoChanges
+      : hasNoNetChanges;
   const { copyToClipboard: copyDiffToClipboard, isCopied: isDiffCopied } = useCopyToClipboard();
   // The parsed patch is structural and theme-agnostic — theming is applied
   // separately via the themed row key and buildDiffPanelUnsafeCSS (cached per
@@ -868,7 +969,9 @@ export default function DiffPanel({
     return sortFileDiffsByPath(renderablePatch.files);
   }, [renderablePatch]);
   const watchedRepoFilePath =
-    diffViewKind === "repo" ? resolveWatchedDiffFilePath(selectedFilePath, renderableFiles) : null;
+    diffViewKind === "repo" && !isCommitView
+      ? resolveWatchedDiffFilePath(selectedFilePath, renderableFiles)
+      : null;
   const handleWatchedRepoFileChange = useCallback(() => {
     if (!activeCwd) {
       return;
@@ -1105,6 +1208,9 @@ export default function DiffPanel({
   // review mode; branch/ref comparisons map to "base".
   const diffCommentReviewTarget = useMemo<FileCommentReviewTarget | undefined>(() => {
     if (!activeCwd) return undefined;
+    // Commit diffs describe an old tree; a review attachment against the working tree
+    // would cite line numbers that no longer exist.
+    if (isCommitView) return undefined;
     if (diffViewKind !== "repo") {
       return { cwd: activeCwd, mode: "all" };
     }
@@ -1116,7 +1222,7 @@ export default function DiffPanel({
       };
     }
     return { cwd: activeCwd, mode: "uncommitted" };
-  }, [activeCwd, diffViewKind, repoDiffCompareRef, repoDiffScope]);
+  }, [activeCwd, diffViewKind, isCommitView, repoDiffCompareRef, repoDiffScope]);
 
   // Per-file header actions that talk to the active thread's composer draft.
   const diffFileChatActions = useMemo(
@@ -1150,6 +1256,7 @@ export default function DiffPanel({
   // checkpoint snapshots, and index-backed scopes number lines by the index.
   const blameEnabled =
     NEOLIX_GIT_REVISION_READ_ENABLED &&
+    !isCommitView &&
     diffViewKind === "repo" &&
     repoDiffScope !== "staged" &&
     repoDiffScope !== "unstaged";
@@ -1255,6 +1362,7 @@ export default function DiffPanel({
   ]);
   const selectTurn = useCallback(
     (turnId: TurnId | null) => {
+      setActiveCommitSha(null);
       setDiffViewKind("turn");
       setTurnScopeIntent(turnId === null ? "all" : "last");
       updateDiffSelection({ turnId, filePath: null });
@@ -1263,6 +1371,7 @@ export default function DiffPanel({
   );
   const selectRepoScope = useCallback(
     (scope: DiffPanelRepoScopeOption) => {
+      setActiveCommitSha(null);
       setDiffViewKind("repo");
       setRepoDiffScope(scope);
       if (selectedTurnId !== null) {
@@ -1277,6 +1386,7 @@ export default function DiffPanel({
       if (trimmed.length === 0 || !activeCwd) {
         return;
       }
+      setActiveCommitSha(null);
       setDiffViewKind("repo");
       setRepoDiffCompareRef(activeCwd, trimmed);
       setRepoDiffScope("ref");
@@ -1286,6 +1396,19 @@ export default function DiffPanel({
     },
     [activeCwd, selectedTurnId, setRepoDiffCompareRef, setRepoDiffScope, updateDiffSelection],
   );
+  const selectCommit = useCallback(
+    (sha: string) => {
+      setActiveCommitSha(sha);
+      setDiffViewKind("repo");
+      if (selectedTurnId !== null) {
+        updateDiffSelection({ turnId: null, filePath: null });
+      }
+    },
+    [selectedTurnId, updateDiffSelection],
+  );
+  const clearCommit = useCallback(() => {
+    setActiveCommitSha(null);
+  }, []);
   const selectAllTurns = useCallback(() => {
     setTurnScopeIntent("all");
     selectTurn(null);
@@ -1312,9 +1435,15 @@ export default function DiffPanel({
   }, [renderableFiles]);
   const selectFile = useCallback(
     (filePath: string) => {
+      // A commit's file list is local to the patch on screen; writing it to the route
+      // would leak a path from an old tree into the next working-tree view.
+      if (isCommitView) {
+        scrollDiffFileIntoView(patchViewportRef.current, filePath, "start");
+        return;
+      }
       updateDiffSelection({ turnId: selectedTurnId, filePath });
     },
-    [selectedTurnId, updateDiffSelection],
+    [isCommitView, selectedTurnId, updateDiffSelection],
   );
   const showDiffToolbar = Boolean(activeThreadContext && isGitRepo && !diffEnvironmentPending);
   const copyDiff = useCallback(() => {
@@ -1340,6 +1469,9 @@ export default function DiffPanel({
           scopePickerValue={scopePickerValue}
           scopeFileCounts={scopeFileCounts}
           activeCwd={activeCwd}
+          activeCommit={activeCommit}
+          onSelectCommit={selectCommit}
+          onClearCommit={clearCommit}
           compareRef={repoDiffCompareRef}
           scopeIsRef={viewSource.kind === "repo" && viewSource.scope === "ref"}
           selectedTurnId={selectedTurnId}
@@ -1369,9 +1501,11 @@ export default function DiffPanel({
         />
       ) : null,
     [
+      activeCommit,
       activeCwd,
       allFilesCollapsed,
       changeMarkersEnabled,
+      clearCommit,
       changeNavigation,
       copyDiff,
       diffCopyText,
@@ -1387,6 +1521,7 @@ export default function DiffPanel({
       scopeFileCounts,
       scopePickerValue,
       selectAllTurns,
+      selectCommit,
       selectCompareRef,
       selectLastTurn,
       selectRepoScope,
@@ -1417,6 +1552,9 @@ export default function DiffPanel({
           key={activeThreadId ?? "no-thread"}
           activeCwd={activeCwd}
           activeThreadId={activeThreadId}
+          activeCommit={activeCommit}
+          onSelectCommit={selectCommit}
+          onClearCommit={clearCommit}
           viewSource={viewSource}
           turnScopeIntent={turnScopeIntent}
           scopeFileCounts={scopeFileCounts}
@@ -1470,10 +1608,12 @@ export default function DiffPanel({
         </div>
       ) : null,
     [
+      activeCommit,
       activeCwd,
       activeDiffIsFetching,
       activePatchStat,
       activeThreadId,
+      clearCommit,
       allFilesCollapsed,
       changeMarkersEnabled,
       changeNavigation,
@@ -1496,6 +1636,7 @@ export default function DiffPanel({
       resolvedTheme,
       scopeFileCounts,
       selectAllTurns,
+      selectCommit,
       selectCompareRef,
       selectFile,
       selectLastTurn,
@@ -1540,6 +1681,25 @@ export default function DiffPanel({
             className="diff-panel-viewport relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
             onMouseUp={diffSelectionAction.onContainerMouseUp}
           >
+            {activeCommit ? (
+              <div className="flex shrink-0 items-center gap-2 border-b border-border/60 px-3 py-1.5 text-ui-xs">
+                <GitCommitIcon className="size-3.5 shrink-0 text-muted-foreground" />
+                <span className="shrink-0 font-mono text-muted-foreground tabular-nums">
+                  {activeCommit.shortSha}
+                </span>
+                <span className="min-w-0 flex-1 truncate text-foreground/85">
+                  {activeCommit.subject}
+                </span>
+                <button
+                  type="button"
+                  className="shrink-0 rounded-md px-1.5 py-0.5 text-muted-foreground hover:bg-muted/60 hover:text-foreground"
+                  onClick={clearCommit}
+                >
+                  <XIcon className="mr-1 inline size-3" />
+                  {t("common:diff_backToChanges")}
+                </button>
+              </div>
+            ) : null}
             {activeReviewTruncated ? <DiffTruncationWarning className="m-2 mb-0" /> : null}
             <DiffPanelPatchViewport
               renderablePatch={renderablePatch}
@@ -1559,22 +1719,26 @@ export default function DiffPanel({
               refreshStatus={diffViewKind === "turn" ? checkpointDiffDisplay.refreshStatus : null}
               viewKind={diffViewKind}
               loadingLabel={
-                diffViewKind !== "repo"
-                  ? t("common:diff_loadingCheckpointDiff")
-                  : repoDiffScope === "ref"
-                    ? t("common:loadingDiff", {
-                        value0: resolveRepoDiffScopeLabel(repoDiffScope, repoDiffCompareRef),
-                      })
-                    : t("common:loadingDiff2", {
-                        value0: repoDiffScopeLabel(repoDiffScope).toLowerCase(),
-                      })
+                isCommitView
+                  ? t("common:diff_loadingCommitDiff")
+                  : diffViewKind !== "repo"
+                    ? t("common:diff_loadingCheckpointDiff")
+                    : repoDiffScope === "ref"
+                      ? t("common:loadingDiff", {
+                          value0: resolveRepoDiffScopeLabel(repoDiffScope, repoDiffCompareRef),
+                        })
+                      : t("common:loadingDiff2", {
+                          value0: repoDiffScopeLabel(repoDiffScope).toLowerCase(),
+                        })
               }
               emptyLabel={
-                diffViewKind === "repo"
-                  ? t("git:diffNoChangesInSource")
-                  : orderedTurnDiffSummaries.length === 0
-                    ? t("git:diffNoTurnDiffs")
-                    : t("git:diffNoNetChanges")
+                isCommitView
+                  ? t("common:diff_commitNoChanges")
+                  : diffViewKind === "repo"
+                    ? t("git:diffNoChangesInSource")
+                    : orderedTurnDiffSummaries.length === 0
+                      ? t("git:diffNoTurnDiffs")
+                      : t("git:diffNoNetChanges")
               }
               unavailableLabel={t("git:diffUnavailable")}
             />

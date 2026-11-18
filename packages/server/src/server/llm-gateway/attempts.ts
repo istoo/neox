@@ -50,7 +50,7 @@ import {
   toolRefusalsFor,
 } from "./refusals.js";
 import { replyNameFor, replyNamingFor, requestResponseModel } from "./reply-naming.js";
-import { clinePinBody, zcodeTrialRefused } from "./vendor-shaping.js";
+import { clinePinBody, zcodeTrialRefused, type ZenTools } from "./vendor-shaping.js";
 import { restProbeAnswered, scheduleRestProbe } from "./rest-probe.js";
 import { creditRestMs, isCreditFailure } from "./rests.js";
 import { restForFailure } from "./provider-limits.js";
@@ -76,6 +76,14 @@ import {
 import { tokenFieldWanted, tokenFloor, withTokenField, withTokenFloor } from "./token-limits.js";
 import { clientCallIds, ToolUseIds } from "./tool-use-ids.js";
 import {
+  clearMantleUnfit,
+  isMantleRoute,
+  mantleFits,
+  mantleWrongRoute,
+  markMantleUnfit,
+} from "./mantle.js";
+import {
+  GatewayPluginRejection,
   requestUpstream,
   shouldFailover,
   type GatewayProtocol,
@@ -164,6 +172,12 @@ export interface CandidateAttemptContext {
   gatewayDir?: string;
   /** The request offered Responses' client-side tool_search. */
   toolSearch: boolean;
+  /**
+   * How a request to Zen's free tier was shaped, so the reply's tool names
+   * go back to the client's and a stub's call is left out (myna's
+   * zenReply); null when the request was not to a free Zen model.
+   */
+  zen: ZenTools | null;
   /** Notes an upstream wire for the request archive (`routes.ts`'s wireHook). */
   wireHook: (res: ExpressResponse) => { onWire: (wire: UpstreamWire) => void };
   /** Asks the daemon's own vision path (`routes.ts`'s visionSend). */
@@ -389,6 +403,7 @@ async function accountSkippedByHooks(
     return true;
   }
   return runGatewayMiddlewareAccount({
+    requestKey: input.gatewayCallId,
     providerId: candidate.provider.id,
     protocol: candidate.provider.protocol,
     model: candidate.model.id,
@@ -410,6 +425,7 @@ async function attemptBodyWithHooks(
     model: candidate.model.id,
   });
   const changed = await runGatewayMiddlewareProvider({
+    requestKey: input.gatewayCallId,
     providerId: candidate.provider.id,
     protocol: candidate.provider.protocol,
     model: candidate.model.id,
@@ -473,7 +489,13 @@ async function runAccountList(
         error: null,
       });
     });
-    const result = await runOneAttempt({ ...input, account, attemptBody, restKey });
+    const result = await runOneAttempt({
+      ...input,
+      account,
+      attemptBody,
+      restKey,
+      tryStartedAt: tryStart,
+    });
     input.trace?.trace.update(input.trace.routeId, (route) => {
       const entry = route.tries.at(-1);
       if (entry === undefined) {
@@ -538,6 +560,8 @@ interface OneAttemptContext extends CandidateAttemptContext {
   account: GatewayAccount | null;
   attemptBody: Record<string, unknown>;
   restKey: string;
+  /** When this try began, the one clock the trace and the history share. */
+  tryStartedAt: number;
 }
 
 /**
@@ -548,16 +572,101 @@ function factoryWireRefused(input: OneAttemptContext, status: number): boolean {
   return input.factoryRetry === true && (status === 404 || status === 405);
 }
 
+/** How much of a Mantle refusal the gateway reads before judging it. */
+const MANTLE_REFUSAL_BYTES = 1 << 20;
+
+/**
+ * The model a request goes upstream as: the vendor's own name when the user
+ * gave one, which is what the provider's path is built from too.
+ */
+function sentModelOf(input: OneAttemptContext): string {
+  return input.candidate.model.upstreamName ?? input.candidate.model.id;
+}
+
+/** The first bytes of a reply, read from a clone so the reply stays whole. */
+async function responsePrefix(response: globalThis.Response, limit: number): Promise<string> {
+  const clone = response.clone();
+  if (clone.body === null) {
+    return "";
+  }
+  const reader = clone.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    while (size < limit) {
+      const chunk = await reader.read();
+      if (chunk.done) {
+        break;
+      }
+      const keep = chunk.value.subarray(0, limit - size);
+      chunks.push(keep);
+      size += keep.length;
+      if (keep.length < chunk.value.length) {
+        break;
+      }
+    }
+  } catch {
+    // An unreadable body says nothing about the route.
+  } finally {
+    await reader.cancel().catch(() => undefined);
+  }
+  return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString("utf8");
+}
+
+/**
+ * Bedrock Mantle serves each model under `/v1` or `/openai/v1` and turns it
+ * away at the other with "model `x` isn't supported on this route". A
+ * refusal of the prefix the gateway guessed asks the request at the other
+ * one once, and the prefix that served it is remembered; a model neither
+ * prefix serves is forgotten, and the first refusal is what the client
+ * reads (myna's mantle.go:44-72, gateway.go:5167-5168).
+ */
+async function retryMantleRoute(
+  input: OneAttemptContext,
+  upstream: globalThis.Response,
+): Promise<globalThis.Response> {
+  const provider = input.candidate.provider;
+  if (!isMantleRoute(provider) || upstream.status < 400 || upstream.status >= 500) {
+    return upstream;
+  }
+  const model = sentModelOf(input);
+  if (model === "" || !mantleFits(provider.id, model, provider.protocol)) {
+    return upstream;
+  }
+  if (!mantleWrongRoute(await responsePrefix(upstream, MANTLE_REFUSAL_BYTES))) {
+    return upstream;
+  }
+  markMantleUnfit(provider.id, model, provider.protocol);
+  let again: globalThis.Response;
+  try {
+    again = await requestUpstream(retryRequest(input, input.attemptBody));
+  } catch {
+    clearMantleUnfit(provider.id, model, provider.protocol);
+    return upstream;
+  }
+  input.attempts.value += 1;
+  if (again.status < 400) {
+    return again;
+  }
+  if (!mantleWrongRoute(await responsePrefix(again, MANTLE_REFUSAL_BYTES))) {
+    return again;
+  }
+  // Neither prefix serves it: the guess stands for the next request.
+  clearMantleUnfit(provider.id, model, provider.protocol);
+  return upstream;
+}
+
 async function runOneAttempt(input: OneAttemptContext): Promise<CandidateAttemptResult> {
   const { candidate, account, accountState } = input;
   if (account !== null) {
     acquireAccount(accountState, candidate.provider, account);
   }
   try {
-    const upstream = await fetchUpstream(input);
-    if (upstream === null) {
+    const fetched = await fetchUpstream(input);
+    if (fetched === null) {
       return { delivered: false, status: null };
     }
+    const upstream = await retryMantleRoute(input, fetched);
     const autoRefusal = await copilotAutoRefusal(input, upstream);
     if (autoRefusal !== null) {
       return autoRefusal;
@@ -668,6 +777,7 @@ function retryRequest(
   const { candidate, account } = input;
   const proxy = account?.proxy ?? input.config.proxy;
   return {
+    requestKey: input.gatewayCallId,
     ...(input.gatewayDir === undefined ? {} : { gatewayDir: input.gatewayDir }),
     accountDiscovery: accountDiscoveryOn(input.config),
     ...(input.copilotSessionToken === undefined
@@ -687,6 +797,7 @@ async function fetchUpstream(input: OneAttemptContext): Promise<globalThis.Respo
   const { candidate, account } = input;
   try {
     const upstream = await requestUpstream({
+      requestKey: input.gatewayCallId,
       ...(input.gatewayDir === undefined ? {} : { gatewayDir: input.gatewayDir }),
       accountDiscovery: accountDiscoveryOn(input.config),
       ...(input.copilotSessionToken === undefined
@@ -703,6 +814,9 @@ async function fetchUpstream(input: OneAttemptContext): Promise<globalThis.Respo
     offlineDetector.noteHeard();
     return upstream;
   } catch (error) {
+    // A plugin turned the request away: nothing is tried after it, and the
+    // client gets the middleware's answer (myna's ctx.reject).
+    if (error instanceof GatewayPluginRejection) throw error;
     // A subscription sign-in that can't serve its account skips the attempt:
     // the request was refused, not the account, so nothing rests (myna
     // leaves a lapsed login alone and tries the next).
@@ -1502,6 +1616,7 @@ function deliverInputOf(
 ): DeliverInput {
   const candidate = input.candidate;
   return {
+    requestKey: input.gatewayCallId,
     res: input.res,
     upstream,
     provider: candidate.provider,
@@ -1515,6 +1630,7 @@ function deliverInputOf(
       input.upstreamProtocol !== input.protocol ||
       input.maskingEnabled ||
       input.search !== null ||
+      input.zen !== null ||
       (input.body.stream === true &&
         (input.hooks.hasEventHook() || hasGatewayMiddlewareHook("event"))),
     masker: input.maskingEnabled ? input.masker : null,
@@ -1540,6 +1656,7 @@ function deliverInputOf(
     startedAt: input.startedAt,
     claudeSignIn: isClaudeSignIn(input.req.headers.authorization),
     toolSearch: input.toolSearch,
+    zen: input.zen,
     ...(input.titleLink === undefined ? {} : { titleTurn: true }),
     reask: (continuation?: Continuation) => reaskUpstream(input, continuation),
     ...(input.handover === undefined ? {} : { handover: input.handover }),
@@ -1720,6 +1837,7 @@ function buildRecordInput(
     ok,
     attempts: input.attempts.value,
     startedAt: input.startedAt,
+    tryStartedAt: input.tryStartedAt,
     usage,
     userAgent: input.req.headers["user-agent"],
     upstreamProtocol: input.upstreamProtocol,
@@ -1786,7 +1904,10 @@ interface RecordAttemptInput {
   status: number;
   ok: boolean;
   attempts: number;
+  /** When the request began, for the row's own duration. */
   startedAt: number;
+  /** When this try began, for the try's duration. */
+  tryStartedAt: number;
   usage: IrUsage | null;
   /** The client's User-Agent, read as the agent that made the request. */
   userAgent: string | undefined;
@@ -1954,20 +2075,50 @@ function titleDigestOf(input: RecordAttemptInput): string | undefined {
   return typeof digest === "string" && digest.length > 0 ? digest : undefined;
 }
 
+/**
+ * Why a failed try failed, as the live routing trace says it: the HTTP status
+ * when the upstream answered, else the transport's own message. A status of 0
+ * means the vendor never answered (attempts.ts, the transport failure path),
+ * and nothing but that message explains it.
+ */
+function tryErrorOf(input: RecordAttemptInput): string | null {
+  if (input.ok) {
+    return null;
+  }
+  if (input.status > 0) {
+    return `HTTP ${input.status}`;
+  }
+  return input.errorMessage ?? null;
+}
+
 /** One attempt as the Routing page's row keeps it. */
 function routeRowOf(input: RecordAttemptInput): Record<string, unknown> {
   const served = `${input.candidate.provider.id}/${input.candidate.model.id}`;
   const replyDigest = titleDigestOf(input);
+  // The try's own clock, not the request's: a later candidate must not carry
+  // the time the earlier ones spent. The row keeps the request's separately.
+  const tryMillis = Math.max(0, Date.now() - input.tryStartedAt);
   return {
     id: input.requestId,
     time: new Date(input.startedAt).toISOString(),
     asked: input.requestedModel,
     served,
     model: served,
-    tries: [{ model: served, done: true, status: input.status }],
+    // The seat's parts, as the Routing page draws them: `served` joins them
+    // for its title, and the try keeps them apart for its badge.
+    tries: [
+      {
+        provider: input.candidate.provider.id,
+        model: input.candidate.model.id,
+        done: true,
+        status: input.status,
+        millis: tryMillis,
+        error: tryErrorOf(input),
+      },
+    ],
     done: true,
     status: input.status,
-    millis: Date.now() - input.startedAt,
+    millis: Math.max(0, Date.now() - input.startedAt),
     client: clientOfUserAgent(input.userAgent),
     ...(input.session === null ? {} : { session: input.session }),
     ...(input.ok ? {} : { error: `HTTP ${input.status}` }),

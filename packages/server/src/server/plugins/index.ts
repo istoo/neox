@@ -128,12 +128,14 @@ interface PluginRuntimePort {
   subscriptionModels?: PluginRuntime["subscriptionModels"];
   subscriptionSignIn?: PluginRuntime["subscriptionSignIn"];
   subscriptionSignInPoll?: PluginRuntime["subscriptionSignInPoll"];
+  subscriptionCheckin?: PluginRuntime["subscriptionCheckin"];
   hasGatewayMiddlewares?: PluginRuntime["hasGatewayMiddlewares"];
   runGatewayMiddlewareRequest?: PluginRuntime["runGatewayMiddlewareRequest"];
   runGatewayMiddlewareResponse?: PluginRuntime["runGatewayMiddlewareResponse"];
   runGatewayMiddlewareProvider?: PluginRuntime["runGatewayMiddlewareProvider"];
   runGatewayMiddlewareAccount?: PluginRuntime["runGatewayMiddlewareAccount"];
   runGatewayMiddlewareEvent?: PluginRuntime["runGatewayMiddlewareEvent"];
+  runGatewayMiddlewareHeaders?: PluginRuntime["runGatewayMiddlewareHeaders"];
   hasGatewayMiddlewareHook?: PluginRuntime["hasGatewayMiddlewareHook"];
   hasGatewayUsageObservers?: PluginRuntime["hasGatewayUsageObservers"];
   observeGatewayUsage?: PluginRuntime["observeGatewayUsage"];
@@ -355,6 +357,18 @@ export class PluginService {
     return this.runtime.subscriptionSignIn(pluginId, providerId, method, accountId, inputs);
   }
 
+  /** Asks a plugin to check one account in, as its `auth.checkin` does. */
+  subscriptionCheckin(
+    pluginId: string,
+    providerId: string,
+    accountId: string,
+  ): ReturnType<PluginRuntime["subscriptionCheckin"]> {
+    if (this.runtime.subscriptionCheckin === undefined) {
+      return Promise.reject(new Error("Plugin check-ins are unavailable"));
+    }
+    return this.runtime.subscriptionCheckin(pluginId, providerId, accountId);
+  }
+
   subscriptionSignInPoll(
     pluginId: string,
     providerId: string,
@@ -385,6 +399,13 @@ export class PluginService {
 
   hasGatewayMiddlewareHook(hook: string): boolean {
     return this.runtime.hasGatewayMiddlewareHook?.(hook) ?? false;
+  }
+
+  /** Headers running plugins add to one outgoing gateway request. */
+  runGatewayMiddlewareHeaders(
+    input: Parameters<NonNullable<PluginRuntimePort["runGatewayMiddlewareHeaders"]>>[0],
+  ): ReturnType<NonNullable<PluginRuntimePort["runGatewayMiddlewareHeaders"]>> {
+    return this.runtime.runGatewayMiddlewareHeaders?.(input) ?? Promise.resolve(null);
   }
 
   runGatewayMiddlewareProvider(

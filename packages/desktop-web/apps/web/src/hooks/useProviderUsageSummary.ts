@@ -33,6 +33,7 @@ import {
   serverAllProviderUsageQueryOptions,
   serverProviderUsageSnapshotQueryOptions,
 } from "~/lib/serverReactQuery";
+import { findUsageSnapshot } from "~/lib/providerUsageAccounts.logic";
 
 export interface ProviderUsageSummaryData {
   readonly learnMoreHref: string | null;
@@ -117,11 +118,10 @@ export function useProviderUsageSummary(input: {
       enabled: shouldFetchLiveProviderUsage,
     }),
   );
-  const liveProviderSnapshot = (allProviderUsageQuery.data ?? []).find(
-    (snapshot) =>
-      snapshot.provider === provider &&
-      (snapshot.instanceId ?? snapshot.provider) === (instanceId ?? provider),
-  );
+  const liveProviderSnapshot =
+    provider === null
+      ? undefined
+      : (findUsageSnapshot(allProviderUsageQuery.data ?? [], provider, instanceId) ?? undefined);
   const authoritativeLiveSnapshot =
     input.providerSnapshot !== undefined ? input.providerSnapshot : (liveProviderSnapshot ?? null);
   // Thread, local and OpenUsage fallbacks identify only the driver. They cannot be

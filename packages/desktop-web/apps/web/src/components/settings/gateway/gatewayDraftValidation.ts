@@ -9,10 +9,13 @@ import type { GatewayConfig } from "~/lib/gatewayTypes";
 import { messageOf, type Translator, unwrapRpcMessage } from "~/lib/errorLocalization";
 import { t as i18nT } from "~/i18n";
 
+import { isMaskingScore } from "./gatewayMaskingScore.logic";
+
 export type GatewayDraftIssue =
   | { kind: "group-members"; groupId: string; index: number }
   | { kind: "group-invalid"; groupId: string; index: number }
   | { kind: "mask-kind"; line: number }
+  | { kind: "mask-score" }
   | { kind: "budget" }
   | { kind: "proxy" };
 
@@ -59,6 +62,8 @@ export function validateGatewayDraft(config: GatewayConfig): GatewayDraftIssue[]
       issues.push({ kind: "mask-kind", line: index + 1 });
     }
   });
+  const score = config.masking?.modelScore;
+  if (score !== undefined && !isMaskingScore(score)) issues.push({ kind: "mask-score" });
   const budget = config.budget?.monthlyUsd;
   if (budget !== undefined && !(budget > 0)) issues.push({ kind: "budget" });
   if (
@@ -84,6 +89,7 @@ export function describeGatewayDraftIssue(
   if (issue.kind === "mask-kind") {
     return translate("gateway:error_mask_kind", { line: issue.line });
   }
+  if (issue.kind === "mask-score") return translate("gateway:error_mask_score");
   if (issue.kind === "budget") return translate("gateway:error_budget");
   return translate("gateway:error_proxy");
 }
@@ -136,6 +142,9 @@ export function localizeGatewaySaveError(
     return path.includes("members")
       ? translate("gateway:error_group_members", { id })
       : translate("gateway:error_group_invalid", { id });
+  }
+  if (path[0] === "masking" && path[1] === "modelScore") {
+    return translate("gateway:error_mask_score");
   }
   if (path[0] === "masking" && path[1] === "rules") {
     const line = typeof path[2] === "number" ? path[2] + 1 : 1;

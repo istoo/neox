@@ -200,7 +200,10 @@ export function SidebarThreadRowContent({
           {variant === "pinned" ? suffix : null}
         </div>
         {meta ? (
-          <div className="flex min-w-0 items-center gap-1.5 overflow-hidden text-ui-xs leading-4 text-muted-foreground/55">
+          <div
+            data-slot="sidebar-thread-row-meta"
+            className="flex min-w-0 items-center gap-1.5 overflow-hidden text-ui-xs leading-4 text-muted-foreground/55"
+          >
             {meta}
           </div>
         ) : null}

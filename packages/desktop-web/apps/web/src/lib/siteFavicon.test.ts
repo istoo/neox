@@ -29,7 +29,7 @@ describe("resolveSiteFaviconUrl", () => {
   it("carries the WebSocket startup token for desktop image requests", () => {
     vi.stubGlobal("window", {
       location: { origin: "http://localhost:3000" },
-      desktopBridge: { getWsUrl: () => "ws://127.0.0.1:4567/ws?token=dev-secret" },
+      desktopBridge: { getWsUrl: () => "ws://127.0.0.1:4567/rpc?token=dev-secret" },
     });
 
     const url = resolveSiteFaviconUrl("https://openai.com/research");

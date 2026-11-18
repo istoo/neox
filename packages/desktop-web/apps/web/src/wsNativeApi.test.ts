@@ -68,7 +68,7 @@ const subscribeMock = vi.fn<
 
 vi.mock("./wsTransport", () => {
   return {
-    rawSocketUrl: () => "ws://127.0.0.1:58001/ws",
+    rawSocketUrl: () => "ws://127.0.0.1:58001/rpc",
     WsTransport: class MockWsTransport {
       readonly calls: (typeof transportInstances)[number];
       constructor(url?: string, options: { onGenerationChanged?: () => void } = {}) {
@@ -197,7 +197,7 @@ describe("wsNativeApi", () => {
     const selected = {
       hostId: "mini-host",
       hostName: "Mini",
-      wsPath: "/ws/remote/mini-host",
+      wsPath: "/rpc/remote/mini-host",
       executionScope: scope,
     };
     Object.assign(getWindowForTest(), {
@@ -239,7 +239,7 @@ describe("wsNativeApi", () => {
     expect(transportInstances[0]!.requests.map((call) => call[0])).toEqual([
       WS_METHODS.accountStatus,
     ]);
-    expect(transportInstances[1]!.url).toBe("ws://127.0.0.1:58001/ws/remote/mini-host/ws");
+    expect(transportInstances[1]!.url).toBe("ws://127.0.0.1:58001/rpc/remote/mini-host/rpc");
     expect(transportInstances[1]!.requests.map((call) => call[0])).toEqual([
       WS_METHODS.serverGetEnvironment,
       WS_METHODS.serverListMcpConnectors,
@@ -1191,7 +1191,7 @@ describe("wsNativeApi", () => {
       configurable: true,
       writable: true,
       value: {
-        getWsUrl: () => "ws://127.0.0.1:3773/ws?token=desktop-secret",
+        getWsUrl: () => "ws://127.0.0.1:3773/rpc?token=desktop-secret",
         server: {
           transcribeVoice,
         },
@@ -1231,7 +1231,7 @@ describe("wsNativeApi", () => {
     Object.defineProperty(getWindowForTest(), "desktopBridge", {
       configurable: true,
       writable: true,
-      value: { getWsUrl: () => "ws://127.0.0.1:3773/ws?token=desktop-secret" },
+      value: { getWsUrl: () => "ws://127.0.0.1:3773/rpc?token=desktop-secret" },
     });
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(JSON.stringify({ text: "hello" }), {
@@ -1281,7 +1281,7 @@ describe("wsNativeApi", () => {
     Object.defineProperty(getWindowForTest(), "desktopBridge", {
       configurable: true,
       writable: true,
-      value: { getWsUrl: () => "ws://127.0.0.1:3773/ws?token=desktop-secret" },
+      value: { getWsUrl: () => "ws://127.0.0.1:3773/rpc?token=desktop-secret" },
     });
     vi.stubGlobal("fetch", vi.fn<typeof fetch>().mockResolvedValue(new Response(body, { status })));
     const { createWsNativeApi } = await import("./wsNativeApi");
@@ -1320,7 +1320,7 @@ describe("wsNativeApi", () => {
       Object.defineProperty(getWindowForTest(), "desktopBridge", {
         configurable: true,
         writable: true,
-        value: { getWsUrl: () => "ws://127.0.0.1:3773/ws?token=desktop-secret" },
+        value: { getWsUrl: () => "ws://127.0.0.1:3773/rpc?token=desktop-secret" },
       });
       let finishBody: (() => void) | undefined;
       const body = stalledBody

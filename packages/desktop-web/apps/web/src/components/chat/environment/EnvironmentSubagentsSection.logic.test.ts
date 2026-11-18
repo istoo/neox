@@ -5,14 +5,17 @@
 // Layer: Environment panel tests
 // Depends on: deriveEnvironmentSubagentRoster
 
-import { EventId, TurnId, type OrchestrationThreadActivity } from "@synara/contracts";
+import { EventId, ThreadId, TurnId, type OrchestrationThreadActivity } from "@synara/contracts";
 import { describe, expect, it } from "vitest";
 
 import type { WorkLogEntry, WorkLogSubagent } from "../../../session-logic";
 import {
   deriveEnvironmentSubagentRoster,
+  deriveManagedChildRosterItems,
   environmentSubagentElapsedMs,
   formatEnvironmentSubagentMeta,
+  mergeEnvironmentSubagentRosters,
+  type ManagedChildThread,
 } from "./EnvironmentSubagentsSection.logic";
 
 function workEntry(id: string, createdAt: string, subagents: WorkLogSubagent[]): WorkLogEntry {
@@ -221,5 +224,114 @@ describe("environment subagent row presentation", () => {
         nowMs,
       ),
     ).toBeNull();
+  });
+});
+
+const parentThreadId = ThreadId.makeUnsafe("parent-agent");
+
+function managedChild(id: string, overrides: Partial<ManagedChildThread> = {}): ManagedChildThread {
+  return {
+    id: ThreadId.makeUnsafe(id),
+    title: "Scout",
+    parentThreadId,
+    createdAt: "2026-10-10T10:00:00.000Z",
+    archivedAt: null,
+    settledAt: null,
+    error: null,
+    subagentAgentId: null,
+    subagentNickname: null,
+    subagentRole: null,
+    modelSelection: {
+      provider: "claudeAgent",
+      model: "Opus 5.5",
+      instanceId: "claude",
+    } as ManagedChildThread["modelSelection"],
+    session: { status: "running" },
+    latestTurn: null,
+    ...overrides,
+  };
+}
+
+describe("deriveManagedChildRosterItems", () => {
+  it("lists live and settled child agents from the thread parent link", () => {
+    const running = managedChild("child-running", { subagentNickname: "Kepler" });
+    const finished = managedChild("child-finished", {
+      title: "Write the tests",
+      session: { status: "ready" },
+      settledAt: "2026-10-10T10:05:00.000Z",
+      latestTurn: { state: "completed", completedAt: "2026-10-10T10:05:00.000Z" },
+    });
+
+    const items = deriveManagedChildRosterItems({
+      threads: [
+        running,
+        finished,
+        managedChild("child-archived", { archivedAt: "2026-10-10T11:00:00.000Z" }),
+        managedChild("child-elsewhere", { parentThreadId: ThreadId.makeUnsafe("other") }),
+      ],
+      parentThreadId,
+      viewedThreadId: running.id,
+    });
+
+    expect(items.map((item) => item.threadId)).toEqual([running.id, finished.id]);
+    expect(items[0]).toMatchObject({
+      key: `managed:${running.id}`,
+      providerThreadId: running.id,
+      statusKind: "running",
+      isActive: true,
+      isViewed: true,
+      startedAt: running.createdAt,
+      modelLabel: "Opus 5.5",
+    });
+    expect(items[1]).toMatchObject({
+      statusKind: "completed",
+      isActive: false,
+      settledAt: "2026-10-10T10:05:00.000Z",
+    });
+  });
+});
+
+describe("mergeEnvironmentSubagentRosters", () => {
+  it("adds managed children without duplicating a row the work log already links", () => {
+    const linked = managedChild("child-linked", { session: { status: "ready" } });
+    const fresh = managedChild("child-fresh");
+    const base = deriveEnvironmentSubagentRoster({
+      workEntries: [
+        workEntry("entry-1", "2026-10-10T10:00:00.000Z", [
+          {
+            threadId: "child-linked",
+            providerThreadId: "child-linked",
+            resolvedThreadId: "child-linked",
+            agentId: "child-linked",
+            rawStatus: "completed",
+          },
+        ]),
+      ],
+      activities: [],
+    });
+
+    const merged = mergeEnvironmentSubagentRosters(
+      base,
+      deriveManagedChildRosterItems({
+        threads: [linked, fresh],
+        parentThreadId,
+      }),
+    );
+
+    expect(merged.active.map((item) => item.threadId)).toEqual([fresh.id]);
+    expect(merged.previous.map((item) => item.threadId)).toEqual([linked.id]);
+  });
+
+  it("keeps the activity-derived roster when there are no managed children", () => {
+    const base = deriveEnvironmentSubagentRoster({
+      workEntries: [
+        workEntry("entry-1", "2026-10-10T10:00:00.000Z", [
+          { threadId: "tool-a", providerThreadId: "tool-a", rawStatus: "completed" },
+        ]),
+      ],
+      activities: [],
+    });
+
+    expect(mergeEnvironmentSubagentRosters(base, [])).toBe(base);
   });
 });

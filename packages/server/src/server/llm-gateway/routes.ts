@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import * as nodeV8 from "node:v8";
 import express, {
   type Request as ExpressRequest,
@@ -15,6 +15,7 @@ import { isGatewayMcpPath, serveSignedInMcp } from "../mcpauth/relay.js";
 import {
   accountKey,
   allAccountsCreditLast,
+  candidateLoads,
   planAccounts,
   providerAtCap,
   type AccountRoutingState,
@@ -35,7 +36,7 @@ import {
 import { isLocalRequest, refuseNotAllowed } from "./allow.js";
 import { currentOmarchyTheme } from "./omarchy.js";
 import { snapshotGatewayQuota } from "./quota-cards.js";
-import { observeTitleRequest, TITLE_KINDS } from "./title-link.js";
+import { observeTitleRequest, TITLE_KINDS, type TitleLink } from "./title-link.js";
 import { resolveDaemonVersion } from "../daemon-version.js";
 import { setFetchPrivate } from "./vision-fetch.js";
 import { refuseInvalidKey } from "./auth-throttle.js";
@@ -99,6 +100,7 @@ import {
   groupAccountFilter,
   planRequestCandidates,
   readRuleContext,
+  workFolderOf,
   type PlannedRequestCandidates,
 } from "./group-rules.js";
 import {
@@ -137,7 +139,11 @@ import {
   TURN_METADATA_HEADER,
   type CodexSideKind,
 } from "./codex-compaction.js";
-import { runCandidateAttempts, type CandidateAttemptResult } from "./attempts.js";
+import {
+  runCandidateAttempts,
+  type CandidateAttemptContext,
+  type CandidateAttemptResult,
+} from "./attempts.js";
 import { pipeRestored, pipeUpstream, startEventStream } from "./deliver.js";
 import { assertRecord, isRecord, type IrRequest } from "./ir.js";
 import {
@@ -234,7 +240,7 @@ import { QuotaTracker } from "./quota.js";
 import { isCreditFailure } from "./rests.js";
 import { handsOver, type RefusalHandover } from "./refusal-handover.js";
 import { loopErrorEvent } from "./loop-guard.js";
-import { summarizePrompt, type RouteSeat } from "./route-trace.js";
+import { summarizePrompt, type RouteRecord, type RouteSeat } from "./route-trace.js";
 import { createGatewayRuntime, snapshotGatewayStatus, type GatewayRuntime } from "./runtime.js";
 import {
   candidateKey,
@@ -258,7 +264,13 @@ import { shapeTools } from "./tool-shapes.js";
 import { imageToolRefusedBefore, withoutImageToolRequest } from "./image-tool.js";
 import { mayLoop, toolLoopNotice, toolLoopOf, type ToolLoop } from "./tool-loop.js";
 import { chatCallIds } from "./chat-call-ids.js";
-import { xaiBody } from "./vendor-shaping.js";
+import {
+  openCodeFree,
+  openCodeProvider,
+  xaiBody,
+  zenFreeTools,
+  type ZenTools,
+} from "./vendor-shaping.js";
 import { CodexWeekReset } from "./codex-reset-run.js";
 import { codexOwnRedirect } from "./codex-own-v1.js";
 import { searchAsFunction } from "./toolsearch.js";
@@ -269,6 +281,7 @@ import { fixToolRefusals, toolRefusalsFor } from "./refusals.js";
 import { clientOfUserAgent, type UsageLedger } from "./usage.js";
 import {
   buildUpstreamHeaders,
+  GatewayPluginRejection,
   shouldFailover,
   type GatewayProtocol,
   type UpstreamWire,
@@ -3019,6 +3032,100 @@ function authorizePlan(input: {
   return { ...access, hooks };
 }
 
+/** A candidate whose attempt body is ready, before it is tried. */
+interface PreparedCandidate {
+  candidate: GatewayCandidate;
+  upstreamProtocol: GatewayProtocol;
+  upstreamBody: Record<string, unknown>;
+  nativeSearch: boolean;
+  masking: { hits: MaskHit[]; blocked: boolean } | null;
+  maskingMs: number;
+  toolSearch: boolean;
+  zen: ZenTools | null;
+  sessionToken?: string;
+  auto: CopilotAutoResolved | null;
+}
+
+/** The masking a try replaced in the request, for the last failure to report. */
+interface MaskedAttempt {
+  candidate: GatewayCandidate;
+  hits: MaskHit[];
+  tookMs: number;
+}
+
+/** A candidate's Copilot Auto refusals: what the next pick leaves out. */
+interface CopilotAutoRetries {
+  avoid: Set<CopilotProtocol>;
+  fresh: boolean;
+  tries: number;
+}
+
+/** One walk's own state, fresh every time the walk starts again. */
+interface CandidateRound {
+  patience: PatienceState<GatewayCandidate>;
+  codexHints: ReturnType<typeof codexBodyHints>;
+  /** The candidates asked this walk, in order. */
+  queue: GatewayCandidate[];
+  /** The reply a refused try handed over: the next tries continue it. */
+  handover: RefusalHandover | undefined;
+  /** How many tries the safety filter refused (myna's refusals). */
+  refusals: number;
+  /** Why Antigravity turned the request away, when one did. */
+  turnedAwayHint: string | null;
+  copilotRetries: Map<number, CopilotAutoRetries>;
+}
+
+/** How a tried candidate left the walk. */
+type CandidateOutcome = "delivered" | "again" | "next";
+
+/** Everything one forwarded request shares between its candidate tries. */
+interface CandidateWalk {
+  input: ForwardCompletionInput;
+  req: ExpressRequest;
+  res: ExpressResponse;
+  protocol: GatewayProtocol;
+  masker: Masker;
+  maskingRecords: MaskingRecordStore | undefined;
+  ledger: UsageLedger;
+  routingState: RoutingState;
+  accountState: AccountRoutingState;
+  quotaTracker: QuotaTracker;
+  logger: Logger;
+  onStickyChange: GatewayRuntime["onStickyChange"];
+  onRestChange: GatewayRuntime["onRestChange"];
+  onRestCleared: GatewayRuntime["onRestCleared"];
+  startedAt: number;
+  body: CompletionBody;
+  config: GatewayConfig;
+  routingModel: string;
+  agent: string;
+  plan: ForwardPlan;
+  planned: GatewayCandidate[];
+  gatewayCallId: string;
+  /** The Routing page's record of this request, when tracing is on. */
+  routeTrace: GatewayRuntime["routeTrace"] | undefined;
+  route: RouteRecord | null;
+  /** Ends the route trace with how the request left. */
+  finishRoute: (delivered: boolean, status: number | null) => void;
+  attempts: { value: number };
+  restoreCounts: RestoreCounts;
+  clientName: string;
+  webSearchWanted: boolean;
+  webSearchAll: boolean;
+  webSearchDone: boolean;
+  clientSearch: ClientSearch | null;
+  lastStatus: number | null;
+  lastMasked: MaskedAttempt | null;
+  weekReset: CodexWeekReset | null;
+  weekResetTried: boolean;
+  conversationKey: string | null;
+  turn: ReturnType<typeof turnOfRequest>;
+  titleLink: TitleLink | null;
+  prompt: ReturnType<typeof summarizePrompt>;
+  /** Which daemon home's turn-aways are read: this request's. */
+  homeScope: string;
+}
+
 async function forwardCompletion(input: ForwardCompletionInput): Promise<void> {
   const {
     req,
@@ -3087,20 +3194,14 @@ async function forwardCompletion(input: ForwardCompletionInput): Promise<void> {
   if (plan === null) {
     return;
   }
-  const {
-    plannedRequest,
-    candidates,
-    accountFilter,
-    translateRequest,
-    principal,
-    hooks,
-    maskingEnabled,
-    reservation,
-  } = plan;
+  const { plannedRequest, candidates, principal, maskingEnabled, reservation } = plan;
   routingState.usageCounts = ledger.countsSnapshot();
   const conversationKey = readConversationKey(req);
   const turn = turnOfRequest(protocol, body);
   routingState.speed = ledger.speedSnapshot(startedAt);
+  // A member whose declared concurrency is in flight goes behind the
+  // others (myna's BusyLoad, reading this process's own lanes).
+  const loads = candidateLoads({ candidates, state: accountState, now: startedAt });
   const routeInput = {
     config,
     requestedModel: routingModel,
@@ -3111,6 +3212,7 @@ async function forwardCompletion(input: ForwardCompletionInput): Promise<void> {
     withinTurn: turn.within,
     preserveOrder: plannedRequest.preserveOrder,
     catalog: input.runtime?.pricing ?? null,
+    loadOf: (candidate: GatewayCandidate) => loads.get(candidateKey(candidate)) ?? null,
   };
   const planned = await planPluginStrategy(planCandidates(routeInput), routeInput);
   // One id for the client call, shared by every candidate it walks. The
@@ -3150,557 +3252,659 @@ async function forwardCompletion(input: ForwardCompletionInput): Promise<void> {
     });
   };
 
-  const attempts = { value: 0 };
-  const restoreCounts: RestoreCounts = new Map();
-  const clientName = clientOfUserAgent(req.headers["user-agent"]);
-  const webSearchWanted = wantsWebSearch(protocol, body);
-  // myna's SearchAll: the gateway searches even for a provider that can
-  // search by itself. Its own searches (the router's calls) never do that
-  // again, as myna's `searching` marks them (myna's mynaSearches).
-  const webSearchAll = !isRouterCall(req) && searchesForAll(config);
-  let clientSearch: ClientSearch | null = null;
-  let webSearchDone = false;
-  let lastStatus: number | null = null;
-  let lastMasked: { candidate: GatewayCandidate; hits: MaskHit[]; tookMs: number } | null = null;
-  // Spends a used-up week's Codex reset when every candidate is out; `spend`
-  // validates the week and that only one is spent.
-  const weekReset =
-    input.neolixHome === undefined
-      ? null
-      : new CodexWeekReset({
-          accountsFile: () => join(input.neolixHome as string, "gateway", "codex-accounts.json"),
-          logger,
-          config: () => config,
-        });
-  let weekResetTried = false;
-  /** Spends a used-up week's reset on a resting Codex account, if one may. */
-  const spendWeekReset = async (): Promise<boolean> => {
-    if (weekReset === null || weekResetTried) {
-      return false;
-    }
-    weekResetTried = true;
-    const now = Date.now();
-    for (const candidate of planned) {
-      for (const account of providerAccounts(candidate.provider)) {
-        if (!account.enabled || account.autoReset === undefined) {
-          continue;
-        }
-        const key = accountKey(candidate.provider, account);
-        if (!routingState.rest.isResting(key, now)) {
-          continue;
-        }
-        const result = await weekReset.spend(account);
-        if (result.spent) {
-          routingState.rest.clear(key);
-          return true;
-        }
-      }
-    }
-    return false;
-  };
-  // eslint-disable-next-line complexity -- myna's one candidate walk, kept whole so its steps stay beside each other (accept, re-ask Auto, pause, fail over).
-  const walkCandidates = async (): Promise<void> => {
-    // A group's patience (myna's patience.go): once every member has failed
-    // in a way that passes, the ones back soon are asked again after a
-    // pause, longer each round and never shorter than a Retry-After.
-    const state = patienceStateFor(config, planned, routingModel);
-    const codexHints = codexBodyHints({ req, agent, body });
-    // The members asked again are appended, as myna appends to its cands;
-    // planned itself stays as it was for the trace and the failure.
-    const queue = creditsLastBehindFallbacks(
-      [...planned, ...providerFallbackQueue(config, routingModel, planned)],
-      accountState,
-      startedAt,
-    );
-    /** The reply a refused try handed over: the next tries continue it. */
-    let handover: RefusalHandover | undefined;
-    /** How many tries the safety filter refused (myna's refusals). */
-    let refusals = 0;
-    /** Why Antigravity turned the request away, when one did. */
-    let turnedAwayHint: string | null = null;
-    /** Which daemon home's turn-aways are read: this request's. */
-    const homeScope = String(input.neolixHome);
-    /** Writes a patience round into the last try, as myna does. */
-    const noteReplan = (info: PatienceReplan | null): void => {
-      if (info === null || routeTrace === undefined || route === null) {
-        return;
-      }
-      routeTrace.update(route.id, (entry) => {
-        const tried = entry.tries.at(-1);
-        if (tried === undefined) {
-          return;
-        }
-        tried.again = info.waitMs;
-        tried.replan = info.replan;
-        tried.patience = info.patience;
-      });
-    };
-    /** Keeps the last status a try failed with, for the final error. */
-    const noteStatus = (status: number | null): void => {
-      if (status !== null) {
-        lastStatus = status;
-      }
-    };
-    /** Whether Antigravity would only turn this request away again, as it
-     * did lately, while someone after this member may answer. */
-    const skipForeseen = (
-      member: GatewayCandidate,
-      target: GatewayProtocol,
-      preparedBody: Record<string, unknown>,
-      isLast: boolean,
-    ): boolean => {
-      if (isLast) {
-        return false;
-      }
-      const hint = foreseenTurnedAway(member.provider, target, preparedBody, Date.now(), homeScope);
-      if (hint === null) {
-        return false;
-      }
-      turnedAwayHint = hint;
-      noteStatus(ANTIGRAVITY_TURNED_AWAY_STATUS);
-      return true;
-    };
-    /** What a candidate's Copilot Auto refusal left to ask again, by index. */
-    const copilotRetries = new Map<
-      number,
-      { avoid: Set<CopilotProtocol>; fresh: boolean; tries: number }
-    >();
-    for (let index = 0; index < queue.length; index++) {
-      const candidate = queue[index];
-      const last = index === queue.length - 1;
-      const prepareCandidate = async (
-        member: GatewayCandidate,
-      ): Promise<{
-        candidate: GatewayCandidate;
-        upstreamProtocol: GatewayProtocol;
-        upstreamBody: Record<string, unknown>;
-        nativeSearch: boolean;
-        masking: { hits: MaskHit[]; blocked: boolean } | null;
-        maskingMs: number;
-        toolSearch: boolean;
-        sessionToken?: string;
-        auto: CopilotAutoResolved | null;
-      } | null> => {
-        // Copilot's Auto picks the model and the API it is served on
-        // (myna's copilot_auto.go); the request goes there with the
-        // session token its pick names. A refusal asks it again with the
-        // API it refused left out and a fresh pick (`copilotRetries`).
-        const retry = copilotRetries.get(index);
-        const auto = await resolveCopilotAuto({
-          config,
-          candidate: member,
-          protocol,
-          body,
-          neolixHome: input.neolixHome,
-          avoid: retry?.avoid,
-          fresh: retry?.fresh,
-          fetchImpl: input.copilotFetch,
-        });
-        const target = autoTarget(auto, member);
-        const upstreamProtocol = target.provider.protocol;
-        // A provider that searches by itself gets the request as sent (myna's
-        // Searches), unless SearchAll takes the search over; another, when a
-        // search API or a searcher answers, gets what myna found.
-        const nativeSearch = nativeSearchFor({
-          wanted: webSearchWanted,
-          all: webSearchAll,
-          upstreamProtocol,
-          clientProtocol: protocol,
-          provider: target.provider,
-          accountState,
-          modelId: target.model.id,
-        });
-        if (webSearchWanted && !nativeSearch && !webSearchDone) {
-          webSearchDone = true;
-          clientSearch = await searchForClient({
-            config,
-            masker,
-            maskingEnabled,
-            query: lastUserText(protocol, body),
+  const run: CandidateWalk = {
+    input,
+    req,
+    res,
+    protocol,
+    masker,
+    maskingRecords,
+    ledger,
+    routingState,
+    accountState,
+    quotaTracker,
+    logger,
+    onStickyChange,
+    onRestChange,
+    onRestCleared,
+    startedAt,
+    body,
+    config,
+    routingModel,
+    agent,
+    plan,
+    planned,
+    gatewayCallId,
+    routeTrace,
+    route,
+    finishRoute,
+    attempts: { value: 0 },
+    restoreCounts: new Map(),
+    clientName: clientOfUserAgent(req.headers["user-agent"]),
+    webSearchWanted: wantsWebSearch(protocol, body),
+    // myna's SearchAll: the gateway searches even for a provider that can
+    // search by itself. Its own searches (the router's calls) never do that
+    // again, as myna's `searching` marks them (myna's mynaSearches).
+    webSearchAll: !isRouterCall(req) && searchesForAll(config),
+    webSearchDone: false,
+    clientSearch: null,
+    lastStatus: null,
+    lastMasked: null,
+    // Spends a used-up week's Codex reset when every candidate is out; `spend`
+    // validates the week and that only one is spent.
+    weekReset:
+      input.neolixHome === undefined
+        ? null
+        : new CodexWeekReset({
+            accountsFile: () => join(input.neolixHome as string, "gateway", "codex-accounts.json"),
             logger,
-            post: (request) =>
-              postToSelf(req, {
-                body: request.body,
-                path: request.path,
-                signal: AbortSignal.timeout(SEARCH_TIMEOUT_MS),
-              }),
-          });
-        }
-        let upstreamBody: Record<string, unknown>;
-        let masking: { hits: MaskHit[]; blocked: boolean } | null = null;
-        let maskingMs = 0;
-        let toolSearch = false;
-        try {
-          const built = await buildAttemptBody({
-            config,
-            candidate: target,
-            protocol,
-            clientBody: body,
-            translate: translateRequest,
-            maskingEnabled,
-            masker,
-            webSearch:
-              webSearchWanted && !nativeSearch && clientSearch !== null
-                ? { said: clientSearch.said }
-                : null,
-            fromCodex: codexHints.fromCodex,
-            compaction: codexHints.compaction,
-          });
-          upstreamBody = built.body;
-          masking = built.masking;
-          maskingMs = built.tookMs;
-          toolSearch = built.toolSearch;
-        } catch (error) {
-          if (error instanceof MaskingUnavailableError) {
-            // myna's masking.model: the user asked for the model, and it is
-            // broken, not busy. Sending the rules' masking alone would be
-            // a promise the settings page doesn't make.
-            res.status(503).json({
-              error: {
-                message: `masking failed, so nothing was sent: ${error.message}`,
-                type: "masking_failed",
-              },
-            });
-            return null;
-          }
-          res.status(400).json({
-            error: { message: errorMessage(error), type: "invalid_request" },
-          });
-          return null;
-        }
-        if (input.vision !== undefined) {
-          try {
-            upstreamBody = await input.vision.prepareBody({
-              config,
-              candidate: target,
-              protocol: upstreamProtocol,
-              body: upstreamBody,
-              masker: maskingEnabled ? masker : null,
-              send: visionSend(req),
-              convertWebp: input.vision.webpRefused(target.provider.id),
-            });
-          } catch (error) {
-            const current = error instanceof CurrentImageError;
-            res.status(current ? 400 : 502).json({
-              error: {
-                message: errorMessage(error),
-                type: current ? "image_not_supported" : "image_description_failed",
-              },
-            });
-            return null;
-          }
-        }
-        if (masking !== null) {
-          lastMasked = { candidate: target, hits: masking.hits, tookMs: maskingMs };
-        }
-        if (maskingBlocked(masking, res)) {
-          maskingRecords?.add({
-            gatewayCallId,
-            agent: clientName,
-            provider: target.provider.id,
-            model: target.model.id,
-            hits: (masking as { hits: MaskHit[] }).hits,
-            tookMs: maskingMs,
-            blocked: true,
-          });
-          return null;
-        }
-        return {
-          candidate: target,
-          upstreamProtocol,
-          upstreamBody,
-          nativeSearch,
-          masking,
-          maskingMs,
-          toolSearch,
-          sessionToken: auto?.sessionToken,
-          auto,
-        };
-      };
-      const preparedCandidate = await prepareCandidate(candidate);
-      if (preparedCandidate === null) {
-        return;
-      }
-      const {
-        candidate: servedCandidate,
-        upstreamProtocol,
-        upstreamBody,
-        nativeSearch,
-        masking,
-        maskingMs,
-        toolSearch,
-        sessionToken,
-        auto: autoResolved,
-      } = preparedCandidate;
-      /** What a failed try leaves the ones after it: a refusal handed over
-       * in the same reply, Antigravity's prompt turned away, or Copilot
-       * refusing its Auto pick (the same candidate is asked again). Null
-       * when it left none. */
-      const tookAside = (result: CandidateAttemptResult): "over" | "turned" | "again" | null => {
-        if (result.handover !== undefined) {
-          // The safety filter refused this try after its reasoning, with
-          // nothing of an answer yet: the next candidate continues the same
-          // reply (myna's refusal_handover.go). It rests nobody.
-          handover = result.handover;
-          refusals += 1;
-          noteStatus(result.status);
-          return "over";
-        }
-        if (result.turnedAway !== undefined) {
-          // Antigravity refused the request, not the account: it is told as
-          // the agent's prompt turned away, and nobody else rests for it
-          // (myna's gateway.go:4040-4055).
-          antigravityTurnedAwayAt.set(homeScope, Date.now());
-          turnedAwayHint = result.turnedAway;
-          noteStatus(result.status);
-          return "turned";
-        }
-        return reaskCopilotAuto(copilotRetries, index, autoResolved, result) ? "again" : null;
-      };
-      const serveSubscription = async (
-        member: GatewayCandidate,
-        maskedBody: Record<string, unknown>,
-        searched: boolean,
-        masked: { hits: MaskHit[]; blocked: boolean } | null,
-        tookMs: number,
-      ): Promise<boolean> => {
-        if (input.claude === undefined) {
-          return false;
-        }
-        const restore =
-          maskingEnabled && masker !== null
-            ? masker.createRestorer({ counts: restoreCounts })
-            : null;
-        const served = await serveSubscriptionCandidate({
-          claude: input.claude,
-          candidate: member,
-          body: maskedBody,
-          webSearch: searched,
-          res,
-          leanPrompt: config.claudeLeanPrompt,
-          printMode: config.claudePrintMode,
-          ...(restore === null ? {} : { restorer: restore }),
-          headers: req.headers,
-        });
-        if (served !== null) {
-          if (masked !== null && served === 200) {
-            maskingRecords?.add({
-              gatewayCallId,
-              agent: clientName,
-              provider: member.provider.id,
-              model: member.model.id,
-              hits: masked.hits,
-              tookMs,
-              blocked: false,
-              back: restoredBack(restoreCounts),
-            });
-          }
-          finishRoute(served === 200, served);
-          return true;
-        }
-        return false;
-      };
-
-      // Antigravity turned this system prompt away lately: it isn't asked
-      // again while someone after it may answer (myna's gateway.go:3312).
-      if (skipForeseen(candidate, upstreamProtocol, upstreamBody, last)) {
-        continue;
-      }
-      if (
-        await serveSubscription(servedCandidate, upstreamBody, nativeSearch, masking, maskingMs)
-      ) {
-        return;
-      }
-      const canHandOver = handsOver({
-        streams: body.stream === true,
-        last,
-        wantWhole: false,
-        from: protocol,
-        refusals,
-        retries: config.refusalRetries,
-      });
-      const result = await runCandidateAttempts({
-        config,
-        candidate: servedCandidate,
-        upstreamBody,
-        upstreamProtocol,
-        protocol,
-        body,
-        req,
-        res,
-        ledger,
-        routingState,
-        accountState,
-        quotaTracker,
-        principalKey: principal.key,
-        hooks,
-        conversationKey,
-        turnNumber: turn.turn,
-        withinTurn: turn.within,
-        ...(factoryWireLeft(servedCandidate) ? { factoryRetry: true } : {}),
-        maskingEnabled,
-        masker,
-        restoreCounts,
-        attempts,
-        startedAt,
-        logger,
-        onStickyChange,
-        onRestChange,
-        onRestCleared,
-        pricing: input.runtime?.pricing ?? null,
-        accountFilter,
-        requestId: randomUUID(),
-        gatewayCallId,
-        prompt,
-        wireHook,
-        visionSend,
-        toolSearch,
-        ...(input.neolixHome === undefined
-          ? {}
-          : { gatewayDir: join(input.neolixHome, "gateway") }),
-        search:
-          webSearchWanted && !nativeSearch && clientSearch !== null
-            ? { query: clientSearch.query, pages: clientSearch.pages }
-            : null,
-        ...(input.vision === undefined ? {} : { vision: input.vision }),
-        ...(input.history === undefined ? {} : { history: input.history }),
-        ...(handover === undefined ? {} : { handover }),
-        ...(canHandOver ? { canHandOver } : {}),
-        copilotSessionToken: sessionToken,
-        ...(autoResolved === null ? {} : { copilotAuto: true }),
-        ...(titleLink === null ? {} : { titleLink }),
-        otherCandidates: hasOtherCandidates(queue, index, candidate),
-        trace:
-          routeTrace === undefined || route === null
-            ? undefined
-            : { trace: routeTrace, routeId: route.id },
-      });
-      /** The masking this served reply's client is told about. */
-      const noteServedMask = (): void => {
-        if (masking === null) {
-          return;
-        }
-        maskingRecords?.add({
-          gatewayCallId,
-          agent: clientName,
-          provider: servedCandidate.provider.id,
-          model: servedCandidate.model.id,
-          hits: masking.hits,
-          tookMs: maskingMs,
-          blocked: false,
-          back: restoredBack(restoreCounts),
-        });
-      };
-      if (result.delivered) {
-        noteServedMask();
-        finishRoute(true, null);
-        return;
-      }
-      const aside = tookAside(result);
-      if (aside !== null) {
-        // Copilot's Auto refusing its pick asks this same candidate again,
-        // with a fresh one (myna's copilot_refused.go).
-        if (aside === "again") {
-          index -= 1;
-        }
-        continue;
-      }
-      noteStatus(result.status);
-      // The last of this round asks the ones back soon again, after a pause.
-      noteReplan(
-        await notePatienceFailure(
-          state,
-          candidate,
-          result,
-          last,
-          res,
-          queue,
-          keepsPauseAlive(body, protocol),
-        ),
-      );
-      continue;
-    }
-
-    const failAll = (): void => {
-      if (lastMasked !== null) {
-        maskingRecords?.add({
-          gatewayCallId,
-          agent: clientName,
-          provider: lastMasked.candidate.provider.id,
-          model: lastMasked.candidate.model.id,
-          hits: lastMasked.hits,
-          tookMs: lastMasked.tookMs,
-          blocked: false,
-          back: restoredBack(restoreCounts),
-        });
-      }
-      finishRoute(false, lastStatus);
-      // The reply a refused try began is open: the last failure ends it as
-      // the stream's error, as no status or JSON can follow (myna's failTo).
-      if (handover !== undefined && res.headersSent) {
-        res.write(loopErrorEvent(protocol, `All upstreams failed for ${String(body.model)}`));
-        res.end();
-        return;
-      }
-      // A Claude Code signed in to claude.ai sent its own sign-in as the
-      // key: the last provider's 401 (or revoked 403) is told as Neolix's
-      // credential refused, never as that sign-in (myna's claude_signin.go).
-      const upstreamError = (res.locals as Record<string, unknown>).upstreamError as
-        | { status: number; body: string }
-        | undefined;
-      const signInFailure =
-        upstreamError === undefined || !isClaudeSignIn(req.headers.authorization)
-          ? null
-          : claudeSignInFailure({
-              status: upstreamError.status,
-              body: upstreamError.body,
-              provider: planned.at(-1)?.provider.id,
-            });
-      if (signInFailure !== null) {
-        res.status(signInFailure.status);
-        res.setHeader("content-type", "application/json");
-        res.send(signInFailure.body);
-        return;
-      }
-      if (turnedAwayHint !== null) {
-        res.status(ANTIGRAVITY_TURNED_AWAY_STATUS).json({
-          error: {
-            message: turnedAwayHint,
-            type: ANTIGRAVITY_TURNED_AWAY_ERR_TYPE,
-            upstream_status: lastStatus,
-          },
-        });
-        return;
-      }
-      res.status(502).json({
-        error: {
-          message: `All upstreams failed for ${body.model}`,
-          type: "gateway_error",
-          upstream_status: lastStatus,
-        },
-      });
-    };
-    // Every candidate is out or resting. A Codex account whose week is used
-    // up may spend a reset and come back for this request (myna's
-    // codex_autoreset.go:21); once only, so a second failure is final.
-    if (await spendWeekReset()) {
-      await walkCandidates();
-      return;
-    }
-    failAll();
+            config: () => config,
+          }),
+    weekResetTried: false,
+    conversationKey,
+    turn,
+    titleLink,
+    prompt,
+    homeScope: String(input.neolixHome),
   };
   try {
     // A provider asked by name whose accounts are all held at their caps
     // ends the request at 429 rather than at its fallbacks (myna's CapStop).
-    if (refuseAtProviderCap({ config, routingModel, planned, accountState, res, finishRoute })) {
+    if (
+      refuseAtProviderCap({
+        config,
+        routingModel,
+        planned,
+        accountState,
+        res,
+        finishRoute: run.finishRoute,
+      })
+    ) {
       return;
     }
-    await walkCandidates();
+    await walkCandidates(run);
+  } catch (error) {
+    // A plugin middleware turned the request away (myna's ctx.reject). It is
+    // written here, where the configured request hook's rejection is, so both
+    // answer in the client's error shape with the middleware's status/text.
+    if (!(error instanceof GatewayPluginRejection)) throw error;
+    run.finishRoute(false, error.status);
+    if (!res.headersSent) {
+      res.status(error.status).json({
+        error: { message: error.message, type: "hook_rejected" },
+      });
+    }
   } finally {
     // The held usage goes back whatever way the request left: delivered,
     // refused, or the client gone.
     reservation.release();
   }
+}
+
+/** Writes a patience round into the last try, as myna does. */
+function noteReplan(run: CandidateWalk, info: PatienceReplan | null): void {
+  if (info === null || run.routeTrace === undefined || run.route === null) {
+    return;
+  }
+  run.routeTrace.update(run.route.id, (entry) => {
+    const tried = entry.tries.at(-1);
+    if (tried === undefined) {
+      return;
+    }
+    tried.again = info.waitMs;
+    tried.replan = info.replan;
+    tried.patience = info.patience;
+  });
+}
+
+/** Keeps the last status a try failed with, for the final error. */
+function noteStatus(run: CandidateWalk, status: number | null): void {
+  if (status !== null) {
+    run.lastStatus = status;
+  }
+}
+
+/** The masking this served reply's client is told about. */
+function noteServedMask(run: CandidateWalk, prepared: PreparedCandidate): void {
+  if (prepared.masking === null) {
+    return;
+  }
+  run.maskingRecords?.add({
+    gatewayCallId: run.gatewayCallId,
+    agent: run.clientName,
+    provider: prepared.candidate.provider.id,
+    model: prepared.candidate.model.id,
+    hits: prepared.masking.hits,
+    tookMs: prepared.maskingMs,
+    blocked: false,
+    back: restoredBack(run.restoreCounts),
+  });
+}
+
+/** Spends a used-up week's reset on a resting Codex account, if one may. */
+async function spendWeekReset(run: CandidateWalk): Promise<boolean> {
+  const weekReset = run.weekReset;
+  if (weekReset === null || run.weekResetTried) {
+    return false;
+  }
+  run.weekResetTried = true;
+  const now = Date.now();
+  for (const candidate of run.planned) {
+    for (const account of providerAccounts(candidate.provider)) {
+      if (!account.enabled || account.autoReset === undefined) {
+        continue;
+      }
+      const key = accountKey(candidate.provider, account);
+      if (!run.routingState.rest.isResting(key, now)) {
+        continue;
+      }
+      const result = await weekReset.spend(account);
+      if (result.spent) {
+        run.routingState.rest.clear(key);
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * myna's one candidate walk: members are asked in order until one delivers.
+ * A member that fails for a reason that passes (a handover, a Copilot Auto
+ * pick, a patience round) leaves the walk going.
+ */
+async function walkCandidates(run: CandidateWalk): Promise<void> {
+  // A group's patience (myna's patience.go): once every member has failed
+  // in a way that passes, the ones back soon are asked again after a
+  // pause, longer each round and never shorter than a Retry-After.
+  const round: CandidateRound = {
+    patience: patienceStateFor(run.config, run.planned, run.routingModel),
+    codexHints: codexBodyHints({ req: run.req, agent: run.agent, body: run.body }),
+    // The members asked again are appended, as myna appends to its cands;
+    // planned itself stays as it was for the trace and the failure.
+    queue: creditsLastBehindFallbacks(
+      [...run.planned, ...providerFallbackQueue(run.config, run.routingModel, run.planned)],
+      run.accountState,
+      run.startedAt,
+    ),
+    handover: undefined,
+    refusals: 0,
+    turnedAwayHint: null,
+    copilotRetries: new Map(),
+  };
+  for (let index = 0; index < round.queue.length; index++) {
+    const candidate = round.queue[index];
+    const last = index === round.queue.length - 1;
+    const preparedCandidate = await prepareCandidate(run, round, candidate, index);
+    if (preparedCandidate === null) {
+      return;
+    }
+    // Antigravity turned this system prompt away lately: it isn't asked
+    // again while someone after it may answer (myna's gateway.go:3312).
+    if (skipForeseen(run, round, candidate, preparedCandidate, last)) {
+      continue;
+    }
+    if (await serveSubscription(run, preparedCandidate)) {
+      return;
+    }
+    const outcome = await attemptCandidate(run, round, candidate, preparedCandidate, index, last);
+    if (outcome === "delivered") {
+      return;
+    }
+    if (outcome === "again") {
+      index -= 1;
+    }
+  }
+  // Every candidate is out or resting. A Codex account whose week is used
+  // up may spend a reset and come back for this request (myna's
+  // codex_autoreset.go:21); once only, so a second failure is final.
+  if (await spendWeekReset(run)) {
+    await walkCandidates(run);
+    return;
+  }
+  failAll(run, round);
+}
+
+/** Whether Antigravity would only turn this request away again, as it did
+ * lately, while someone after this member may answer. */
+function skipForeseen(
+  run: CandidateWalk,
+  round: CandidateRound,
+  member: GatewayCandidate,
+  prepared: PreparedCandidate,
+  isLast: boolean,
+): boolean {
+  if (isLast) {
+    return false;
+  }
+  const hint = foreseenTurnedAway(
+    member.provider,
+    prepared.upstreamProtocol,
+    prepared.upstreamBody,
+    Date.now(),
+    run.homeScope,
+  );
+  if (hint === null) {
+    return false;
+  }
+  round.turnedAwayHint = hint;
+  noteStatus(run, ANTIGRAVITY_TURNED_AWAY_STATUS);
+  return true;
+}
+
+/**
+ * Resolves a candidate's Auto pick, search and masked body; null when a
+ * response was sent instead (the request cannot be built).
+ */
+async function prepareCandidate(
+  run: CandidateWalk,
+  round: CandidateRound,
+  member: GatewayCandidate,
+  index: number,
+): Promise<PreparedCandidate | null> {
+  // Copilot's Auto picks the model and the API it is served on
+  // (myna's copilot_auto.go); the request goes there with the
+  // session token its pick names. A refusal asks it again with the
+  // API it refused left out and a fresh pick (`copilotRetries`).
+  const retry = round.copilotRetries.get(index);
+  const auto = await resolveCopilotAuto({
+    config: run.config,
+    candidate: member,
+    protocol: run.protocol,
+    body: run.body,
+    neolixHome: run.input.neolixHome,
+    avoid: retry?.avoid,
+    fresh: retry?.fresh,
+    fetchImpl: run.input.copilotFetch,
+  });
+  const target = autoTarget(auto, member);
+  const upstreamProtocol = target.provider.protocol;
+  // A provider that searches by itself gets the request as sent (myna's
+  // Searches), unless SearchAll takes the search over; another, when a
+  // search API or a searcher answers, gets what myna found.
+  const nativeSearch = nativeSearchFor({
+    wanted: run.webSearchWanted,
+    all: run.webSearchAll,
+    upstreamProtocol,
+    clientProtocol: run.protocol,
+    provider: target.provider,
+    accountState: run.accountState,
+    modelId: target.model.id,
+  });
+  if (run.webSearchWanted && !nativeSearch && !run.webSearchDone) {
+    run.webSearchDone = true;
+    run.clientSearch = await searchForClient({
+      config: run.config,
+      masker: run.masker,
+      maskingEnabled: run.plan.maskingEnabled,
+      query: lastUserText(run.protocol, run.body),
+      logger: run.logger,
+      post: (request) =>
+        postToSelf(run.req, {
+          body: request.body,
+          path: request.path,
+          signal: AbortSignal.timeout(SEARCH_TIMEOUT_MS),
+        }),
+    });
+  }
+  let upstreamBody: Record<string, unknown>;
+  let masking: { hits: MaskHit[]; blocked: boolean } | null = null;
+  let maskingMs = 0;
+  let toolSearch = false;
+  let zenTools: ZenTools | null = null;
+  try {
+    const zen = zenShapingFor(target, run.protocol, run.body);
+    const built = await buildAttemptBody({
+      config: run.config,
+      candidate: target,
+      protocol: run.protocol,
+      clientBody: run.body,
+      translate: run.plan.translateRequest,
+      zen,
+      maskingEnabled: run.plan.maskingEnabled,
+      masker: run.masker,
+      webSearch:
+        run.webSearchWanted && !nativeSearch && run.clientSearch !== null
+          ? { said: run.clientSearch.said }
+          : null,
+      fromCodex: round.codexHints.fromCodex,
+      compaction: round.codexHints.compaction,
+    });
+    upstreamBody = built.body;
+    masking = built.masking;
+    maskingMs = built.tookMs;
+    toolSearch = built.toolSearch;
+    zenTools = built.zen;
+  } catch (error) {
+    if (error instanceof MaskingUnavailableError) {
+      // myna's masking.model: the user asked for the model, and it is
+      // broken, not busy. Sending the rules' masking alone would be
+      // a promise the settings page doesn't make.
+      run.res.status(503).json({
+        error: {
+          message: `masking failed, so nothing was sent: ${error.message}`,
+          type: "masking_failed",
+        },
+      });
+      return null;
+    }
+    run.res.status(400).json({
+      error: { message: errorMessage(error), type: "invalid_request" },
+    });
+    return null;
+  }
+  const vision = run.input.vision;
+  if (vision !== undefined) {
+    try {
+      upstreamBody = await vision.prepareBody({
+        config: run.config,
+        candidate: target,
+        protocol: upstreamProtocol,
+        body: upstreamBody,
+        masker: run.plan.maskingEnabled ? run.masker : null,
+        send: visionSend(run.req),
+        convertWebp: vision.webpRefused(target.provider.id),
+      });
+    } catch (error) {
+      const current = error instanceof CurrentImageError;
+      run.res.status(current ? 400 : 502).json({
+        error: {
+          message: errorMessage(error),
+          type: current ? "image_not_supported" : "image_description_failed",
+        },
+      });
+      return null;
+    }
+  }
+  if (masking !== null) {
+    run.lastMasked = { candidate: target, hits: masking.hits, tookMs: maskingMs };
+  }
+  if (maskingBlocked(masking, run.res)) {
+    run.maskingRecords?.add({
+      gatewayCallId: run.gatewayCallId,
+      agent: run.clientName,
+      provider: target.provider.id,
+      model: target.model.id,
+      hits: (masking as { hits: MaskHit[] }).hits,
+      tookMs: maskingMs,
+      blocked: true,
+    });
+    return null;
+  }
+  return {
+    candidate: target,
+    upstreamProtocol,
+    upstreamBody,
+    nativeSearch,
+    masking,
+    maskingMs,
+    toolSearch,
+    zen: zenTools,
+    sessionToken: auto?.sessionToken,
+    auto,
+  };
+}
+
+/**
+ * Serves a candidate through Claude Code's subscription bridge when it has
+ * one; false when the usual path applies.
+ */
+async function serveSubscription(
+  run: CandidateWalk,
+  prepared: PreparedCandidate,
+): Promise<boolean> {
+  const claude = run.input.claude;
+  if (claude === undefined) {
+    return false;
+  }
+  const restore =
+    run.plan.maskingEnabled && run.masker !== null
+      ? run.masker.createRestorer({ counts: run.restoreCounts })
+      : null;
+  const served = await serveSubscriptionCandidate({
+    claude,
+    candidate: prepared.candidate,
+    body: prepared.upstreamBody,
+    webSearch: prepared.nativeSearch,
+    res: run.res,
+    leanPrompt: run.config.claudeLeanPrompt,
+    printMode: run.config.claudePrintMode,
+    ...(restore === null ? {} : { restorer: restore }),
+    headers: run.req.headers,
+  });
+  if (served === null) {
+    return false;
+  }
+  if (prepared.masking !== null && served === 200) {
+    run.maskingRecords?.add({
+      gatewayCallId: run.gatewayCallId,
+      agent: run.clientName,
+      provider: prepared.candidate.provider.id,
+      model: prepared.candidate.model.id,
+      hits: prepared.masking.hits,
+      tookMs: prepared.maskingMs,
+      blocked: false,
+      back: restoredBack(run.restoreCounts),
+    });
+  }
+  run.finishRoute(served === 200, served);
+  return true;
+}
+
+/** What a failed try leaves the ones after it: a refusal handed over in
+ * the same reply, Antigravity's prompt turned away, or Copilot refusing
+ * its Auto pick (the same candidate is asked again). Null when it left
+ * none. */
+function tookAside(
+  run: CandidateWalk,
+  round: CandidateRound,
+  result: CandidateAttemptResult,
+  index: number,
+  auto: CopilotAutoResolved | null,
+): "over" | "turned" | "again" | null {
+  if (result.handover !== undefined) {
+    // The safety filter refused this try after its reasoning, with
+    // nothing of an answer yet: the next candidate continues the same
+    // reply (myna's refusal_handover.go). It rests nobody.
+    round.handover = result.handover;
+    round.refusals += 1;
+    noteStatus(run, result.status);
+    return "over";
+  }
+  if (result.turnedAway !== undefined) {
+    // Antigravity refused the request, not the account: it is told as
+    // the agent's prompt turned away, and nobody else rests for it
+    // (myna's gateway.go:4040-4055).
+    antigravityTurnedAwayAt.set(run.homeScope, Date.now());
+    round.turnedAwayHint = result.turnedAway;
+    noteStatus(run, result.status);
+    return "turned";
+  }
+  return reaskCopilotAuto(round.copilotRetries, index, auto, result) ? "again" : null;
+}
+
+/** The attempt a prepared candidate is run with. */
+function candidateAttemptInput(
+  run: CandidateWalk,
+  round: CandidateRound,
+  member: GatewayCandidate,
+  prepared: PreparedCandidate,
+  index: number,
+  canHandOver: boolean,
+): CandidateAttemptContext {
+  const gatewayDir =
+    run.input.neolixHome === undefined ? undefined : join(run.input.neolixHome, "gateway");
+  const search =
+    run.webSearchWanted && !prepared.nativeSearch && run.clientSearch !== null
+      ? { query: run.clientSearch.query, pages: run.clientSearch.pages }
+      : null;
+  const trace =
+    run.routeTrace === undefined || run.route === null
+      ? undefined
+      : { trace: run.routeTrace, routeId: run.route.id };
+  return {
+    config: run.config,
+    candidate: prepared.candidate,
+    upstreamBody: prepared.upstreamBody,
+    upstreamProtocol: prepared.upstreamProtocol,
+    protocol: run.protocol,
+    body: run.body,
+    req: run.req,
+    res: run.res,
+    ledger: run.ledger,
+    routingState: run.routingState,
+    accountState: run.accountState,
+    quotaTracker: run.quotaTracker,
+    principalKey: run.plan.principal.key,
+    hooks: run.plan.hooks,
+    conversationKey: run.conversationKey,
+    turnNumber: run.turn.turn,
+    withinTurn: run.turn.within,
+    ...(factoryWireLeft(prepared.candidate) ? { factoryRetry: true } : {}),
+    maskingEnabled: run.plan.maskingEnabled,
+    masker: run.masker,
+    restoreCounts: run.restoreCounts,
+    attempts: run.attempts,
+    startedAt: run.startedAt,
+    logger: run.logger,
+    onStickyChange: run.onStickyChange,
+    onRestChange: run.onRestChange,
+    onRestCleared: run.onRestCleared,
+    pricing: run.input.runtime?.pricing ?? null,
+    accountFilter: run.plan.accountFilter,
+    requestId: randomUUID(),
+    gatewayCallId: run.gatewayCallId,
+    prompt: run.prompt,
+    wireHook,
+    visionSend,
+    toolSearch: prepared.toolSearch,
+    zen: prepared.zen,
+    ...(gatewayDir === undefined ? {} : { gatewayDir }),
+    search,
+    ...(run.input.vision === undefined ? {} : { vision: run.input.vision }),
+    ...(run.input.history === undefined ? {} : { history: run.input.history }),
+    ...(round.handover === undefined ? {} : { handover: round.handover }),
+    ...(canHandOver ? { canHandOver } : {}),
+    copilotSessionToken: prepared.sessionToken,
+    ...(prepared.auto === null ? {} : { copilotAuto: true }),
+    ...(run.titleLink === null ? {} : { titleLink: run.titleLink }),
+    otherCandidates: hasOtherCandidates(round.queue, index, member),
+    trace,
+  };
+}
+
+/** Tries one prepared candidate and settles what the walk does next. */
+async function attemptCandidate(
+  run: CandidateWalk,
+  round: CandidateRound,
+  member: GatewayCandidate,
+  prepared: PreparedCandidate,
+  index: number,
+  last: boolean,
+): Promise<CandidateOutcome> {
+  const canHandOver = handsOver({
+    streams: run.body.stream === true,
+    last,
+    wantWhole: false,
+    from: run.protocol,
+    refusals: round.refusals,
+    retries: run.config.refusalRetries,
+  });
+  const result = await runCandidateAttempts(
+    candidateAttemptInput(run, round, member, prepared, index, canHandOver),
+  );
+  if (result.delivered) {
+    noteServedMask(run, prepared);
+    run.finishRoute(true, null);
+    return "delivered";
+  }
+  const aside = tookAside(run, round, result, index, prepared.auto);
+  if (aside === "again") {
+    // Copilot's Auto refusing its pick asks this same candidate again,
+    // with a fresh one (myna's copilot_refused.go).
+    return "again";
+  }
+  if (aside !== null) {
+    return "next";
+  }
+  noteStatus(run, result.status);
+  // The last of this round asks the ones back soon again, after a pause.
+  noteReplan(
+    run,
+    await notePatienceFailure(
+      round.patience,
+      prepared.candidate,
+      result,
+      last,
+      run.res,
+      round.queue,
+      keepsPauseAlive(run.body, run.protocol),
+    ),
+  );
+  return "next";
+}
+
+/** Ends the request when every candidate failed. */
+function failAll(run: CandidateWalk, round: CandidateRound): void {
+  if (run.lastMasked !== null) {
+    run.maskingRecords?.add({
+      gatewayCallId: run.gatewayCallId,
+      agent: run.clientName,
+      provider: run.lastMasked.candidate.provider.id,
+      model: run.lastMasked.candidate.model.id,
+      hits: run.lastMasked.hits,
+      tookMs: run.lastMasked.tookMs,
+      blocked: false,
+      back: restoredBack(run.restoreCounts),
+    });
+  }
+  run.finishRoute(false, run.lastStatus);
+  // The reply a refused try began is open: the last failure ends it as
+  // the stream's error, as no status or JSON can follow (myna's failTo).
+  if (round.handover !== undefined && run.res.headersSent) {
+    run.res.write(
+      loopErrorEvent(run.protocol, `All upstreams failed for ${String(run.body.model)}`),
+    );
+    run.res.end();
+    return;
+  }
+  // A Claude Code signed in to claude.ai sent its own sign-in as the
+  // key: the last provider's 401 (or revoked 403) is told as Neolix's
+  // credential refused, never as that sign-in (myna's claude_signin.go).
+  const upstreamError = (run.res.locals as Record<string, unknown>).upstreamError as
+    | { status: number; body: string }
+    | undefined;
+  const signInFailure =
+    upstreamError === undefined || !isClaudeSignIn(run.req.headers.authorization)
+      ? null
+      : claudeSignInFailure({
+          status: upstreamError.status,
+          body: upstreamError.body,
+          provider: run.planned.at(-1)?.provider.id,
+        });
+  if (signInFailure !== null) {
+    run.res.status(signInFailure.status);
+    run.res.setHeader("content-type", "application/json");
+    run.res.send(signInFailure.body);
+    return;
+  }
+  if (round.turnedAwayHint !== null) {
+    run.res.status(ANTIGRAVITY_TURNED_AWAY_STATUS).json({
+      error: {
+        message: round.turnedAwayHint,
+        type: ANTIGRAVITY_TURNED_AWAY_ERR_TYPE,
+        upstream_status: run.lastStatus,
+      },
+    });
+    return;
+  }
+  run.res.status(502).json({
+    error: {
+      message: `All upstreams failed for ${run.body.model}`,
+      type: "gateway_error",
+      upstream_status: run.lastStatus,
+    },
+  });
 }
 
 /** What a patience round leaves the trace: the pause, the members asked
@@ -4489,6 +4693,23 @@ function countCharacters(value: unknown): number {
   return 0;
 }
 
+/**
+ * Zen's free tier is offered OpenCode's tools and environment (myna's
+ * zenFreeTools). The shaping reads the client's own body, so it is built
+ * once and translated whatever the protocols.
+ */
+function zenShapingFor(
+  candidate: GatewayCandidate,
+  protocol: GatewayProtocol,
+  body: CompletionBody,
+): { request: IrRequest; tools: ZenTools } | null {
+  const modeled = candidate.model.upstreamName ?? candidate.model.id;
+  if (!openCodeProvider(candidate.provider) || !openCodeFree(modeled)) {
+    return null;
+  }
+  return zenFreeTools(codecFor(protocol).parseRequest(body), workFolderOf(body));
+}
+
 interface BuildAttemptBodyInput {
   config: GatewayConfig;
   candidate: GatewayCandidate;
@@ -4499,6 +4720,11 @@ interface BuildAttemptBodyInput {
     model: string,
     loadedInPlace?: boolean,
   ) => Record<string, unknown>;
+  /**
+   * The request offered as OpenCode asks it, for Zen's free tier; it forces
+   * a translation even when the protocols match (myna's zenfree.go).
+   */
+  zen: { request: IrRequest; tools: ZenTools } | null;
   maskingEnabled: boolean;
   masker: Masker;
   /** What a search myna ran itself found, for a provider that can't search. */
@@ -4515,18 +4741,31 @@ interface BuiltAttemptBody {
   tookMs: number;
   /** The request offered Responses' client-side tool_search. */
   toolSearch: boolean;
+  /** How the request's tools were offered to Zen's free tier, when it was. */
+  zen: ZenTools | null;
 }
 
 async function buildAttemptBody(input: BuildAttemptBodyInput): Promise<BuiltAttemptBody> {
   const target = input.candidate.provider.protocol;
-  const translated =
-    target === input.protocol
-      ? { ...input.clientBody, model: input.candidate.model.id }
-      : input.translate(
-          target,
-          input.candidate.model.id,
-          target === "openai-responses" && loadsAdditionalToolsInPlace(input.candidate.provider),
-        );
+  // Zen's free tier is never asked as the client sent it: its tools and
+  // environment are shaped as OpenCode's, and the request is translated so
+  // that shaping reaches the wire even when the protocols match (myna's
+  // zenfree.go, gateway.go:4965).
+  let translated: Record<string, unknown>;
+  if (input.zen !== null) {
+    translated = codecFor(target).buildRequestBody(
+      { ...input.zen.request, stream: true },
+      input.candidate.model.id,
+    );
+  } else if (target === input.protocol) {
+    translated = { ...input.clientBody, model: input.candidate.model.id };
+  } else {
+    translated = input.translate(
+      target,
+      input.candidate.model.id,
+      target === "openai-responses" && loadsAdditionalToolsInPlace(input.candidate.provider),
+    );
+  }
   // A Chat body bound to Gemini's OpenAI-compatible API carries its call
   // signatures in extra_content (myna's gemini_signature.go).
   const signed = withOpenAiCallSignatures(input.candidate.provider, translated);
@@ -4619,7 +4858,8 @@ async function buildAttemptBody(input: BuildAttemptBodyInput): Promise<BuiltAtte
   // What a masking stand-in stood for, in the note the model reads (myna's
   // placeholder note); a Claude Code or ChatGPT-backend body keeps as it is.
   const toolSearch = fitted.toolSearch;
-  return finishAttemptBody(input, withXai, toolSearch);
+  const built = await finishAttemptBody(input, withXai, toolSearch);
+  return { ...built, zen: input.zen === null ? null : input.zen.tools };
 }
 
 /**
@@ -4640,7 +4880,7 @@ async function finishAttemptBody(
   input: BuildAttemptBodyInput,
   body: Record<string, unknown>,
   toolSearch: boolean,
-): Promise<BuiltAttemptBody> {
+): Promise<Omit<BuiltAttemptBody, "zen">> {
   const target = input.candidate.provider.protocol;
   const firstAccount = providerAccounts(input.candidate.provider)[0] ?? {};
   const noted = (value: Record<string, unknown>): Record<string, unknown> =>
@@ -6166,13 +6406,29 @@ function gatewayTrace(
 } {
   const routes = ledger.recentEntries().map((entry, index) => {
     const served = entry.model.length > 0 ? `${entry.provider}/${entry.model}` : entry.provider;
+    // The same reading as the persisted rows: an answered failure names its
+    // status; a status of 0 never reached the vendor, so its own message is
+    // the only reason there is.
+    let tryError: string | null = null;
+    if (!entry.ok) {
+      tryError = entry.status > 0 ? `HTTP ${entry.status}` : (entry.errorMessage ?? null);
+    }
     const route: Record<string, unknown> = {
       id: index + 1,
       time: entry.time,
       asked: entry.requested,
       served,
       model: served,
-      tries: [{ model: served, done: true, status: entry.status }],
+      tries: [
+        {
+          provider: entry.provider,
+          model: entry.model.length > 0 ? entry.model : null,
+          done: true,
+          status: entry.status,
+          millis: entry.durationMs,
+          error: tryError,
+        },
+      ],
       done: true,
       status: entry.status,
       millis: entry.durationMs,
@@ -8027,6 +8283,11 @@ async function forwardRaw(input: RawRouteContext): Promise<void> {
   // Every raw API spends the key's windows and pace too, not only chat:
   // embeddings, images, speech, rerank and the multipart uploads.
   const { principal, accountFilter } = access;
+  const loads = candidateLoads({
+    candidates: plannedRequest.candidates,
+    state: input.runtime.accountState,
+    now,
+  });
   const routeInput = {
     config,
     requestedModel: routingModel,
@@ -8036,6 +8297,7 @@ async function forwardRaw(input: RawRouteContext): Promise<void> {
     conversationKey: readConversationKey(input.req),
     preserveOrder: plannedRequest.preserveOrder,
     catalog: input.runtime.pricing ?? null,
+    loadOf: (candidate: GatewayCandidate) => loads.get(candidateKey(candidate)) ?? null,
   };
   const planned = await planPluginStrategy(planCandidates(routeInput), routeInput);
   const trace = input.runtime.routeTrace;
@@ -8147,6 +8409,7 @@ async function forwardRaw(input: RawRouteContext): Promise<void> {
                 model: candidate.model.id,
                 body: sentBody,
                 timing: { waitMs: imageWaitMs(config) },
+                gatewayDir: join(dirname(input.configStore.filePath), "gateway"),
               })
             : null;
         upstream =

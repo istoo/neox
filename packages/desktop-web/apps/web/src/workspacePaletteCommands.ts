@@ -14,6 +14,7 @@ import { useGitCommandPaletteStore } from "./gitCommandPaletteStore";
 import { cycleThemeMode } from "./hooks/useTheme";
 import { t } from "./i18n";
 import { useRightDockStore, selectRightDockState } from "./rightDockStore";
+import type { RightDockPaneKind } from "./rightDockStore.logic";
 import { findDirectionalNeighbor, collectLeaves, findLeafPaneById } from "./splitView.logic";
 import {
   type PaneId,
@@ -28,6 +29,8 @@ export interface WorkspacePaletteInput {
   activeThreadId: ThreadId | null;
   activeProjectId: ProjectId | null;
   isProjectPinned: boolean;
+  /** The active thread has a Neox workspace whose setup can be observed. */
+  hasWorkspaceSetup: boolean;
   openThreadTabIds: readonly ThreadId[];
   onTogglePinProject: (projectId: ProjectId) => void;
   onToggleLeftSidebar: () => void;
@@ -38,7 +41,7 @@ export interface WorkspacePaletteInput {
   onOpenSplitView: (splitViewId: SplitViewId, threadId: ThreadId) => void;
 }
 
-function openDockPane(threadId: ThreadId, kind: SplitPanePanel | "git"): void {
+function openDockPane(threadId: ThreadId, kind: RightDockPaneKind): void {
   const store = useRightDockStore.getState();
   const state = selectRightDockState(threadId)(store);
   const existing = state.panes.find((pane) => pane.kind === kind);
@@ -124,7 +127,7 @@ function buildPanelActions(
   input: WorkspacePaletteInput,
   threadId: ThreadId,
 ): SidebarSearchAction[] {
-  const dockKinds: readonly (SplitPanePanel | "git")[] = [
+  const dockKinds: readonly RightDockPaneKind[] = [
     "terminal",
     "browser",
     "diff",
@@ -133,6 +136,20 @@ function buildPanelActions(
   ];
   const splitKinds: readonly SplitPanePanel[] = ["terminal", "browser", "diff", "explorer"];
   return [
+    // Worktree setup is a workspace-level view rather than a durable panel; it is listed
+    // only when the thread has a workspace the host can report on.
+    ...(input.hasWorkspaceSetup
+      ? [
+          {
+            id: "workspace-panel:setup",
+            label: t("workspace:palette_showSetup"),
+            description: t("workspace:palette_openPanelDescription"),
+            keywords: ["setup", "worktree", "initialize", "script"],
+            requiresQuery: true,
+            run: () => openDockPane(threadId, "setup"),
+          } satisfies SidebarSearchAction,
+        ]
+      : []),
     ...dockKinds.map((kind) => {
       const label = getRightDockPaneMeta(kind).label;
       return {

@@ -726,6 +726,10 @@ export const ProjectScript = Schema.Struct({
   command: TrimmedNonEmptyString,
   icon: ProjectScriptIcon,
   runOnWorktreeCreate: Schema.Boolean,
+  /** neox.json `scripts[name].type`; "service" keeps the script running as a local service. */
+  type: Schema.optional(Schema.NullOr(Schema.String)),
+  /** neox.json `scripts[name].port`; accepts the free-form value a config may carry. */
+  port: Schema.optional(Schema.NullOr(Schema.Union([Schema.Number, Schema.String]))),
 });
 export type ProjectScript = typeof ProjectScript.Type;
 
@@ -806,6 +810,10 @@ export const OrchestrationProject = Schema.Struct({
   workspaceRoot: TrimmedNonEmptyString,
   defaultModelSelection: Schema.NullOr(ModelSelection),
   scripts: Schema.Array(ProjectScript),
+  /** neox.json `worktree.setup`, projected so project settings can edit it. */
+  worktreeSetup: Schema.optional(Schema.NullOr(Schema.String)),
+  /** neox.json `worktree.teardown`, projected so project settings can edit it. */
+  worktreeTeardown: Schema.optional(Schema.NullOr(Schema.String)),
   isPinned: Schema.optional(Schema.Boolean).pipe(Schema.withDecodingDefault(() => false)),
   spaceId: Schema.optional(Schema.NullOr(SpaceId)).pipe(Schema.withDecodingDefault(() => null)),
   additionalFolders: ProjectAdditionalFoldersField,
@@ -824,6 +832,10 @@ export const OrchestrationProjectShell = Schema.Struct({
   workspaceRoot: TrimmedNonEmptyString,
   defaultModelSelection: Schema.NullOr(ModelSelection),
   scripts: Schema.Array(ProjectScript),
+  /** neox.json `worktree.setup`, projected so project settings can edit it. */
+  worktreeSetup: Schema.optional(Schema.NullOr(Schema.String)),
+  /** neox.json `worktree.teardown`, projected so project settings can edit it. */
+  worktreeTeardown: Schema.optional(Schema.NullOr(Schema.String)),
   isPinned: Schema.optional(Schema.Boolean).pipe(Schema.withDecodingDefault(() => false)),
   spaceId: Schema.optional(Schema.NullOr(SpaceId)).pipe(Schema.withDecodingDefault(() => null)),
   additionalFolders: ProjectAdditionalFoldersField,
@@ -1494,6 +1506,10 @@ const ProjectMetaUpdateCommand = Schema.Struct({
   ),
   defaultModelSelection: Schema.optional(Schema.NullOr(ModelSelection)),
   scripts: Schema.optional(Schema.Array(ProjectScript)),
+  /** Write `worktree.setup`; null clears it. */
+  worktreeSetup: Schema.optional(Schema.NullOr(Schema.String)),
+  /** Write `worktree.teardown`; null clears it. */
+  worktreeTeardown: Schema.optional(Schema.NullOr(Schema.String)),
   isPinned: Schema.optional(Schema.Boolean),
   spaceId: Schema.optional(Schema.NullOr(SpaceId)),
 });

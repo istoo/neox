@@ -8,12 +8,15 @@ import {
   WS_METHODS,
   type GitActionProgressEvent,
   type GitActionProgressPhase,
+  type GitCommit,
+  type GitCommitDiffResult,
   type GitCreateDetachedWorktreeInput,
   type GitCreateWorktreeInput,
   type GitCreateWorktreeResult,
   type GitDiscardChangesInput,
   type GitHubRepositoryResult,
   type GitListBranchesResult,
+  type GitListCommitsResult,
   type GitListRecentCommitsResult,
   type GitMergeFromBaseInput,
   type GitMergeLocallyInput,
@@ -95,11 +98,22 @@ interface NeolixBranchSuggestions {
   readonly error: string | null;
 }
 
+interface NeolixCommitFile {
+  readonly path: string;
+  readonly additions: number;
+  readonly deletions: number;
+  readonly status?: "added" | "modified" | "deleted" | "renamed";
+}
+
 interface NeolixCommit {
   readonly sha: string;
   readonly shortSha: string;
   readonly subject: string;
+  readonly authorName: string;
   readonly authorDate: string;
+  readonly isOnRemote?: boolean;
+  readonly isOnBase?: boolean;
+  readonly files?: ReadonlyArray<NeolixCommitFile>;
 }
 
 interface NeolixWorktree {
@@ -286,6 +300,38 @@ export function renderUnifiedPatch(
       return `${lines.join("\n")}\n`;
     })
     .join("");
+}
+
+/**
+ * `renderUnifiedPatch` drops binary and oversized files because there is no text to show.
+ * A commit whose only change is a binary asset would then look empty, so keep a parseable
+ * header (the diff viewer renders it as a file row) instead.
+ */
+function renderBinaryCommitFilePatch(file: NeolixCommitFile): string {
+  const oldSide = file.status === "added" ? "/dev/null" : `a/${file.path}`;
+  const newSide = file.status === "deleted" ? "/dev/null" : `b/${file.path}`;
+  return `${[
+    `diff --git a/${file.path} b/${file.path}`,
+    `Binary files ${oldSide} and ${newSide} differ`,
+  ].join("\n")}\n`;
+}
+
+function toGitCommit(commit: NeolixCommit): GitCommit {
+  return {
+    sha: commit.sha,
+    shortSha: commit.shortSha,
+    subject: commit.subject,
+    authorName: commit.authorName ?? "",
+    authorDate: commit.authorDate,
+    isOnRemote: commit.isOnRemote === true,
+    isOnBase: commit.isOnBase,
+    files: (commit.files ?? []).map((file) => ({
+      path: file.path.trim(),
+      additions: nonNegative(file.additions),
+      deletions: nonNegative(file.deletions),
+      status: file.status,
+    })),
+  };
 }
 
 function diffStats(files: ReadonlyArray<NeolixDiffFile>): GitWorkingTreeDiffStatsResult {
@@ -1064,6 +1110,61 @@ export function makeGitHandlers(
             committedAt: commit.authorDate,
           })),
         } satisfies GitListRecentCommitsResult;
+      }),
+
+    [WS_METHODS.gitListCommits]: (payload) =>
+      fromPromise("git.listCommits", async () => {
+        const { cwd } = payload as { cwd: string };
+        const { baseRef, commits } = (await client.listCheckoutCommits(cwd)) as unknown as {
+          baseRef: string | null;
+          commits: ReadonlyArray<NeolixCommit>;
+        };
+        return {
+          baseRef,
+          commits: commits.map(toGitCommit),
+        } satisfies GitListCommitsResult;
+      }),
+
+    [WS_METHODS.gitCommitDiff]: (payload) =>
+      fromPromise("git.commitDiff", async () => {
+        const { cwd, sha } = payload as { cwd: string; sha: string };
+        const { commits } = (await client.listCheckoutCommits(cwd)) as unknown as {
+          commits: ReadonlyArray<NeolixCommit>;
+        };
+        const commit = commits.find((candidate) => candidate.sha === sha);
+        if (!commit) {
+          throw bridgeError(
+            "git.commit-not-found",
+            `Commit ${sha} was not found in the checkout.`,
+            {
+              sha,
+            },
+          );
+        }
+        const commitFiles = commit.files ?? [];
+        const resolved = await Promise.all(
+          commitFiles.map(async (file) => {
+            const result = await client.getCommitFileDiff(cwd, sha, file.path);
+            return result.file;
+          }),
+        );
+        const patch = commitFiles
+          .map((file, index) => {
+            const resolvedFile = resolved[index] as unknown as NeolixDiffFile | null;
+            if (
+              resolvedFile &&
+              resolvedFile.status !== "binary" &&
+              resolvedFile.status !== "too_large"
+            ) {
+              return renderUnifiedPatch([resolvedFile]);
+            }
+            return renderBinaryCommitFilePatch(file);
+          })
+          .join("");
+        return {
+          patch,
+          truncated: false,
+        } satisfies GitCommitDiffResult;
       }),
 
     [WS_METHODS.gitGithubRepository]: (payload) =>

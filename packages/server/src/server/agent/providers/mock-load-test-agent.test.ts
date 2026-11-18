@@ -81,6 +81,42 @@ describe("MockLoadTestAgentClient", () => {
     await session.interrupt();
   });
 
+  test("catches up the paced stream after an event-loop stall", async () => {
+    // Fake only the timers: the stream paces by wall clock (`Date.now`), so the test
+    // moves the clock forward without firing the intermediate timers, which is what a
+    // busy event loop looks like to a timer callback.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    let clock = 1_000_000;
+    const now = vi.spyOn(Date, "now").mockImplementation(() => clock);
+    try {
+      const client = new MockLoadTestAgentClient();
+      const session = await client.createSession({
+        provider: "mock",
+        cwd: process.cwd(),
+        model: "ten-second-stream",
+      });
+      const events: AgentStreamEvent[] = [];
+      session.subscribe((event) => events.push(event));
+      const completed = session.run("Catch up after a stalled loop.");
+
+      // The loop wakes one second late with a single overdue 5ms timer.
+      clock += 1_000;
+      await vi.advanceTimersByTimeAsync(0);
+
+      const streamedTokens = events.filter(
+        (event) => event.type === "timeline" && event.item.type === "assistant_message",
+      ).length;
+      expect(streamedTokens).toBeGreaterThanOrEqual(100);
+
+      // The advertised wall-clock duration still bounds the turn.
+      clock += 9_500;
+      await vi.advanceTimersByTimeAsync(10);
+      await expect(completed).resolves.toMatchObject({ canceled: false });
+    } finally {
+      now.mockRestore();
+    }
+  });
+
   test("streams a configured assistant response through the normal timeline", async () => {
     vi.useFakeTimers();
     const response = [
@@ -432,6 +468,44 @@ describe("MockLoadTestAgentClient", () => {
     await expect(resultPromise).resolves.toMatchObject({
       sessionId: session.id,
       finalText: "Synthetic questions resolved",
+      canceled: false,
+    });
+    unsubscribe();
+  });
+
+  test("emits a provider approval and reports the chosen action id", async () => {
+    vi.useFakeTimers();
+    const client = new MockLoadTestAgentClient();
+    const session = await client.createSession({
+      provider: "mock",
+      cwd: process.cwd(),
+      model: "ten-second-stream",
+    });
+    const events: AgentStreamEvent[] = [];
+    const unsubscribe = session.subscribe((event) => events.push(event));
+
+    const resultPromise = session.run("Emit synthetic provider approval.");
+    await vi.advanceTimersByTimeAsync(0);
+
+    const permission = expectSinglePermissionRequest(events);
+    expect(permission.request).toMatchObject({
+      provider: "mock",
+      name: "MockProviderApproval",
+      kind: "tool",
+      actions: [
+        { id: "allow-once", behavior: "allow" },
+        { id: "deny-once", behavior: "deny" },
+        { id: "implement-resume", behavior: "allow", intent: "implement_resume" },
+      ],
+    });
+
+    await session.respondToPermission(permission.request.id, {
+      behavior: "allow",
+      selectedActionId: "implement-resume",
+    });
+    await expect(resultPromise).resolves.toMatchObject({
+      sessionId: session.id,
+      finalText: "Provider approval resolved: implement-resume",
       canceled: false,
     });
     unsubscribe();

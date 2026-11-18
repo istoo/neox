@@ -323,13 +323,14 @@ export function createWorkspaceProvisioningService(deps: {
     }
 
     const workspaces = await workspaceRegistry.listActive();
+    // repoRoot comes from Git, which reports the canonical long path. A
+    // workspace opened through an 8.3 short name is the same checkout, so
+    // compare the filesystem identity rather than the spelling.
+    const matchesRepoRoot = createRealpathAwarePathMatcher(input.repoRoot);
     const sourceWorkspace =
       workspaces.find(
         (workspace) => !workspace.archivedAt && areEquivalentPaths(workspace.cwd, input.sourceCwd),
-      ) ??
-      workspaces.find(
-        (workspace) => !workspace.archivedAt && areEquivalentPaths(workspace.cwd, input.repoRoot),
-      );
+      ) ?? workspaces.find((workspace) => !workspace.archivedAt && matchesRepoRoot(workspace.cwd));
     if (sourceWorkspace) {
       const project = await projectRegistry.get(sourceWorkspace.projectId);
       if (project) return refreshProjectKind(project);

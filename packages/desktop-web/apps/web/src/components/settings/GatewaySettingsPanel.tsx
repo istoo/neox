@@ -5,8 +5,9 @@
 // Layer: Settings panel
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
+import { useBuiltinFeatures } from "~/hooks/useBuiltinFeatures";
 import { GATEWAY_QUERY_KEY, saveGatewayConfig } from "~/lib/gatewayConfigSave";
 import { neolixGatewayApi } from "~/lib/neolixGatewayApi";
 import type { GatewayConfig, GatewayStatus } from "~/lib/gatewayTypes";
@@ -43,7 +44,20 @@ export function GatewaySettingsPanel({
 }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
+  const { isEnabled } = useBuiltinFeatures();
   const [tab, setTab] = useState<GatewayTab>(initialTab ?? "overview");
+  // A switch takes its tab with it; the page falls back to overview rather
+  // than rendering a pane the nav no longer offers.
+  const visibleTabs = useMemo(
+    () =>
+      GATEWAY_TABS.filter(
+        (option) =>
+          (option !== "routing" || isEnabled("routing")) &&
+          (option !== "masking" || isEnabled("redact")),
+      ),
+    [isEnabled],
+  );
+  const activeTab = visibleTabs.includes(tab) ? tab : "overview";
   useEffect(() => {
     if (initialTab !== undefined) setTab(initialTab);
   }, [initialTab]);
@@ -144,14 +158,14 @@ export function GatewaySettingsPanel({
         aria-label={t("gateway:title")}
         className="flex flex-wrap gap-1 border-b border-[color:var(--color-border)] pb-2"
       >
-        {GATEWAY_TABS.map((option) => (
+        {visibleTabs.map((option) => (
           <button
             key={option}
             type="button"
             onClick={() => setTab(option)}
-            aria-current={tab === option ? "page" : undefined}
+            aria-current={activeTab === option ? "page" : undefined}
             className={`rounded-md border px-2.5 py-1 text-ui-sm ${
-              tab === option
+              activeTab === option
                 ? "border-foreground/25 bg-foreground/8 text-foreground"
                 : "border-transparent text-muted-foreground hover:border-[color:var(--color-border)] hover:text-foreground"
             }`}
@@ -168,7 +182,7 @@ export function GatewaySettingsPanel({
         </Alert>
       ) : null}
 
-      {tab === "overview" ? (
+      {activeTab === "overview" ? (
         <GatewayOverviewPane
           config={config}
           status={status}
@@ -176,17 +190,22 @@ export function GatewaySettingsPanel({
           apply={apply}
           onSelectTab={setTab}
         />
-      ) : tab === "providers" ? (
+      ) : activeTab === "providers" ? (
         <GatewayProvidersPane config={config} edit={edit} apply={apply} />
-      ) : tab === "routing" ? (
-        <GatewayRoutingPane config={config} edit={edit} apply={apply} />
-      ) : tab === "keys" ? (
+      ) : activeTab === "routing" ? (
+        <GatewayRoutingPane
+          config={config}
+          edit={edit}
+          apply={apply}
+          onEditArchive={() => setTab("advanced")}
+        />
+      ) : activeTab === "keys" ? (
         <GatewayKeysPane config={config} edit={edit} />
-      ) : tab === "usage" ? (
+      ) : activeTab === "usage" ? (
         <GatewayUsagePane config={config} apply={apply} />
-      ) : tab === "allowances" ? (
+      ) : activeTab === "allowances" ? (
         <GatewayAllowancesPane config={config} apply={apply} />
-      ) : tab === "advanced" ? (
+      ) : activeTab === "advanced" ? (
         <GatewayAdvancedPane
           config={config}
           searchVendors={query.data?.searchVendors ?? null}

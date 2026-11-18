@@ -359,13 +359,33 @@ export function summarizeTurnFailureReason(input: {
   if (input.errorCode === "server_overloaded" || /at capacity|overloaded/i.test(message)) {
     return t("chat:turnFailureModelAtCapacity");
   }
-  if (/usage limit|rate limit|quota|out of credits/i.test(message)) {
+  if (
+    /usage limit|rate limit|quota|out of credits?|insufficient[_ ](?:quota|credits?)|credit balance/i.test(
+      message,
+    )
+  ) {
     return t("chat:turnFailureUsageLimit");
   }
   // A provider CLI that is missing is a setup problem, not a provider failure; say which one.
   const binaryMissing = /^([A-Za-z][\w-]*) binary not found/iu.exec(message);
   if (binaryMissing?.[1]) {
     return t("chat:turnFailureBinaryMissing", { binary: binaryMissing[1] });
+  }
+  // Only phrases a provider uses for the model itself; "this model does not support images"
+  // is a different, actionable failure and must keep its raw wording.
+  if (
+    /model_not_found|no model\b|unknown model|invalid model|model[^\n]{0,40}(?:not found|does not exist|doesn't exist|is not available|unavailable)/iu.test(
+      message,
+    )
+  ) {
+    return t("chat:turnFailureModelMissing");
+  }
+  if (
+    /context[_ ]?(?:length|window)[^\n]{0,40}(?:exceed|too (?:long|large)|limit|overflow)|maximum context|prompt is too long|input is too long|too many tokens|token (?:limit|budget) exceeded/iu.test(
+      message,
+    )
+  ) {
+    return t("chat:turnFailureContextTooLong");
   }
   // These categories have no detail worth keeping in a one-line header, and the provider's raw
   // wording ("401 authentication_error: Invalid bearer token") reads as noise to the reader.
@@ -378,6 +398,23 @@ export function summarizeTurnFailureReason(input: {
     )
   ) {
     return t("chat:turnFailureNetwork");
+  }
+  if (
+    /process exited|exited unexpectedly|\bexit code\b|(?:terminated|killed) by signal|process crashed|segmentation fault|core dumped/iu.test(
+      message,
+    )
+  ) {
+    return t("chat:turnFailureProcessCrashed");
+  }
+  if (
+    /\b(?:permission denied|operation not permitted|not permitted|access denied|insufficient permissions?|forbidden|eacces|eperm)\b/iu.test(
+      message,
+    )
+  ) {
+    return t("chat:turnFailurePermissionDenied");
+  }
+  if (/\b(?:timed out|timeout|deadline exceeded)\b/iu.test(message)) {
+    return t("chat:turnFailureTimeout");
   }
   const firstLine = message.split(/\r?\n/u, 1)[0]?.trim() ?? "";
   if (firstLine.length === 0) {

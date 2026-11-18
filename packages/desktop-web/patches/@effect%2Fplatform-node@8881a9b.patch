@@ -1,0 +1,49 @@
+diff --git a/dist/NodeHttpServer.js b/dist/NodeHttpServer.js
+--- a/dist/NodeHttpServer.js
++++ b/dist/NodeHttpServer.js
+@@ -119,7 +119,8 @@
+  * @category Handlers
+  */
+ export const makeUpgradeHandler = (lazyWss, httpEffect, options) => {
+-  const handledApp = HttpEffect.toHandled(httpEffect, handleResponse, options.middleware);
++  const upgraded = new WeakSet();
++  const handledApp = HttpEffect.toHandled(httpEffect, (request, response) => upgraded.has(request.source) ? Effect.void : handleResponse(request, response), options.middleware);
+   return Effect.withFiber(parent => {
+     const services = parent.services;
+     return Effect.succeed(function handler(nodeRequest, socket, head) {
+@@ -135,6 +136,7 @@
+         return nodeResponse_;
+       };
+       const upgradeEffect = Socket.fromWebSocket(Effect.flatMap(lazyWss, wss => Effect.acquireRelease(Effect.callback(resume => wss.handleUpgrade(nodeRequest, socket, head, ws => {
++        upgraded.add(nodeRequest);
+         resume(Effect.succeed(ws));
+       })), ws => Effect.sync(() => ws.close()))));
+       const map = new Map(services.mapUnsafe);
+diff --git a/src/NodeHttpServer.ts b/src/NodeHttpServer.ts
+--- a/src/NodeHttpServer.ts
++++ b/src/NodeHttpServer.ts
+@@ -190,7 +190,15 @@
+   never,
+   Exclude<Effect.Services<App>, HttpServerRequest | Scope.Scope>
+ > => {
+-  const handledApp = HttpEffect.toHandled(httpEffect, handleResponse, options.middleware as any)
++  const upgraded = new WeakSet<Http.IncomingMessage>()
++  const handledApp = HttpEffect.toHandled(
++    httpEffect,
++    (request, response) =>
++      upgraded.has(request.source as Http.IncomingMessage)
++        ? Effect.void
++        : handleResponse(request, response),
++    options.middleware as any
++  )
+   return Effect.withFiber((parent) => {
+     const services = parent.services
+     return Effect.succeed(function handler(
+@@ -215,6 +223,7 @@
+           Effect.acquireRelease(
+             Effect.callback<globalThis.WebSocket>((resume) =>
+               wss.handleUpgrade(nodeRequest, socket, head, (ws) => {
++                upgraded.add(nodeRequest)
+                 resume(Effect.succeed(ws as any))
+               })
+             ),

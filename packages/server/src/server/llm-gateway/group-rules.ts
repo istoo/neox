@@ -596,6 +596,12 @@ export function readRuleContext(input: {
   };
 }
 
+/** The folder a chat body says its agent works in, "" when it says none. */
+export function workFolderOf(body: unknown): string {
+  const texts = requestTexts(body);
+  return folderOf([...texts.system, ...texts.user]) ?? "";
+}
+
 interface RequestTexts {
   system: string[];
   user: string[];

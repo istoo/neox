@@ -217,7 +217,19 @@ try {
     config.daemon = {
       ...config.daemon,
       listen,
-      relay: { ...config.daemon?.relay, enabled: false },
+      // The product ships no default relay service, so relay stays un-runnable
+      // (createInitialRelayConfig requires an endpoint) unless the fixture sets one.
+      relay: {
+        ...config.daemon?.relay,
+        enabled: false,
+        endpoint: config.daemon?.relay?.endpoint ?? "relay.example.com:443",
+      },
+    };
+    // A pairing offer also needs the app address clients are sent to; the
+    // product has no default there either.
+    config.app = {
+      ...config.app,
+      baseUrl: config.app?.baseUrl ?? "https://app.example.com",
     };
     await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf-8");
     // A supervised daemon owns and heartbeats neolix.pid. Launch the worker

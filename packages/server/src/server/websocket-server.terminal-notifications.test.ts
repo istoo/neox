@@ -135,10 +135,11 @@ function createServer(terminalManager: TerminalManager, workspaceRegistry?: Work
   const daemonConfigStore = {
     onApply: vi.fn(() => () => {}),
     onChange: vi.fn(() => () => {}),
+    onFieldChange: vi.fn(() => () => {}),
   };
 
   const server = new VoiceAssistantWebSocketServer(
-    createStub<HTTPServer>({}),
+    createStub<HTTPServer>({ on: vi.fn(), once: vi.fn() }),
     createStub<pino.Logger>(createLogger()),
     "srv-test",
     createStub<AgentManager>(agentManager),
@@ -361,7 +362,7 @@ describe("VoiceAssistantWebSocketServer terminal attention notifications", () =>
         state: "idle",
         changedAt: 11001,
       }),
-      cwd: `${CWD}/packages/app`,
+      cwd: `${CWD}/packages/server`,
     });
 
     await flushAsync();

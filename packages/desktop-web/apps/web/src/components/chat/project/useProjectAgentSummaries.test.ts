@@ -12,6 +12,13 @@ import {
 
 const listSummaries = vi.fn<() => Promise<{ summaries: ProjectAgentSummary[] }>>();
 
+// Neox ships with the projectAgent UI dark-launched; these cases cover the
+// summaries store itself, so turn its gate back on for this suite.
+vi.mock("~/neolixFeatures", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("~/neolixFeatures")>()),
+  NEOLIX_PROJECT_AGENT_UI_ENABLED: true,
+}));
+
 vi.mock("~/nativeApi", () => ({
   readNativeApi: () => ({
     projectAgent: {

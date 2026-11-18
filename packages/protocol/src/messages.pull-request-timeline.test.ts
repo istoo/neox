@@ -152,7 +152,7 @@ describe("pull request timeline message schemas", () => {
             createdAt: 1710000001000,
             url: "https://github.com/istoo/neox/pull/42#discussion_r1",
             location: {
-              path: "packages/app/src/git/pull-request-panel/data.ts",
+              path: "packages/desktop-web/apps/web/src/git/pull-request-panel/data.ts",
               line: 24,
               startLine: 20,
               threadId: "PRRT_1",
@@ -186,7 +186,7 @@ describe("pull request timeline message schemas", () => {
         createdAt: 1710000001000,
         url: "https://github.com/istoo/neox/pull/42#discussion_r1",
         location: {
-          path: "packages/app/src/git/pull-request-panel/data.ts",
+          path: "packages/desktop-web/apps/web/src/git/pull-request-panel/data.ts",
           line: 24,
           startLine: 20,
           threadId: "PRRT_1",

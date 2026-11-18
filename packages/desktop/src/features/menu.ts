@@ -1,6 +1,5 @@
 import { app, Menu, BrowserWindow, ipcMain } from "electron";
 import { getActiveNeolixBrowserWebContentsForHostWindow } from "./browser-webviews/index.js";
-import type { DesktopUiMode } from "../settings/desktop-settings.js";
 
 interface ShowContextMenuInput {
   kind?: "terminal";
@@ -9,11 +8,6 @@ interface ShowContextMenuInput {
 
 interface ApplicationMenuOptions {
   onNewWindow: () => void;
-  /** Renderer selection shown under File → Desktop UI. */
-  uiMode?: DesktopUiMode;
-  /** Env override wins; the menu is informational then. */
-  uiModeSelectable?: boolean;
-  onSelectUiMode?: (mode: DesktopUiMode) => void;
 }
 
 function withBrowserWindow(
@@ -79,9 +73,6 @@ export interface MenuLabels {
   readonly quit: string;
   readonly file: string;
   readonly newWindow: string;
-  readonly desktopUi: string;
-  readonly standard: string;
-  readonly classic: string;
   readonly edit: string;
   readonly undo: string;
   readonly redo: string;
@@ -119,9 +110,6 @@ export function menuLabels(locale: string, appName: string): MenuLabels {
       quit: `Quit ${appName}`,
       file: "File",
       newWindow: "New Window",
-      desktopUi: "Desktop UI",
-      standard: "Standard",
-      classic: "Classic (legacy)",
       edit: "Edit",
       undo: "Undo",
       redo: "Redo",
@@ -153,9 +141,6 @@ export function menuLabels(locale: string, appName: string): MenuLabels {
     quit: `退出 ${appName}`,
     file: "文件",
     newWindow: "新建窗口",
-    desktopUi: "桌面界面",
-    standard: "标准",
-    classic: "经典（旧版）",
     edit: "编辑",
     undo: "撤销",
     redo: "重做",
@@ -215,27 +200,6 @@ function buildApplicationMenuTemplate(
           click: () => {
             options.onNewWindow();
           },
-        },
-        { type: "separator" },
-        {
-          label: labels.desktopUi,
-          submenu: [
-            {
-              label: labels.standard,
-              type: "radio",
-              checked: options.uiMode === "web",
-              enabled: options.uiModeSelectable !== false,
-              click: () => options.onSelectUiMode?.("web"),
-            },
-            {
-              // COMPAT(webRendererDefault): the way back while the native renderer still ships.
-              label: labels.classic,
-              type: "radio",
-              checked: options.uiMode !== "web",
-              enabled: options.uiModeSelectable !== false,
-              click: () => options.onSelectUiMode?.("native"),
-            },
-          ],
         },
       ],
     },

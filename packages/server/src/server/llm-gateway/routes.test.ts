@@ -23,10 +23,26 @@ import { GatewayArchive } from "./gateway-archive.js";
 import { Masker } from "./masking.js";
 import { resetAnthropicShapes } from "./anthropic-shapes.js";
 import { createGatewayRouter, type GatewayRouterOptions } from "./routes.js";
+import { RouteHistory } from "./route-history.js";
 import { createGatewayRuntime, type GatewayRuntime } from "./runtime.js";
 import { SearchLedger } from "./search.js";
 import { buildUpstreamUrl } from "./upstream.js";
+import { resetMantleRoutes } from "./mantle.js";
 import { UsageLedger, type UsageRecord } from "./usage.js";
+import { setGatewayMiddlewareRunner, type GatewayMiddlewareRunner } from "./plugin-upstream.js";
+
+function pluginRunner(overrides: Partial<GatewayMiddlewareRunner> = {}): GatewayMiddlewareRunner {
+  return {
+    active: () => true,
+    hasHook: () => true,
+    request: async () => null,
+    response: async () => null,
+    provider: async () => null,
+    account: async () => false,
+    event: async () => null,
+    ...overrides,
+  };
+}
 
 const logger = pino({ level: "silent" });
 
@@ -48,6 +64,7 @@ interface UpstreamServer extends TestServer {
 const openServers: Server[] = [];
 
 afterEach(async () => {
+  resetMantleRoutes();
   clearCodexLeads();
   await Promise.all(
     openServers.splice(0).map(
@@ -248,11 +265,13 @@ interface GatewayServer extends TestServer {
   ledger: UsageLedger;
   runtime: GatewayRuntime;
   archive: GatewayArchive;
+  history?: RouteHistory;
 }
 
 async function startGateway(
   config: GatewayConfig,
   extra: Partial<GatewayRouterOptions> = {},
+  options: { history?: boolean } = {},
 ): Promise<GatewayServer> {
   const { store, neolixHome } = createConfigStore(config);
   await store.start();
@@ -270,6 +289,7 @@ async function startGateway(
   await searchLedger.start();
   const runtime = createGatewayRuntime(ledger);
   const archive = new GatewayArchive({ neolixHome, logger });
+  const history = options.history === true ? new RouteHistory({ neolixHome, logger }) : undefined;
   const app = express();
   app.use(
     createGatewayRouter({
@@ -281,10 +301,19 @@ async function startGateway(
       runtime,
       neolixHome,
       archive,
+      ...(history === undefined ? {} : { history }),
       ...extra,
     }),
   );
-  return { ...(await listen(app)), neolixHome, store, ledger, runtime, archive };
+  return {
+    ...(await listen(app)),
+    neolixHome,
+    store,
+    ledger,
+    runtime,
+    archive,
+    ...(history === undefined ? {} : { history }),
+  };
 }
 
 function baseConfig(
@@ -1489,6 +1518,80 @@ describe("usage ledger", () => {
   });
 });
 
+describe("routing history", () => {
+  it("keeps each try's provider and model apart", async () => {
+    const upstream = await startUpstream({ status: 200, body: '{"ok":true}' });
+    const gateway = await startGateway(baseConfig(upstream), {}, { history: true });
+
+    const response = await postMessages(gateway, {
+      model: "local/model-a",
+      messages: [{ role: "user", content: "hi" }],
+    });
+    expect(response.status).toBe(200);
+
+    await gateway.history?.dispose();
+    const dir = path.join(gateway.neolixHome, "gateway-routing");
+    const [file] = readdirSync(dir);
+    expect(file).toBeDefined();
+    const route = JSON.parse(readFileSync(path.join(dir, file ?? ""), "utf8").trim()) as {
+      served: string;
+      tries: Array<{
+        provider?: string;
+        model?: string;
+        done?: boolean;
+        status?: number;
+        millis?: number;
+        error?: string | null;
+      }>;
+    };
+    expect(route.served).toBe("local/model-a");
+    // The Routing page names a try's seat `provider/model`; the record keeps
+    // the parts so it never has to guess where one ends.
+    expect(route.tries[0]).toMatchObject({
+      provider: "local",
+      model: "model-a",
+      done: true,
+      status: 200,
+      error: null,
+    });
+    expect(route.tries[0]?.millis).toBeGreaterThanOrEqual(0);
+  });
+
+  it("keeps why a failed try failed and how long it took", async () => {
+    const upstream = await startUpstream({
+      status: 500,
+      body: '{"error":{"message":"boom"}}',
+    });
+    const gateway = await startGateway(
+      baseConfig(upstream, {
+        providers: [
+          {
+            id: "local",
+            protocol: "anthropic",
+            baseUrl: `${upstream.url}/v1`,
+            apiKey: "upstream-key",
+            models: [{ id: "model-a" }],
+            patienceMs: 0,
+          },
+        ],
+      }),
+      {},
+      { history: true },
+    );
+
+    await postMessages(gateway, { model: "local/model-a", messages: [] });
+
+    await gateway.history?.dispose();
+    const dir = path.join(gateway.neolixHome, "gateway-routing");
+    const [file] = readdirSync(dir);
+    const route = JSON.parse(readFileSync(path.join(dir, file ?? ""), "utf8").trim()) as {
+      tries: Array<{ status?: number; millis?: number; error?: string | null }>;
+    };
+    expect(route.tries[0]).toMatchObject({ status: 500, error: "HTTP 500" });
+    expect(route.tries[0]?.millis).toBeGreaterThanOrEqual(0);
+  });
+});
+
 describe("OpenAI Responses endpoint", () => {
   it("translates an Anthropic upstream reply into a Responses body", async () => {
     const upstream = await startUpstream({
@@ -2262,6 +2365,66 @@ describe("middleware hooks", () => {
     expect(upstream.requests).toHaveLength(0);
   });
 
+  it("lets a plugin middleware turn the request away", async () => {
+    const upstream = await startUpstream({ status: 200, body: '{"ok":true}' });
+    const gateway = await startGateway(baseConfig(upstream));
+    const release = setGatewayMiddlewareRunner(
+      pluginRunner({
+        request: async (input) => ({
+          body: input.body,
+          reject: { status: 418, message: "nope" },
+        }),
+      }),
+    );
+    try {
+      const response = await postMessages(gateway, { model: "local/model-a", messages: [] });
+      expect(response.status).toBe(418);
+      await expect(response.json()).resolves.toMatchObject({
+        error: { message: "nope", type: "hook_rejected" },
+      });
+      expect(upstream.requests).toHaveLength(0);
+    } finally {
+      release();
+    }
+  });
+
+  it("gives one request key and its headers to every plugin hook of a call", async () => {
+    const upstream = await startUpstream({ status: 200, body: '{"ok":true}' });
+    const gateway = await startGateway(baseConfig(upstream));
+    const keys: Array<string | undefined> = [];
+    const release = setGatewayMiddlewareRunner(
+      pluginRunner({
+        request: async (input) => {
+          keys.push(input.requestKey);
+          return null;
+        },
+        provider: async (input) => {
+          keys.push(input.requestKey);
+          return null;
+        },
+        response: async (input) => {
+          keys.push(input.requestKey);
+          return null;
+        },
+        headers: async (input) => {
+          keys.push(input.requestKey);
+          return { headers: { "x-demo": "yes" } };
+        },
+      }),
+    );
+    try {
+      expect((await postMessages(gateway, { model: "local/model-a", messages: [] })).status).toBe(
+        200,
+      );
+      expect(keys.length).toBeGreaterThanOrEqual(3);
+      expect(keys[0]).toBeTruthy();
+      expect(new Set(keys)).toEqual(new Set([keys[0]]));
+      expect(upstream.requests[0]?.headers["x-demo"]).toBe("yes");
+    } finally {
+      release();
+    }
+  });
+
   it("lets the provider hook rewrite the upstream body", async () => {
     const upstream = await startUpstream({ status: 200, body: '{"ok":true}' });
     const gateway = await startGateway(
@@ -2913,6 +3076,64 @@ describe("raw passthrough endpoints", () => {
     expect(seen[0]).toMatch(/\{\{API_KEY_[0-9a-f]{8}\}\}/);
     const body = (await response.json()) as { data: Array<{ revised_prompt: string }> };
     expect(body.data[0]?.revised_prompt).toBe(prompt);
+  });
+
+  it("draws an image on a Gemini sign-in through Code Assist", async () => {
+    const drawn = Buffer.from("drawn-image").toString("base64");
+    const upstream = await startUpstream({
+      status: 200,
+      body: JSON.stringify({
+        response: {
+          candidates: [
+            { content: { parts: [{ inlineData: { mimeType: "image/png", data: drawn } }] } },
+          ],
+        },
+      }),
+    });
+    const config = baseConfig(upstream, {
+      providers: [
+        {
+          id: "google",
+          protocol: "gemini",
+          baseUrl: upstream.url,
+          models: [{ id: "gemini-2.5-flash-image" }],
+          accounts: [{ id: "main", agent: "gemini", subscriptionUser: "someone@example.com" }],
+        },
+      ],
+    });
+    const gateway = await startGateway(config);
+    mkdirSync(path.join(gateway.neolixHome, "gateway"), { recursive: true });
+    writeFileSync(
+      path.join(gateway.neolixHome, "gateway", "google-accounts.json"),
+      JSON.stringify([
+        {
+          id: "main",
+          agent: "gemini",
+          user: "someone@example.com",
+          plan: "free",
+          addedAt: Date.now(),
+          lapsed: null,
+          accessToken: "google-token",
+          refreshToken: "google-refresh",
+          expiresAt: Date.now() + 3_600_000,
+          project: "project-1",
+        },
+      ]),
+    );
+
+    const response = await fetch(`${gateway.url}/v1/images/generations`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "google/gemini-2.5-flash-image", prompt: "a cat" }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(upstream.requests[0]?.url).toBe("/v1internal:generateContent");
+    expect(upstream.requests[0]?.headers.authorization).toBe("Bearer google-token");
+    expect(upstream.requests[0]?.body.model).toBe("gemini-2.5-flash-image");
+    expect(upstream.requests[0]?.body.project).toBe("project-1");
+    const body = (await response.json()) as { data: Array<{ b64_json?: string }> };
+    expect(body.data[0]?.b64_json).toBe(drawn);
   });
 
   it("rejects a model no provider serves", async () => {
@@ -4139,6 +4360,212 @@ describe("key page and search", () => {
     expect(body.content[2]).toEqual({ type: "text", text: "It is a phone app." });
   });
 
+  it("cites the pages it found to a Chat client as url_citation annotations", async () => {
+    const searchUpstream = await startDynamicUpstream(() => ({
+      status: 200,
+      body: JSON.stringify({
+        results: [{ title: "Neox", url: "https://example.com", content: "a phone app" }],
+      }),
+    }));
+    const upstream = await startUpstream({
+      status: 200,
+      body: JSON.stringify({
+        id: "chatcmpl-1",
+        object: "chat.completion",
+        choices: [
+          {
+            index: 0,
+            message: { role: "assistant", content: "Neox is at https://example.com." },
+            finish_reason: "stop",
+          },
+        ],
+        usage: { prompt_tokens: 1, completion_tokens: 1 },
+      }),
+    });
+    const gateway = await startGateway(
+      baseConfig(upstream, {
+        providers: [
+          {
+            id: "local",
+            protocol: "openai",
+            baseUrl: `${upstream.url}/v1`,
+            apiKey: "upstream-key",
+            models: [{ id: "model-a" }],
+            searches: false,
+          },
+        ],
+        search: {
+          enabled: true,
+          url: "https://api.tavily.com/search",
+          apis: [{ vendor: "tavily", key: "tv", url: searchUpstream.url }],
+        },
+      }),
+    );
+    const response = await fetch(`${gateway.url}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "local/model-a",
+        messages: [{ role: "user", content: "what is neolix" }],
+        web_search_options: {},
+      }),
+    });
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      choices: Array<{ message: { annotations?: unknown[] } }>;
+    };
+    expect(body.choices[0]?.message.annotations).toEqual([
+      {
+        type: "url_citation",
+        url_citation: {
+          url: "https://example.com",
+          title: "Neox",
+          start_index: 11,
+          end_index: 30,
+        },
+      },
+    ]);
+  });
+
+  it("streams the citations of a whole reply a Chat client asked as a stream", async () => {
+    const searchUpstream = await startDynamicUpstream(() => ({
+      status: 200,
+      body: JSON.stringify({
+        results: [{ title: "Neox", url: "https://example.com", content: "a phone app" }],
+      }),
+    }));
+    const upstream = await startUpstream({
+      status: 200,
+      body: JSON.stringify({
+        id: "chatcmpl-1",
+        object: "chat.completion",
+        choices: [
+          {
+            index: 0,
+            message: { role: "assistant", content: "Neox is at https://example.com." },
+            finish_reason: "stop",
+          },
+        ],
+        usage: { prompt_tokens: 1, completion_tokens: 1 },
+      }),
+    });
+    const gateway = await startGateway(
+      baseConfig(upstream, {
+        providers: [
+          {
+            id: "local",
+            protocol: "openai",
+            baseUrl: `${upstream.url}/v1`,
+            apiKey: "upstream-key",
+            models: [{ id: "model-a" }],
+            searches: false,
+          },
+        ],
+        search: {
+          enabled: true,
+          url: "https://api.tavily.com/search",
+          apis: [{ vendor: "tavily", key: "tv", url: searchUpstream.url }],
+        },
+      }),
+    );
+    const response = await fetch(`${gateway.url}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "local/model-a",
+        messages: [{ role: "user", content: "what is neolix" }],
+        web_search_options: {},
+        stream: true,
+      }),
+    });
+    expect(response.status).toBe(200);
+    const chunks = (await response.text())
+      .split("\n\n")
+      .map((frame) => frame.slice(frame.indexOf("data:") + 5).trim())
+      .filter((data) => data.length > 0 && data !== "[DONE]")
+      .map((data) => JSON.parse(data) as Record<string, unknown>);
+    const annotated = chunks
+      .map((chunk) => (chunk.choices as Array<{ delta: Record<string, unknown> }>)[0]?.delta)
+      .find((delta) => delta?.annotations !== undefined);
+    expect(annotated?.annotations).toEqual([
+      {
+        type: "url_citation",
+        url_citation: {
+          url: "https://example.com",
+          title: "Neox",
+          start_index: 11,
+          end_index: 30,
+        },
+      },
+    ]);
+  });
+
+  it("cites the pages it found to a Gemini client as grounding metadata", async () => {
+    const searchUpstream = await startDynamicUpstream(() => ({
+      status: 200,
+      body: JSON.stringify({
+        results: [{ title: "Neox", url: "https://example.com", content: "a phone app" }],
+      }),
+    }));
+    const upstream = await startUpstream({
+      status: 200,
+      body: JSON.stringify({
+        candidates: [
+          {
+            content: { role: "model", parts: [{ text: "Neox is at https://example.com." }] },
+            finishReason: "STOP",
+          },
+        ],
+        usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 1 },
+      }),
+    });
+    const gateway = await startGateway(
+      baseConfig(upstream, {
+        providers: [
+          {
+            id: "local",
+            protocol: "gemini",
+            baseUrl: `${upstream.url}/v1beta`,
+            apiKey: "upstream-key",
+            models: [{ id: "model-a" }],
+            searches: false,
+          },
+        ],
+        search: {
+          enabled: true,
+          url: "https://api.tavily.com/search",
+          apis: [{ vendor: "tavily", key: "tv", url: searchUpstream.url }],
+        },
+      }),
+    );
+    const response = await fetch(`${gateway.url}/v1beta/models/local/model-a:generateContent`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ role: "user", parts: [{ text: "what is neolix" }] }],
+        tools: [{ googleSearch: {} }],
+      }),
+    });
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      candidates: Array<{ groundingMetadata?: unknown }>;
+    };
+    expect(body.candidates[0]?.groundingMetadata).toEqual({
+      webSearchQueries: ["what is neolix"],
+      groundingChunks: [{ web: { uri: "https://example.com", title: "Neox" } }],
+      groundingSupports: [
+        {
+          segment: {
+            startIndex: 0,
+            endIndex: 31,
+            text: "Neox is at https://example.com.",
+          },
+          groundingChunkIndices: [0],
+        },
+      ],
+    });
+  });
+
   it("answers the search MCP tools", async () => {
     const searchUpstream = await startUpstream({
       status: 200,
@@ -4175,6 +4602,166 @@ describe("key page and search", () => {
       })
     ).json()) as { result: { content: Array<{ text: string }> } };
     expect(call.result.content[0]?.text).toContain("hit");
+  });
+});
+
+describe("Zen's free tier", () => {
+  const zenToolReply = (name: string): UpstreamReply => ({
+    status: 200,
+    contentType: "text/event-stream",
+    body:
+      [
+        'data: {"id":"c1","object":"chat.completion.chunk","created":1,"model":"glm-5.3-free","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}',
+        `data: {"id":"c1","object":"chat.completion.chunk","created":1,"model":"glm-5.3-free","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"${name}","arguments":"{}"}}]},"finish_reason":null}]}`,
+        'data: {"id":"c1","object":"chat.completion.chunk","created":1,"model":"glm-5.3-free","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}',
+        "data: [DONE]",
+      ].join("\n\n") + "\n\n",
+  });
+
+  function zenConfig(upstream: { url: string }): GatewayConfig {
+    return {
+      version: 1,
+      enabled: true,
+      keys: [],
+      providers: [
+        {
+          id: "zen",
+          protocol: "openai",
+          baseUrl: upstream.url,
+          preset: "opencode-zen",
+          apiKey: "zen-key",
+          models: [{ id: "glm-5.3-free" }],
+        },
+      ],
+      groups: [],
+    };
+  }
+
+  function chatRequest(): Record<string, unknown> {
+    return {
+      model: "zen/glm-5.3-free",
+      messages: [{ role: "user", content: "hi" }],
+      tools: [
+        {
+          type: "function",
+          function: {
+            name: "Read",
+            description: "read a file",
+            parameters: { type: "object", properties: {} },
+          },
+        },
+      ],
+    };
+  }
+
+  it("offers OpenCode's tools and environment to Zen's free tier", async () => {
+    const upstream = await startUpstream({
+      status: 200,
+      contentType: "text/event-stream",
+      body:
+        'data: {"id":"c1","object":"chat.completion.chunk","created":1,"model":"glm-5.3-free","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":null}]}\n\n' +
+        'data: {"id":"c1","object":"chat.completion.chunk","created":1,"model":"glm-5.3-free","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n' +
+        "data: [DONE]\n\n",
+    });
+    const gateway = await startGateway(zenConfig(upstream));
+    const response = await fetch(`${gateway.url}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(chatRequest()),
+    });
+    expect(response.status).toBe(200);
+    const sent = upstream.requests[0]?.body;
+    const tools = (sent?.tools ?? []) as Array<{ function: { name: string } }>;
+    expect(tools.map((tool) => tool.function.name)).toEqual([
+      "read",
+      "edit",
+      "glob",
+      "grep",
+      "shell",
+    ]);
+    expect(sent?.stream).toBe(true);
+    expect(JSON.stringify(sent?.messages)).toContain("<env>");
+    expect(JSON.stringify(sent?.messages)).toContain("Working directory:");
+  });
+
+  it("ends a turn that called only a stub with its note, not a tool call", async () => {
+    const upstream = await startUpstream(zenToolReply("shell"));
+    const gateway = await startGateway(zenConfig(upstream));
+    const response = await fetch(`${gateway.url}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(chatRequest()),
+    });
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      choices: Array<{
+        finish_reason: string;
+        message: { content: string | null; tool_calls?: unknown[] };
+      }>;
+    };
+    const choice = body.choices[0];
+    expect(choice?.message.tool_calls).toBeUndefined();
+    expect(choice?.message.content).toContain(
+      "The model asked for a tool this session doesn't have.",
+    );
+    expect(choice?.finish_reason).toBe("stop");
+  });
+
+  it("names a core tool the client offered under the client's own name", async () => {
+    const upstream = await startUpstream(zenToolReply("read"));
+    const gateway = await startGateway(zenConfig(upstream));
+    const response = await fetch(`${gateway.url}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(chatRequest()),
+    });
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      choices: Array<{ message: { tool_calls?: Array<{ function: { name: string } }> } }>;
+    };
+    expect(body.choices[0]?.message.tool_calls?.[0]?.function.name).toBe("Read");
+  });
+});
+
+describe("busy models", () => {
+  it("routes past a member whose concurrency is in flight", async () => {
+    const first = await startUpstream({ status: 200, body: '{"from":"a"}' });
+    const second = await startUpstream({ status: 200, body: '{"from":"b"}' });
+    const gateway = await startGateway({
+      version: 1,
+      enabled: true,
+      keys: [],
+      providers: [
+        {
+          id: "a",
+          protocol: "openai",
+          baseUrl: `${first.url}/v1`,
+          models: [{ id: "one" }],
+          accounts: [{ id: "seat", apiKey: "k", maxConcurrency: 2, models: [] }],
+        },
+        {
+          id: "b",
+          protocol: "openai",
+          baseUrl: `${second.url}/v1`,
+          apiKey: "k",
+          models: [{ id: "two" }],
+        },
+      ],
+      groups: [{ id: "g", members: ["a/one", "b/two"], strategy: "order" }],
+      busyLoad: 50,
+    });
+    // The first member's only seat is fully in flight.
+    gateway.runtime.accountState.inflight.set("a/seat", 2);
+
+    const response = await fetch(`${gateway.url}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "group/g", messages: [{ role: "user", content: "hi" }] }),
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ from: "b" });
+    expect(first.requests).toHaveLength(0);
+    expect(second.requests).toHaveLength(1);
   });
 });
 
@@ -7028,5 +7615,225 @@ describe("Codex credits last", () => {
     expect(response.status).toBe(200);
     expect(primary.requests).toHaveLength(0);
     expect(backup.requests).toHaveLength(1);
+  });
+});
+
+describe("Bedrock Mantle routes", () => {
+  const refusal = (model: string): UpstreamReply => ({
+    status: 400,
+    body: JSON.stringify({
+      error: { message: `model \`${model}\` isn't supported on this route` },
+    }),
+  });
+
+  function mantleProvider(url: string, protocol: "openai" | "openai-responses" | "anthropic") {
+    return {
+      id: "mantle",
+      protocol,
+      preset: "bedrock-mantle",
+      baseUrl: `${url}/v1`,
+      models: [{ id: "mystery" }],
+    };
+  }
+
+  async function send(gateway: GatewayServer, route: string): Promise<globalThis.Response> {
+    return fetch(`${gateway.url}${route}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "mantle/mystery",
+        messages: [{ role: "user", content: "hi" }],
+      }),
+    });
+  }
+
+  it("asks a refused model at the other prefix once, then remembers it", async () => {
+    const upstream = await startDynamicUpstream((request) =>
+      request.url.startsWith("/openai/v1/")
+        ? { status: 200, body: '{"ok":true}' }
+        : refusal("mystery"),
+    );
+    const gateway = await startGateway(
+      baseConfig(upstream, { providers: [mantleProvider(upstream.url, "openai")] }),
+    );
+
+    const first = await send(gateway, "/v1/chat/completions");
+    expect(first.status).toBe(200);
+    expect(upstream.requests.map((request) => request.url)).toEqual([
+      "/v1/chat/completions",
+      "/openai/v1/chat/completions",
+    ]);
+
+    // The prefix that served it is asked first from then on.
+    const second = await send(gateway, "/v1/chat/completions");
+    expect(second.status).toBe(200);
+    expect(upstream.requests.map((request) => request.url)).toEqual([
+      "/v1/chat/completions",
+      "/openai/v1/chat/completions",
+      "/openai/v1/chat/completions",
+    ]);
+  });
+
+  it("keeps the first refusal when neither prefix serves the model, and forgets the guess", async () => {
+    const upstream = await startDynamicUpstream(() => refusal("mystery"));
+    const gateway = await startGateway(
+      baseConfig(upstream, { providers: [mantleProvider(upstream.url, "openai")] }),
+    );
+
+    const first = await send(gateway, "/v1/chat/completions");
+    expect(first.status).toBe(400);
+    expect(upstream.requests.map((request) => request.url)).toEqual([
+      "/v1/chat/completions",
+      "/openai/v1/chat/completions",
+    ]);
+
+    // Neither prefix served it, so the next request starts at the guess again.
+    const second = await send(gateway, "/v1/chat/completions");
+    expect(second.status).toBe(400);
+    expect(upstream.requests.map((request) => request.url)).toEqual([
+      "/v1/chat/completions",
+      "/openai/v1/chat/completions",
+      "/v1/chat/completions",
+      "/openai/v1/chat/completions",
+    ]);
+  });
+
+  it("does not reroute a provider that isn't Mantle", async () => {
+    const upstream = await startDynamicUpstream(() => refusal("mystery"));
+    const gateway = await startGateway(
+      baseConfig(upstream, {
+        providers: [
+          {
+            id: "mantle",
+            protocol: "openai",
+            baseUrl: `${upstream.url}/v1`,
+            models: [{ id: "mystery" }],
+          },
+        ],
+      }),
+    );
+
+    const response = await send(gateway, "/v1/chat/completions");
+    expect(response.status).toBe(400);
+    expect(upstream.requests.map((request) => request.url)).toEqual(["/v1/chat/completions"]);
+  });
+
+  it("does not reroute a refusal that isn't about the route", async () => {
+    const upstream = await startDynamicUpstream(() => ({
+      status: 400,
+      body: '{"error":{"message":"invalid request"}}',
+    }));
+    const gateway = await startGateway(
+      baseConfig(upstream, { providers: [mantleProvider(upstream.url, "openai")] }),
+    );
+
+    const response = await send(gateway, "/v1/chat/completions");
+    expect(response.status).toBe(400);
+    expect(upstream.requests.map((request) => request.url)).toEqual(["/v1/chat/completions"]);
+  });
+
+  it("does not reroute Messages, which Mantle serves at /anthropic alone", async () => {
+    const upstream = await startDynamicUpstream(() => refusal("mystery"));
+    const gateway = await startGateway(
+      baseConfig(upstream, {
+        providers: [{ ...mantleProvider(upstream.url, "anthropic"), models: [{ id: "mystery" }] }],
+      }),
+    );
+
+    const response = await fetch(`${gateway.url}/v1/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "mantle/mystery", max_tokens: 16, messages: [] }),
+    });
+    expect(response.status).toBe(400);
+    expect(upstream.requests.map((request) => request.url)).toEqual(["/v1/messages"]);
+  });
+});
+
+describe("Code Assist envelopes on the chat path", () => {
+  function googleSignIn(neolixHome: string, agent: "gemini" | "antigravity"): void {
+    mkdirSync(path.join(neolixHome, "gateway"), { recursive: true });
+    writeFileSync(
+      path.join(neolixHome, "gateway", "google-accounts.json"),
+      JSON.stringify([
+        {
+          id: "main",
+          agent,
+          user: "someone@example.com",
+          plan: "free",
+          addedAt: Date.now(),
+          lapsed: null,
+          accessToken: "google-token",
+          refreshToken: "google-refresh",
+          expiresAt: Date.now() + 3_600_000,
+          project: "project-1",
+        },
+      ]),
+    );
+  }
+
+  function codeAssistGateway(
+    upstream: UpstreamServer,
+    agent: "gemini" | "antigravity",
+  ): Promise<GatewayServer> {
+    return startGateway(
+      baseConfig(upstream, {
+        providers: [
+          {
+            id: "google",
+            protocol: "gemini",
+            baseUrl: upstream.url,
+            models: [{ id: "gemini-2.5-pro" }],
+            accounts: [{ id: "main", agent, subscriptionUser: "someone@example.com" }],
+          },
+        ],
+      }),
+    );
+  }
+
+  async function chat(gateway: GatewayServer): Promise<globalThis.Response> {
+    return fetch(`${gateway.url}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "google/gemini-2.5-pro",
+        messages: [{ role: "user", content: "hi" }],
+      }),
+    });
+  }
+
+  it("names a Gemini prompt with user_prompt_id", async () => {
+    const upstream = await startUpstream({
+      status: 200,
+      body: JSON.stringify({ candidates: [{ content: { parts: [{ text: "hi" }] } }] }),
+    });
+    const gateway = await codeAssistGateway(upstream, "gemini");
+    googleSignIn(gateway.neolixHome, "gemini");
+
+    const response = await chat(gateway);
+    expect(response.status).toBe(200);
+    const sent = upstream.requests[0]?.body;
+    expect(sent?.user_prompt_id).toMatch(/^[A-Za-z0-9_-]{16}$/);
+    expect(sent?.requestType).toBeUndefined();
+    expect(sent?.requestId).toBeUndefined();
+  });
+
+  it("names an Antigravity chat and its session", async () => {
+    const upstream = await startUpstream({
+      status: 200,
+      body: JSON.stringify({ candidates: [{ content: { parts: [{ text: "hi" }] } }] }),
+    });
+    const gateway = await codeAssistGateway(upstream, "antigravity");
+    googleSignIn(gateway.neolixHome, "antigravity");
+
+    const response = await chat(gateway);
+    expect(response.status).toBe(200);
+    const sent = upstream.requests[0]?.body;
+    expect(sent?.userAgent).toBe("antigravity");
+    expect(sent?.requestType).toBe("agent");
+    expect(sent?.requestId).toMatch(/^agent-[A-Za-z0-9_-]{16}$/);
+    expect(sent?.user_prompt_id).toBeUndefined();
+    const request = sent?.request as Record<string, unknown> | undefined;
+    expect(request?.sessionId).toMatch(/^-\d+$/);
   });
 });

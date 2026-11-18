@@ -1706,6 +1706,41 @@ function isQualifiedBranchRef(ref: string): boolean {
   return ref.startsWith("refs/heads/") || ref.startsWith("refs/remotes/");
 }
 
+/** A raw commit object id from the diff panel's commit history, not a branch name. */
+function isCommitShaRef(ref: string): boolean {
+  return /^[0-9a-f]{7,40}$/i.test(ref);
+}
+
+/** A bare name that exists as a local or origin-tracking branch. */
+async function hasBranchNamedRef(
+  cwd: string,
+  name: string,
+  context?: CheckoutContext,
+): Promise<boolean> {
+  const [hasLocal, hasOrigin] = await Promise.all([
+    doesGitRefExist(cwd, `refs/heads/${name}`, context),
+    doesGitRefExist(cwd, `refs/remotes/origin/${name}`, context),
+  ]);
+  return hasLocal || hasOrigin;
+}
+
+async function resolveCommitShaRef(
+  cwd: string,
+  ref: string,
+  context?: CheckoutContext,
+): Promise<string | null> {
+  try {
+    const result = await runGitCommand(["rev-parse", "--verify", `${ref}^{commit}`], {
+      cwd,
+      envOverlay: READ_ONLY_GIT_ENV,
+      logger: context?.logger,
+    });
+    return result.stdout.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
 async function resolveBestComparisonBaseRef(
   cwd: string,
   baseRef: string,
@@ -3517,6 +3552,26 @@ async function resolveCheckoutDiffRefs(
 ): Promise<CheckoutDiffRefs | null> {
   if (compare.mode === "uncommitted") {
     return { baseRef: "HEAD", includeUntracked: true };
+  }
+  // The diff panel's "Compare with" menu offers recent commits by sha. A sha is a
+  // commit, not a branch name, so resolve it directly instead of looking for
+  // refs/heads/<sha> and refs/remotes/origin/<sha>. A branch whose name only looks
+  // hexadecimal (`cafe123`, `deadbeef`) keeps branch semantics.
+  const requestedBaseRef = compare.baseRef?.trim();
+  const isUnambiguousCommitSha =
+    requestedBaseRef !== undefined &&
+    isCommitShaRef(requestedBaseRef) &&
+    !(await hasBranchNamedRef(cwd, requestedBaseRef, context));
+  if (requestedBaseRef && isUnambiguousCommitSha) {
+    const commit = await resolveCommitShaRef(cwd, requestedBaseRef, context);
+    if (!commit) {
+      throw new Error(`Commit not found: ${requestedBaseRef}`);
+    }
+    return {
+      baseRef: commit,
+      targetRef: compare.mode === "base" ? "HEAD" : undefined,
+      includeUntracked: compare.mode === "all",
+    };
   }
   const { storedBaseRef, resolvedBaseRef } = await resolveBaseRefForCwd(cwd, context);
   const baseRef = resolveOperationBaseRef({

@@ -62,6 +62,7 @@ export * from "./computerSpaces";
 export * from "./computerAudit";
 export * from "./computerBrowser";
 export * from "./neolixHost";
+export * from "./browserAutomationHost";
 export * from "./rpc";
 export * from "./claudeCache";
 
@@ -84,6 +85,13 @@ export * from "./usageLimit";
 
 export * from "./neolixLibrary";
 export * from "./neolixGateway";
+export * from "./neolixAgentConnect";
+export * from "./neolixAgentSkills";
+export * from "./neolixAppSettings";
+export * from "./neolixBuiltinFeatures";
+export * from "./neolixProjectIcons";
 export * from "./neolixPlugins";
 export * from "./neolixSubagents";
 export * from "./neolixWorkspaces";
+export * from "./neolixWorkspaceSetup";
+export * from "./neolixAttention";

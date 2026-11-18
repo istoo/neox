@@ -5,7 +5,10 @@ import type {
   RemoteExecutionScope,
 } from "@synara/contracts";
 import { Schema } from "effect";
-import { RemoteExecutionScope as RemoteScopeSchema } from "@synara/contracts";
+import {
+  RemoteExecutionScope as RemoteScopeSchema,
+  WS_REMOTE_PATH_PREFIX,
+} from "@synara/contracts";
 import type { ActiveHost } from "./activeHost";
 import { readExecutionContext } from "./executionContext";
 import { accountStatusScope, controlAccountScope } from "./controlQueryScope";
@@ -41,7 +44,7 @@ export function parseWorkspaceHost(value: unknown): WorkspaceSession["host"] | n
     !host.hostId ||
     typeof host.hostName !== "string" ||
     typeof host.wsPath !== "string" ||
-    !host.wsPath.startsWith("/ws/remote/")
+    !host.wsPath.startsWith(WS_REMOTE_PATH_PREFIX)
   )
     return null;
   const scope = Schema.decodeUnknownOption(RemoteScopeSchema)(host.executionScope);

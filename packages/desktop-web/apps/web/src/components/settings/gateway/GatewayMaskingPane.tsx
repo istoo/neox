@@ -23,12 +23,20 @@ import { listText, maskSecret, stringList } from "./gatewayHelpers";
 import {
   GatewayEmpty,
   GatewayField,
-  GatewayNumberField,
   GatewayPill,
   GatewayRow,
   GatewayTextarea,
   GatewayToggle,
 } from "./GatewayPrimitives";
+import {
+  MASKING_SCORE_DEFAULT,
+  MASKING_SCORE_MAX,
+  MASKING_SCORE_MIN,
+  effectiveMaskingScore,
+  isMaskingScore,
+  maskingScoreOptions,
+  maskingScoreSelectValue,
+} from "./gatewayMaskingScore.logic";
 
 const ACTIONS = ["mask", "warn", "block"] as const;
 
@@ -129,6 +137,14 @@ export function GatewayMaskingPane({ config, edit, apply }: GatewayMaskingProps)
     queryKey: ["neolix-gateway", "masking", "model"],
     queryFn: neolixGatewayApi.maskingLocalModelStatus,
   });
+
+  // Myna draws the threshold only while masking finds something and the model
+  // can run here; 0.8 is the publisher's default, stored as no score at all.
+  const score = effectiveMaskingScore(masking.modelScore, localModel.data?.score);
+  const scoreOptions = maskingScoreOptions(score);
+  const maskingFinds = masking.enabled || masking.personal === true;
+  const showScore =
+    maskingFinds && (localModel.data?.supported === true || localModel.data?.installed === true);
 
   const kindNames = useMemo(() => {
     if (showAllKinds) return [...MASK_KINDS];
@@ -432,18 +448,55 @@ export function GatewayMaskingPane({ config, edit, apply }: GatewayMaskingProps)
                   })
                 }
               />
-              <GatewayNumberField
-                label={t("gateway:masking_score")}
-                value={masking.modelScore}
-                min={0.5}
-                max={0.95}
-                onChange={(value) =>
-                  updateMasking(edit, (draft) => {
-                    draft.modelScore = value;
-                  })
+            </div>
+            {showScore ? (
+              <GatewayRow
+                title={t("gateway:masking_score")}
+                description={t("gateway:masking_score_hint")}
+                trailing={
+                  <div className="flex flex-col items-end gap-1">
+                    <select
+                      aria-label={t("gateway:masking_score")}
+                      value={maskingScoreSelectValue(score)}
+                      onChange={(event) => {
+                        const value = event.currentTarget.value;
+                        updateMasking(edit, (draft) => {
+                          if (value === "") {
+                            draft.modelScore = undefined;
+                            return;
+                          }
+                          const parsed = Number(value);
+                          if (!isMaskingScore(parsed)) return;
+                          draft.modelScore = parsed;
+                        });
+                      }}
+                      className="h-7 rounded-md border border-[color:var(--color-border)] bg-background px-2 text-ui-xs"
+                    >
+                      <option value="">
+                        {t("gateway:masking_score_default", { score: MASKING_SCORE_DEFAULT })}
+                      </option>
+                      {scoreOptions.map((option) => (
+                        <option key={option} value={String(option)}>
+                          {String(option)}
+                        </option>
+                      ))}
+                    </select>
+                    <span className="text-ui-xs text-muted-foreground">
+                      {t("gateway:masking_score_range")}
+                      {score === MASKING_SCORE_MIN ? ` · ${t("gateway:masking_score_most")}` : null}
+                      {score === MASKING_SCORE_MAX
+                        ? ` · ${t("gateway:masking_score_least")}`
+                        : null}
+                    </span>
+                    {masking.model === localModel.data.model ? null : (
+                      <span className="text-ui-xs text-muted-foreground">
+                        {t("gateway:masking_score_model_off")}
+                      </span>
+                    )}
+                  </div>
                 }
               />
-            </div>
+            ) : null}
           </>
         ) : (
           <div className="px-3 py-2">

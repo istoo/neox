@@ -1,12 +1,12 @@
 ---
 title: Docker
-description: 使用官方 Docker 镜像运行 Neox daemon 和内置网页界面。
+description: 使用官方 Docker 镜像运行 Neox daemon。
 nav: Docker
 ---
 
 # Docker {#docker}
 
-官方 Neox Docker 镜像运行 daemon，并在同一个 HTTP 源上提供内置的浏览器界面。它适用于服务器、开发机、NAS 设备、家庭实验室主机，以及其他你希望在没有桌面应用的情况下运行 Neox 的地方。
+官方 Neox Docker 镜像运行 daemon。它适用于服务器、开发机、NAS 设备、家庭实验室主机，以及其他你希望在没有桌面应用的情况下运行 Neox 的地方。Web 客户端由桌面应用构建并附带；自定义镜像可以把 `packages/server/dist/server/web-app` 加入，从 daemon 源提供页面。
 
 Docker 镜像跟随 Neox 稳定版的发布节奏。`ghcr.io/istoo/neox:latest` 指向最新的稳定版，而不是任意的 `main` 构建。
 
@@ -25,14 +25,13 @@ docker run -d --name neolix \
 http://localhost:6868
 ```
 
-如果设置了 `NEOLIX_PASSWORD`，在网页界面、移动应用或 CLI 中添加直连 daemon 时，请使用相同的密码。
+如果设置了 `NEOLIX_PASSWORD`，在 Neox 客户端或 CLI 中添加直连 daemon 时，请使用相同的密码。
 
 ## 镜像包含什么 {#what-the-image-includes}
 
 该镜像：
 
 - 安装 Neox daemon 和 CLI
-- 提供内置的网页界面
 - 在容器内监听 `0.0.0.0:6868`
 - 把 daemon 状态保存在 `/home/neolix/.neox` 下
 - 以非 root 的 `neolix` 用户运行 daemon 和启动的 Agent
@@ -149,7 +148,7 @@ IP 和 `localhost` 默认是允许的。
 
 对于任何发布的端口或可通过网络访问的部署，请设置 `NEOLIX_PASSWORD`。在 localhost 之外通过浏览器访问时，请在反向代理上使用 HTTPS。
 
-静态网页界面在 daemon 源上是公开的。配置密码后，daemon API 和 WebSocket 受密码认证保护。
+存在的静态 Web 应用文件在 daemon 源上是公开的。配置密码后，daemon API 和 WebSocket 受密码认证保护。
 
 Agent 可以访问你挂载到 `/workspace` 的任何内容，以及你放在 `/home/neolix` 中的任何凭据。请把这些挂载限制在 Agent 应该能使用的范围内。
 

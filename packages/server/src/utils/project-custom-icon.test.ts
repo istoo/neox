@@ -128,6 +128,18 @@ describe("project custom icon", () => {
     await expect(target.readAdvertised()).resolves.toEqual(advertised.icon);
   });
 
+  it("serves a custom icon set after the last advertisement, even unadvertised", async () => {
+    const target = await project();
+    // A session that read once (no icon) and never received the project update.
+    await expect(target.readAdvertised()).resolves.toBeNull();
+
+    await target.set({ type: "upload", data: PNG_1X1.toString("base64") });
+    await expect(target.readAdvertised()).resolves.toEqual(PNG_1X1_ICON);
+
+    await target.set({ type: "automatic" });
+    await expect(target.readAdvertised()).resolves.toBeNull();
+  });
+
   it("drops the stored image when the project goes back to automatic", async () => {
     const target = await project();
     await target.set({ type: "upload", data: PNG_1X1.toString("base64") });

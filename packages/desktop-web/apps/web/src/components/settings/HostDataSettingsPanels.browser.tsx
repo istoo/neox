@@ -9,7 +9,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
 
 const harness = vi.hoisted(() => ({
+  sessionsQueryOptions: null as null | Record<string, unknown>,
   data: {
+    partial: undefined as boolean | undefined,
     agents: [{ agent: "pi", name: "Pi", count: 2, deletable: true }],
     agent: "pi",
     sessions: [
@@ -73,6 +75,7 @@ const harness = vi.hoisted(() => ({
 vi.mock("@tanstack/react-query", () => ({
   useQuery: (options: { queryKey: readonly string[] }) => {
     if (options.queryKey[0] === "neolix-external-sessions") {
+      harness.sessionsQueryOptions = options as unknown as Record<string, unknown>;
       return { data: harness.data, isLoading: false, isFetching: false, refetch: vi.fn() };
     }
     if (options.queryKey[0] === "neolix-external-transcript") {
@@ -104,6 +107,8 @@ import { HostSessionsSettingsPanel } from "./HostDataSettingsPanels";
 describe("HostSessionsSettingsPanel", () => {
   afterEach(() => {
     document.body.innerHTML = "";
+    harness.data.partial = undefined;
+    harness.sessionsQueryOptions = null;
     harness.search.mockClear();
     harness.invalidateQueries.mockClear();
   });
@@ -143,5 +148,60 @@ describe("HostSessionsSettingsPanel", () => {
 
     expect(errorSpy.mock.calls.some((call) => String(call[0]).includes("same key"))).toBe(false);
     errorSpy.mockRestore();
+  });
+
+  it("says it is still counting and shows no final message counts while partial", async () => {
+    harness.data.partial = true;
+
+    await render(<HostSessionsSettingsPanel active />);
+
+    await vi.waitFor(() => expect(document.body.textContent).toContain("First session"));
+    expect(document.body.textContent).toContain("Counting messages and usage…");
+    expect(document.body.textContent).toContain("Counting messages…");
+    expect(document.body.textContent).not.toContain("3 messages");
+  });
+
+  it("shows the final counts and drops the counting state once the list is complete", async () => {
+    harness.data.partial = true;
+    const screen = await render(<HostSessionsSettingsPanel active />);
+    await vi.waitFor(() =>
+      expect(document.body.textContent).toContain("Counting messages and usage…"),
+    );
+
+    harness.data.partial = false;
+    await screen.rerender(<HostSessionsSettingsPanel active />);
+
+    await vi.waitFor(() =>
+      expect(document.body.textContent).not.toContain("Counting messages and usage…"),
+    );
+    expect(document.body.textContent).not.toContain("Counting messages…");
+    expect(document.body.textContent).toContain("3 messages");
+  });
+
+  it("backs off to a 15 second poll and keeps asking while the list is partial", async () => {
+    harness.data.partial = true;
+    await render(<HostSessionsSettingsPanel active />);
+    await vi.waitFor(() => expect(harness.sessionsQueryOptions).not.toBeNull());
+
+    const options = harness.sessionsQueryOptions as {
+      refetchInterval: (query: {
+        state: { data: { partial?: boolean }; dataUpdateCount: number };
+      }) => number | false;
+      refetchIntervalInBackground: boolean;
+    };
+    const delay = (dataUpdateCount: number, partial = true): number | false =>
+      options.refetchInterval({
+        state: { data: { ...harness.data, partial }, dataUpdateCount },
+      });
+
+    expect(options.refetchIntervalInBackground).toBe(false);
+    expect(delay(1)).toBe(1_500);
+    expect(delay(2)).toBe(3_000);
+    expect(delay(3)).toBe(6_000);
+    expect(delay(4)).toBe(12_000);
+    expect(delay(5)).toBe(15_000);
+    // Past the last step it keeps the slow poll, never settles on partial data.
+    expect(delay(30)).toBe(15_000);
+    expect(delay(30, false)).toBe(false);
   });
 });

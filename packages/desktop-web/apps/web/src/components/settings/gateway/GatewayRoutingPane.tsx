@@ -5,9 +5,12 @@
 import { useQuery } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 
+import { HostUpdateNotice } from "~/components/hosts/HostUpdateNotice";
+import { useBuiltinFeatures } from "~/hooks/useBuiltinFeatures";
+import { useHostFeatures } from "~/hooks/useHostFeatures";
+import { HOST_FEATURES } from "~/lib/hostFeatures.logic";
 import { neolixGatewayApi } from "~/lib/neolixGatewayApi";
 import type {
-  GatewayArchiveRecord,
   GatewayConfig,
   GatewayGroup,
   GatewayRouteHistoryRow,
@@ -19,6 +22,9 @@ import { Button } from "../../ui/button";
 import { Input } from "../../ui/input";
 import { SettingsSection } from "../SettingsPanelPrimitives";
 import { listText, stringList } from "./gatewayHelpers";
+import { GatewayHistoryDetail } from "./GatewayHistoryDetail";
+import { GatewayHeldReports } from "./GatewayHeldReports";
+import { groupGatewayHistory, TITLE_KINDS } from "./gatewayHistoryGroups.logic";
 import {
   GatewayEmpty,
   GatewayField,
@@ -46,6 +52,8 @@ export interface GatewayRoutingProps {
   config: GatewayConfig;
   edit: (mutate: (draft: GatewayConfig) => void) => void;
   apply: (mutate: (draft: GatewayConfig) => void) => Promise<void>;
+  /** Opens the pane that turns the request archive on. */
+  onEditArchive?: (() => void) | undefined;
 }
 
 function updateGroup(
@@ -76,17 +84,15 @@ function parseWeights(value: string): Record<string, number> {
   return weights;
 }
 
-export function GatewayRoutingPane({ config, edit, apply }: GatewayRoutingProps) {
+export function GatewayRoutingPane({ config, edit, apply, onEditArchive }: GatewayRoutingProps) {
   const { t } = useTranslation();
+  const { isEnabled } = useBuiltinFeatures();
   const [filter, setFilter] = useState("");
   const [editing, setEditing] = useState<string | null>(null);
   const [newId, setNewId] = useState("");
   const [traceOpen, setTraceOpen] = useState(false);
   const [stepsFor, setStepsFor] = useState<number | null>(null);
   const [historyDay, setHistoryDay] = useState<string | undefined>(undefined);
-  const [archive, setArchive] = useState<GatewayArchiveRecord | null>(null);
-  const [archiveError, setArchiveError] = useState<string | null>(null);
-  const [archiveTab, setArchiveTab] = useState<"request" | "response" | "upstream">("request");
   const [openHistoryId, setOpenHistoryId] = useState<string | null>(null);
   const [dragId, setDragId] = useState<string | null>(null);
 
@@ -118,10 +124,18 @@ export function GatewayRoutingPane({ config, edit, apply }: GatewayRoutingProps)
     enabled: traceOpen,
     refetchInterval: traceOpen ? 5_000 : false,
   });
+  // Gateway routing diagnostics are a host capability, gated once with every other feature.
+  const hostFeatures = useHostFeatures();
+  const diagnosticsOn = hostFeatures.isAvailable(HOST_FEATURES.gatewayDiagnostics);
   const history = useQuery({
     queryKey: ["neolix-gateway", "history", historyDay ?? ""],
     queryFn: () => neolixGatewayApi.getRoutingHistory(historyDay),
+    enabled: diagnosticsOn,
   });
+  const historyGroups = useMemo(
+    () => groupGatewayHistory((history.data?.routes ?? []).toReversed()),
+    [history.data?.routes],
+  );
 
   const addGroup = () => {
     const id = (newId.trim() || `group-${groups.length + 1}`).replace(/[^A-Za-z0-9._-]/gu, "-");
@@ -206,206 +220,189 @@ export function GatewayRoutingPane({ config, edit, apply }: GatewayRoutingProps)
     return rows;
   }, [config.autoGroupSkip, config.providers]);
 
-  const openArchive = async (row: GatewayRouteHistoryRow) => {
-    if (openHistoryId === row.id) {
-      setOpenHistoryId(null);
-      setArchive(null);
-      return;
-    }
-    const [date, id] = (row.archive ?? "").split("/");
-    setArchiveError(null);
-    setArchiveTab("request");
-    setOpenHistoryId(row.id);
-    setArchive(null);
-    if (date === undefined || id === undefined || date === "" || id === "") {
-      setArchiveError(t("gateway:archive_not_kept"));
-      return;
-    }
-    try {
-      setArchive(await neolixGatewayApi.getArchive({ date, id }));
-    } catch (error) {
-      setArchive(null);
-      setArchiveError(error instanceof Error ? error.message : String(error));
-    }
+  const toggleHistory = (id: string) => {
+    setOpenHistoryId((current) => (current === id ? null : id));
   };
 
   return (
     <div className="flex flex-col gap-6">
-      <SettingsSection title="gateway:routing_groups">
-        <div className="flex flex-wrap items-center gap-2 px-3 py-2">
-          <Input
-            value={filter}
-            onChange={(event) => setFilter(event.currentTarget.value)}
-            placeholder={t("gateway:search_groups")}
-            size="sm"
-            variant="soft"
-            className="min-w-40 flex-1"
-          />
-          <Input
-            value={newId}
-            onChange={(event) => setNewId(event.currentTarget.value)}
-            placeholder={t("gateway:new_group_id")}
-            size="sm"
-            variant="soft"
-            className="w-40"
-          />
-          <Button size="sm" variant="outline" onClick={addGroup}>
-            {t("gateway:add_group")}
-          </Button>
-        </div>
-        <GatewayRow
-          title={t("gateway:auto_groups")}
-          description={t("gateway:auto_groups_hint")}
-          trailing={
-            <GatewayToggle
-              checked={config.autoGroups !== false}
-              label={t("gateway:auto_groups")}
-              onChange={(checked) =>
-                void apply((draft) => {
-                  draft.autoGroups = checked;
-                })
-              }
+      {isEnabled("groups") ? (
+        <SettingsSection title="gateway:routing_groups">
+          <div className="flex flex-wrap items-center gap-2 px-3 py-2">
+            <Input
+              value={filter}
+              onChange={(event) => setFilter(event.currentTarget.value)}
+              placeholder={t("gateway:search_groups")}
+              size="sm"
+              variant="soft"
+              className="min-w-40 flex-1"
             />
-          }
-        />
-        {config.autoGroups !== false && skippable.length > 0 ? (
-          <div className="px-3 py-2">
-            <div className="text-ui-sm text-muted-foreground">{t("gateway:auto_group_skip")}</div>
-            <div className="mt-0.5 text-ui-xs text-muted-foreground">
-              {t("gateway:auto_group_skip_hint")}
-            </div>
-            <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1">
-              {skippable.map((provider) => {
-                const skipped = (config.autoGroupSkip ?? []).some(
-                  (id) => id.trim().toLowerCase() === provider.id.toLowerCase(),
-                );
-                return (
-                  <label key={provider.id} className="flex items-center gap-2 text-ui-sm">
-                    <GatewayToggle
-                      checked={skipped}
-                      label={provider.label}
-                      onChange={(checked) => {
-                        edit((draft) => {
-                          const ids = (draft.autoGroupSkip ?? [])
-                            .map((id) => id.trim())
-                            .filter(
-                              (id) => id !== "" && id.toLowerCase() !== provider.id.toLowerCase(),
-                            );
-                          draft.autoGroupSkip = checked ? [...ids, provider.id] : ids;
-                        });
-                      }}
-                    />
-                    {provider.label}
-                  </label>
-                );
-              })}
-            </div>
+            <Input
+              value={newId}
+              onChange={(event) => setNewId(event.currentTarget.value)}
+              placeholder={t("gateway:new_group_id")}
+              size="sm"
+              variant="soft"
+              className="w-40"
+            />
+            <Button size="sm" variant="outline" onClick={addGroup}>
+              {t("gateway:add_group")}
+            </Button>
           </div>
-        ) : null}
-        {groups.length === 0 ? (
-          <div className="px-3 py-2">
-            <GatewayEmpty>{t("gateway:no_groups")}</GatewayEmpty>
-          </div>
-        ) : (
-          visible.map((group) => {
-            const enabled = group.disabled !== true;
-            const groupIndex = groups.findIndex((entry) => entry.id === group.id);
-            return (
-              <div
-                key={group.id}
-                draggable
-                onDragStart={() => setDragId(group.id)}
-                onDragEnd={() => setDragId(null)}
-                onDragOver={(event) => event.preventDefault()}
-                onDrop={() => {
-                  if (dragId !== null) reorderGroups(dragId, group.id);
-                  setDragId(null);
-                }}
-                className={`px-3 py-2.5 ${dragId === group.id ? "opacity-50" : ""}`}
-              >
-                <div className="flex flex-wrap items-start justify-between gap-2">
-                  <div className="min-w-0">
-                    <div className="flex flex-wrap items-center gap-1.5">
-                      <span
-                        className={
-                          enabled ? "text-ui font-medium" : "text-ui font-medium opacity-60"
-                        }
-                      >
-                        {group.label ?? group.id}
-                      </span>
-                      <GatewayPill>{group.strategy ?? "order"}</GatewayPill>
-                      <GatewayPill>
-                        {t("gateway:member_count", { count: group.members.length })}
-                      </GatewayPill>
-                      {group.auto ? <GatewayPill tone="muted">auto</GatewayPill> : null}
-                    </div>
-                    <div className="mt-0.5 truncate text-ui-xs text-muted-foreground">
-                      {group.members.join(" → ") || t("gateway:no_members")}
-                    </div>
-                    {group.members.length === 0 ? (
-                      <div className="mt-0.5 text-ui-xs text-destructive">
-                        {t("gateway:error_group_members", { id: group.id })}
-                      </div>
-                    ) : null}
-                  </div>
-                  <div className="flex flex-wrap items-center gap-1">
-                    <GatewayToggle
-                      checked={enabled}
-                      label={group.id}
-                      onChange={(checked) =>
-                        void apply((draft) => {
-                          const target = draft.groups?.find((entry) => entry.id === group.id);
-                          if (target) target.disabled = !checked;
-                        })
-                      }
-                    />
-                    <Button
-                      size="xs"
-                      variant="ghost"
-                      disabled={groupIndex <= 0}
-                      aria-label={t("gateway:move_up")}
-                      onClick={() => moveGroupBy(group.id, -1)}
-                    >
-                      ↑
-                    </Button>
-                    <Button
-                      size="xs"
-                      variant="ghost"
-                      disabled={groupIndex < 0 || groupIndex >= groups.length - 1}
-                      aria-label={t("gateway:move_down")}
-                      onClick={() => moveGroupBy(group.id, 1)}
-                    >
-                      ↓
-                    </Button>
-                    <Button
-                      size="xs"
-                      variant="outline"
-                      onClick={() => setEditing(editing === group.id ? null : group.id)}
-                    >
-                      {editing === group.id ? t("gateway:close") : t("gateway:edit")}
-                    </Button>
-                    <Button
-                      size="xs"
-                      variant="ghost"
-                      onClick={() => {
-                        if (
-                          !window.confirm(t("gateway:remove_group_confirm", { name: group.id }))
-                        ) {
-                          return;
-                        }
-                        removeGroup(group);
-                      }}
-                    >
-                      {t("gateway:remove")}
-                    </Button>
-                  </div>
-                </div>
-                {editing === group.id ? <GroupEditor group={group} edit={edit} /> : null}
+          <GatewayRow
+            title={t("gateway:auto_groups")}
+            description={t("gateway:auto_groups_hint")}
+            trailing={
+              <GatewayToggle
+                checked={config.autoGroups !== false}
+                label={t("gateway:auto_groups")}
+                onChange={(checked) =>
+                  void apply((draft) => {
+                    draft.autoGroups = checked;
+                  })
+                }
+              />
+            }
+          />
+          {config.autoGroups !== false && skippable.length > 0 ? (
+            <div className="px-3 py-2">
+              <div className="text-ui-sm text-muted-foreground">{t("gateway:auto_group_skip")}</div>
+              <div className="mt-0.5 text-ui-xs text-muted-foreground">
+                {t("gateway:auto_group_skip_hint")}
               </div>
-            );
-          })
-        )}
-      </SettingsSection>
+              <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1">
+                {skippable.map((provider) => {
+                  const skipped = (config.autoGroupSkip ?? []).some(
+                    (id) => id.trim().toLowerCase() === provider.id.toLowerCase(),
+                  );
+                  return (
+                    <label key={provider.id} className="flex items-center gap-2 text-ui-sm">
+                      <GatewayToggle
+                        checked={skipped}
+                        label={provider.label}
+                        onChange={(checked) => {
+                          edit((draft) => {
+                            const ids = (draft.autoGroupSkip ?? [])
+                              .map((id) => id.trim())
+                              .filter(
+                                (id) => id !== "" && id.toLowerCase() !== provider.id.toLowerCase(),
+                              );
+                            draft.autoGroupSkip = checked ? [...ids, provider.id] : ids;
+                          });
+                        }}
+                      />
+                      {provider.label}
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+          ) : null}
+          {groups.length === 0 ? (
+            <div className="px-3 py-2">
+              <GatewayEmpty>{t("gateway:no_groups")}</GatewayEmpty>
+            </div>
+          ) : (
+            visible.map((group) => {
+              const enabled = group.disabled !== true;
+              const groupIndex = groups.findIndex((entry) => entry.id === group.id);
+              return (
+                <div
+                  key={group.id}
+                  draggable
+                  onDragStart={() => setDragId(group.id)}
+                  onDragEnd={() => setDragId(null)}
+                  onDragOver={(event) => event.preventDefault()}
+                  onDrop={() => {
+                    if (dragId !== null) reorderGroups(dragId, group.id);
+                    setDragId(null);
+                  }}
+                  className={`px-3 py-2.5 ${dragId === group.id ? "opacity-50" : ""}`}
+                >
+                  <div className="flex flex-wrap items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span
+                          className={
+                            enabled ? "text-ui font-medium" : "text-ui font-medium opacity-60"
+                          }
+                        >
+                          {group.label ?? group.id}
+                        </span>
+                        <GatewayPill>{group.strategy ?? "order"}</GatewayPill>
+                        <GatewayPill>
+                          {t("gateway:member_count", { count: group.members.length })}
+                        </GatewayPill>
+                        {group.auto ? <GatewayPill tone="muted">auto</GatewayPill> : null}
+                      </div>
+                      <div className="mt-0.5 truncate text-ui-xs text-muted-foreground">
+                        {group.members.join(" → ") || t("gateway:no_members")}
+                      </div>
+                      {group.members.length === 0 ? (
+                        <div className="mt-0.5 text-ui-xs text-destructive">
+                          {t("gateway:error_group_members", { id: group.id })}
+                        </div>
+                      ) : null}
+                    </div>
+                    <div className="flex flex-wrap items-center gap-1">
+                      <GatewayToggle
+                        checked={enabled}
+                        label={group.id}
+                        onChange={(checked) =>
+                          void apply((draft) => {
+                            const target = draft.groups?.find((entry) => entry.id === group.id);
+                            if (target) target.disabled = !checked;
+                          })
+                        }
+                      />
+                      <Button
+                        size="xs"
+                        variant="ghost"
+                        disabled={groupIndex <= 0}
+                        aria-label={t("gateway:move_up")}
+                        onClick={() => moveGroupBy(group.id, -1)}
+                      >
+                        ↑
+                      </Button>
+                      <Button
+                        size="xs"
+                        variant="ghost"
+                        disabled={groupIndex < 0 || groupIndex >= groups.length - 1}
+                        aria-label={t("gateway:move_down")}
+                        onClick={() => moveGroupBy(group.id, 1)}
+                      >
+                        ↓
+                      </Button>
+                      <Button
+                        size="xs"
+                        variant="outline"
+                        onClick={() => setEditing(editing === group.id ? null : group.id)}
+                      >
+                        {editing === group.id ? t("gateway:close") : t("gateway:edit")}
+                      </Button>
+                      <Button
+                        size="xs"
+                        variant="ghost"
+                        onClick={() => {
+                          if (
+                            !window.confirm(t("gateway:remove_group_confirm", { name: group.id }))
+                          ) {
+                            return;
+                          }
+                          removeGroup(group);
+                        }}
+                      >
+                        {t("gateway:remove")}
+                      </Button>
+                    </div>
+                  </div>
+                  {editing === group.id ? <GroupEditor group={group} edit={edit} /> : null}
+                </div>
+              );
+            })
+          )}
+        </SettingsSection>
+      ) : null}
 
       <SettingsSection title="gateway:live">
         <div className="flex items-center justify-end px-3 py-2">
@@ -492,82 +489,141 @@ export function GatewayRoutingPane({ config, edit, apply }: GatewayRoutingProps)
       </SettingsSection>
 
       <SettingsSection title="gateway:history_title">
-        <div className="flex items-center justify-end gap-1 px-3 py-2">
-          <select
-            value={history.data?.day ?? ""}
-            onChange={(event) => setHistoryDay(event.currentTarget.value || undefined)}
-            className="h-7 rounded-md border border-[color:var(--color-border)] bg-background px-2 text-ui-xs"
-          >
-            {(history.data?.days ?? []).map((day) => (
-              <option key={day} value={day}>
-                {day}
-              </option>
-            ))}
-          </select>
-          <Button size="xs" variant="ghost" onClick={() => void history.refetch()}>
-            {t("gateway:refresh")}
-          </Button>
-        </div>
-        {history.isLoading ? (
+        {hostFeatures.isLoading ? (
           <div className="px-3 py-2 text-ui-sm text-muted-foreground">{t("gateway:loading")}</div>
-        ) : history.error ? (
+        ) : !diagnosticsOn ? (
           <div className="px-3 py-2">
-            <GatewayEmpty tone="error">{String(history.error)}</GatewayEmpty>
-          </div>
-        ) : (history.data?.routes.length ?? 0) === 0 ? (
-          <div className="px-3 py-2">
-            <GatewayEmpty>{t("gateway:no_history")}</GatewayEmpty>
+            <HostUpdateNotice compact />
           </div>
         ) : (
-          (history.data?.routes ?? []).slice(0, 100).map((row) => (
-            <div key={row.id}>
-              <GatewayRow
-                title={`${row.asked ?? row.model ?? "?"}${row.served ? ` → ${row.served}` : ""}`}
-                description={`${row.time} · ${row.client ?? ""} ${row.status ?? ""} · ${
-                  row.millis === null || row.millis === undefined ? "…" : `${row.millis}ms`
-                }${row.archive ? ` · ${t("gateway:history_archived")}` : ""}`}
-                trailing={
-                  <div className="flex items-center gap-1">
-                    {row.tries?.map((attempt) => (
-                      <GatewayPill
-                        key={`${row.id}-${attempt.provider ?? ""}-${attempt.status ?? ""}-${attempt.model ?? ""}`}
-                        tone={attempt.error ? "error" : "muted"}
-                      >
-                        {attempt.provider ?? "?"} {attempt.status ?? "…"}
-                      </GatewayPill>
-                    ))}
-                    <Button
-                      size="xs"
-                      variant="ghost"
-                      aria-expanded={openHistoryId === row.id}
-                      onClick={() => void openArchive(row)}
-                    >
-                      {openHistoryId === row.id ? t("gateway:hide") : t("gateway:open")}
-                    </Button>
-                  </div>
-                }
-              />
-              {openHistoryId === row.id ? (
-                <div className="px-3 pb-3">
-                  {archiveError !== null ? (
-                    <div className="text-ui-sm text-destructive">{archiveError}</div>
-                  ) : archive === null ? (
-                    <div className="text-ui-sm text-muted-foreground">{t("gateway:loading")}</div>
-                  ) : (
-                    <ArchiveDetail record={archive} tab={archiveTab} onTab={setArchiveTab} />
-                  )}
-                </div>
-              ) : null}
+          <>
+            <div className="flex items-center justify-end gap-1 px-3 py-2">
+              <select
+                value={history.data?.day ?? ""}
+                onChange={(event) => {
+                  setHistoryDay(event.currentTarget.value || undefined);
+                  setOpenHistoryId(null);
+                }}
+                className="h-7 rounded-md border border-[color:var(--color-border)] bg-background px-2 text-ui-xs"
+              >
+                {(history.data?.days ?? []).map((day) => (
+                  <option key={day} value={day}>
+                    {day}
+                  </option>
+                ))}
+              </select>
+              <Button size="xs" variant="ghost" onClick={() => void history.refetch()}>
+                {t("gateway:refresh")}
+              </Button>
             </div>
-          ))
+            {history.isLoading ? (
+              <div className="px-3 py-2 text-ui-sm text-muted-foreground">
+                {t("gateway:loading")}
+              </div>
+            ) : history.error ? (
+              <div className="px-3 py-2">
+                <GatewayEmpty tone="error">{String(history.error)}</GatewayEmpty>
+              </div>
+            ) : (history.data?.routes.length ?? 0) === 0 ? (
+              <div className="px-3 py-2">
+                <GatewayEmpty>{t("gateway:no_history")}</GatewayEmpty>
+              </div>
+            ) : (
+              historyGroups.map((group) => (
+                <div key={group.key}>
+                  {group.label === null ? null : (
+                    <div className="flex items-center justify-between gap-2 px-3 pt-2">
+                      <div className="min-w-0 truncate text-ui-sm font-medium text-foreground">
+                        {group.label}
+                      </div>
+                      {group.matched ? (
+                        <div className="shrink-0 text-ui-xs text-muted-foreground">
+                          {t("gateway:history_titleMatched")}
+                        </div>
+                      ) : null}
+                    </div>
+                  )}
+                  {group.routes.map((row) => (
+                    <div key={row.id}>
+                      <HistoryRow
+                        row={row}
+                        open={openHistoryId === row.id}
+                        onToggle={() => toggleHistory(row.id)}
+                      />
+                      {openHistoryId === row.id ? (
+                        <div className="px-3 pb-3">
+                          <GatewayHistoryDetail row={row} onEditArchive={onEditArchive} />
+                        </div>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+              ))
+            )}
+            <GatewayHeldReports />
+          </>
         )}
       </SettingsSection>
     </div>
   );
 }
 
+function HistoryRow({
+  row,
+  open,
+  onToggle,
+}: {
+  row: GatewayRouteHistoryRow;
+  open: boolean;
+  onToggle: () => void;
+}) {
+  const { t } = useTranslation();
+  const failed = row.status !== undefined && row.status !== null && row.status >= 400;
+  const models =
+    row.asked !== undefined && row.served !== undefined && row.asked !== row.served
+      ? `${row.asked} → ${row.served}`
+      : (row.served ?? row.asked ?? row.model ?? "?");
+  const details = [
+    ...(row.client === undefined ? [] : [row.client]),
+    ...(row.archive === undefined ? [] : [t("gateway:history_archived")]),
+    ...(row.held === undefined ? [] : [t("gateway:history_heldRow")]),
+    ...(row.kind !== undefined && TITLE_KINDS.has(row.kind) ? [t("gateway:history_titleRow")] : []),
+  ];
+  return (
+    <GatewayRow
+      title={
+        <span className={failed ? "text-destructive" : undefined}>
+          {models}
+          {failed ? ` · ${row.status}` : ""}
+        </span>
+      }
+      description={`${row.time}${
+        details.length === 0 ? "" : ` · ${details.join(" · ")}`
+      } · ${row.millis === null || row.millis === undefined ? "…" : `${row.millis}ms`}`}
+      trailing={
+        <div className="flex items-center gap-1">
+          {row.tries?.map((attempt) => (
+            <GatewayPill
+              key={`${row.id}-${attempt.provider ?? ""}-${attempt.status ?? ""}-${attempt.model ?? ""}`}
+              tone={attempt.error ? "error" : "muted"}
+            >
+              {attempt.provider === undefined ? null : `${attempt.provider} `}
+              {attempt.status ?? "…"}
+            </GatewayPill>
+          ))}
+          <Button size="xs" variant="ghost" aria-expanded={open} onClick={onToggle}>
+            {open ? t("gateway:hide") : t("gateway:open")}
+          </Button>
+        </div>
+      }
+    />
+  );
+}
+
 function GroupEditor({ group, edit }: { group: GatewayGroup; edit: GatewayRoutingProps["edit"] }) {
   const { t } = useTranslation();
+  const { isEnabled } = useBuiltinFeatures();
+  const rotationOn = isEnabled("rotation");
   const update = (mutate: (draft: GatewayGroup) => void) => updateGroup(edit, group.id, mutate);
   return (
     <div className="mt-3 space-y-3 rounded-lg border border-[color:var(--color-border)] p-3">
@@ -581,25 +637,27 @@ function GroupEditor({ group, edit }: { group: GatewayGroup; edit: GatewayRoutin
             })
           }
         />
-        <label className="flex flex-col gap-1">
-          <span className="text-ui-sm text-muted-foreground">{t("gateway:strategy")}</span>
-          <select
-            value={group.strategy ?? "order"}
-            onChange={(event) => {
-              const value = event.currentTarget.value;
-              update((draft) => {
-                draft.strategy = value;
-              });
-            }}
-            className="h-7 rounded-md border border-[color:var(--color-border)] bg-background px-2 text-ui-sm"
-          >
-            {STRATEGIES.map((strategy) => (
-              <option key={strategy} value={strategy}>
-                {strategy}
-              </option>
-            ))}
-          </select>
-        </label>
+        {rotationOn ? (
+          <label className="flex flex-col gap-1">
+            <span className="text-ui-sm text-muted-foreground">{t("gateway:strategy")}</span>
+            <select
+              value={group.strategy ?? "order"}
+              onChange={(event) => {
+                const value = event.currentTarget.value;
+                update((draft) => {
+                  draft.strategy = value;
+                });
+              }}
+              className="h-7 rounded-md border border-[color:var(--color-border)] bg-background px-2 text-ui-sm"
+            >
+              {STRATEGIES.map((strategy) => (
+                <option key={strategy} value={strategy}>
+                  {strategy}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : null}
         <GatewayNumberField
           label={t("gateway:context_window")}
           value={group.context}
@@ -646,17 +704,19 @@ function GroupEditor({ group, edit }: { group: GatewayGroup; edit: GatewayRoutin
         </div>
       ) : null}
       <div className="grid gap-2 sm:grid-cols-2">
-        <GatewayTextarea
-          label={t("gateway:weights")}
-          value={weightsText(group.weights)}
-          onChange={(value) =>
-            update((draft) => {
-              draft.weights = parseWeights(value);
-            })
-          }
-          placeholder="provider/model=3, provider/other=1"
-          rows={2}
-        />
+        {rotationOn ? (
+          <GatewayTextarea
+            label={t("gateway:weights")}
+            value={weightsText(group.weights)}
+            onChange={(value) =>
+              update((draft) => {
+                draft.weights = parseWeights(value);
+              })
+            }
+            placeholder="provider/model=3, provider/other=1"
+            rows={2}
+          />
+        ) : null}
         <GatewayTextarea
           label={t("gateway:match")}
           value={listText(group.match)}
@@ -689,18 +749,20 @@ function GroupEditor({ group, edit }: { group: GatewayGroup; edit: GatewayRoutin
         />
       </div>
       <div className="flex flex-wrap gap-3">
-        <label className="flex items-center gap-2 text-ui-sm">
-          <GatewayToggle
-            checked={group.weighted === true}
-            label={t("gateway:weighted")}
-            onChange={(checked) =>
-              update((draft) => {
-                draft.weighted = checked;
-              })
-            }
-          />
-          {t("gateway:weighted")}
-        </label>
+        {rotationOn ? (
+          <label className="flex items-center gap-2 text-ui-sm">
+            <GatewayToggle
+              checked={group.weighted === true}
+              label={t("gateway:weighted")}
+              onChange={(checked) =>
+                update((draft) => {
+                  draft.weighted = checked;
+                })
+              }
+            />
+            {t("gateway:weighted")}
+          </label>
+        ) : null}
         <div className="w-full">
           <GatewayRulesEditor group={group} onChange={update} />
         </div>
@@ -768,158 +830,6 @@ function RouteSteps({ route }: { route: GatewayTraceRoute }) {
           })}
         </div>
       ) : null}
-    </div>
-  );
-}
-
-type ArchiveTab = "request" | "response" | "upstream";
-
-function prettyBody(body: string): string {
-  try {
-    return JSON.stringify(JSON.parse(body), null, 2);
-  } catch {
-    return body;
-  }
-}
-
-function isEventStream(headers: Record<string, string[]>): boolean {
-  return Object.entries(headers).some(
-    ([name, values]) =>
-      name.toLowerCase() === "content-type" &&
-      values.some((value) => value.toLowerCase().includes("text/event-stream")),
-  );
-}
-
-function HeaderTable({ headers }: { headers: Record<string, string[]> }) {
-  const entries = Object.entries(headers);
-  if (entries.length === 0) return null;
-  return (
-    <div className="mb-1.5 space-y-0.5 text-ui-xs text-muted-foreground">
-      {entries.map(([name, values]) => (
-        <div key={name} className="break-all">
-          <span className="font-mono text-foreground">{name}</span>: {values.join(", ")}
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function ArchivePartView({
-  part,
-  emptyLabel,
-}: {
-  part: GatewayArchiveRecord["request"];
-  emptyLabel: string;
-}) {
-  const events = isEventStream(part.headers) ? part.body.split(/\r?\n\r?\n/u).filter(Boolean) : [];
-  return (
-    <div>
-      <div className="mb-1 text-ui-xs text-muted-foreground">
-        {[part.method, part.path, part.status === undefined ? "" : String(part.status)]
-          .filter(Boolean)
-          .join(" · ")}
-        {part.truncated === true ? ` · ${emptyLabel}` : ""}
-      </div>
-      <HeaderTable headers={part.headers} />
-      {events.length > 0 ? (
-        <div className="space-y-1">
-          {events.map((event) => (
-            // A stream's events have no id but their order.
-            // oxlint-disable-next-line react/no-array-index-key
-            <pre
-              key={event}
-              className="max-h-48 overflow-auto rounded bg-foreground/5 p-2 text-ui-xs"
-            >
-              {event}
-            </pre>
-          ))}
-        </div>
-      ) : (
-        <pre className="max-h-80 overflow-auto whitespace-pre-wrap rounded bg-foreground/5 p-2 text-ui-xs">
-          {part.body === "" ? emptyLabel : prettyBody(part.body)}
-        </pre>
-      )}
-    </div>
-  );
-}
-
-/** One archived call: request, response, and each upstream attempt. */
-function ArchiveDetail({
-  record,
-  tab,
-  onTab,
-}: {
-  record: GatewayArchiveRecord;
-  tab: ArchiveTab;
-  onTab: (tab: ArchiveTab) => void;
-}) {
-  const { t } = useTranslation();
-  const tabs: ArchiveTab[] = ["request", "response", "upstream"];
-  return (
-    <div className="rounded-md border border-[color:var(--color-border)] p-2">
-      <div className="mb-2 flex flex-wrap items-center justify-between gap-1">
-        <div className="flex flex-wrap gap-1">
-          {tabs.map((entry) => (
-            <button
-              key={entry}
-              type="button"
-              aria-pressed={tab === entry}
-              onClick={() => onTab(entry)}
-              className={`rounded border px-2 py-0.5 text-ui-xs ${
-                tab === entry
-                  ? "border-foreground/25 bg-foreground/8 text-foreground"
-                  : "border-[color:var(--color-border)] text-muted-foreground"
-              }`}
-            >
-              {t(`gateway:archive_tab_${entry}`)}
-            </button>
-          ))}
-        </div>
-        <Button
-          size="xs"
-          variant="ghost"
-          onClick={() =>
-            void navigator.clipboard?.writeText(
-              tab === "request"
-                ? record.request.body
-                : tab === "response"
-                  ? record.response.body
-                  : JSON.stringify(record.upstream ?? [], null, 2),
-            )
-          }
-        >
-          {t("gateway:archive_copy")}
-        </Button>
-      </div>
-      {tab === "request" ? (
-        <ArchivePartView part={record.request} emptyLabel={t("gateway:archive_empty")} />
-      ) : tab === "response" ? (
-        <ArchivePartView part={record.response} emptyLabel={t("gateway:archive_empty")} />
-      ) : (record.upstream ?? []).length === 0 ? (
-        <div className="text-ui-xs text-muted-foreground">{t("gateway:archive_no_upstream")}</div>
-      ) : (
-        (record.upstream ?? []).map((attempt, index) => (
-          // Each upstream attempt has no id but its order.
-          // oxlint-disable-next-line react/no-array-index-key
-          <details
-            key={`${attempt.method}-${attempt.url}-${attempt.status}`}
-            className="border-t border-[color:var(--color-border)] py-1.5"
-            open={index === 0}
-          >
-            <summary className="cursor-pointer text-ui-xs">
-              {attempt.method} {attempt.url} · {attempt.status} · {Math.round(attempt.millis)}ms
-              {attempt.error ? ` · ${attempt.error}` : ""}
-            </summary>
-            <div className="mt-1 space-y-1">
-              <div className="text-ui-xs text-muted-foreground">{t("gateway:archive_request")}</div>
-              <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded bg-foreground/5 p-2 text-ui-xs">
-                {JSON.stringify(attempt.request, null, 2)}
-              </pre>
-              <HeaderTable headers={attempt.response} />
-            </div>
-          </details>
-        ))
-      )}
     </div>
   );
 }

@@ -48,8 +48,11 @@ test("lists built-in and subprocess usage; validates input and isolates fetch er
       ).reports.find((entry) => entry.id === "fixture:one")?.report.windows[0]?.usedPct,
     ).toBe(2);
     expect(
-      (await client.listUsageReports({ reportIds: ["fixture:throws"] })).reports[0]?.report.status,
-    ).toBe("error");
+      (await client.listUsageReports({ reportIds: ["fixture:throws"] })).reports[0]?.report,
+    ).toEqual({
+      status: "error",
+      error: "fetch failed: getaddrinfo ENOTFOUND api.x.ai",
+    });
     const expired = first.reports.find((entry) => entry.id === "fixture:expired");
     expect(expired?.report).toEqual({
       status: "unavailable",
@@ -71,6 +74,12 @@ test("lists built-in and subprocess usage; validates input and isolates fetch er
         id: "weekly",
         label: "Weekly",
         shortLabel: "wk",
+      });
+    }
+    for (const id of ["fixture:throws", "fixture-directory:throws"]) {
+      expect(both.reports.find((entry) => entry.id === id)?.report).toEqual({
+        status: "error",
+        error: "fetch failed: getaddrinfo ENOTFOUND api.x.ai",
       });
     }
     await client.patchDaemonConfig({ pluginsEnabled: false });

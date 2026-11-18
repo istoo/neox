@@ -1496,7 +1496,7 @@ const frame = useRef<HtmlFrameHandle>(null);
 />;
 ```
 
-`HtmlFrame` 需要 Neox 0.15.0 或更高版本。myna 插件转换器用它渲染转换后的 `magpie.page` 和 `magpie.panels`，并在 bridge 之上提供页面自己的 `window.myna` 对象。
+`HtmlFrame` 需要 Neox 0.15.0 或更高版本。myna 插件转换器不再用它：转换器声明沙箱 web view，desktop web 无需运行客户端 bundle 即可渲染。`HtmlFrame` 留给作者自己编写的 HTML 界面。
 
 ### 版本要求与示例 {#version-requirement-and-examples}
 

@@ -108,7 +108,7 @@ class FakeKeyboardEvent extends Event {
   }
 }
 const fakeWindow = new EventTarget();
-const fakeDocument = { activeElement: null as unknown };
+const fakeDocument = { activeElement: null as unknown, documentElement: { lang: "", dir: "" } };
 vi.stubGlobal("window", fakeWindow);
 vi.stubGlobal("document", fakeDocument);
 vi.stubGlobal("Element", FakeElement);
@@ -147,6 +147,11 @@ vi.mock("../../lib/utils", () => ({
   isMacNavigatorPlatform: () => true,
   isMacPlatform: () => true,
   isWindowsPlatform: () => false,
+}));
+const overlayHarness = vi.hoisted(() => ({ open: false }));
+vi.mock("../../lib/editableEventTarget", () => ({
+  isEditableEventTarget: () => false,
+  hasOpenDismissibleOverlay: () => overlayHarness.open,
 }));
 
 const { useChatKeyboardShortcuts } = await import("./useChatKeyboardShortcuts");
@@ -213,6 +218,7 @@ interface HarnessOptions {
   terminalOpen?: boolean;
   workspaceLayout?: "both" | "terminal-only";
   workspaceActiveTab?: "terminal" | "chat";
+  hasLiveTurn?: boolean;
 }
 
 function mountHarness(options: HarnessOptions = {}) {
@@ -227,6 +233,7 @@ function mountHarness(options: HarnessOptions = {}) {
     setTerminalWorkspaceTab: vi.fn(),
     onCloseActiveThreadTab: vi.fn(() => true),
     onCloseDockTerminalPane: vi.fn(),
+    interrupt: vi.fn(),
   };
   const render = () => {
     reactHarness.beginRender();
@@ -236,9 +243,9 @@ function mountHarness(options: HarnessOptions = {}) {
       surfaceMode: "single",
       isFocusedPane: true,
       activeThreadId: threadId,
-      hasLiveTurn: false,
+      hasLiveTurn: options.hasLiveTurn ?? false,
       composerFormRef: { current: null },
-      onInterruptFromStopControl: vi.fn(),
+      onInterruptFromStopControl: calls.interrupt,
       composerSubagentStripItems: [],
       onBackgroundAllForegroundSubagentStripItems: vi.fn(async () => {}),
       isVoiceRecording: false,
@@ -295,6 +302,31 @@ function mountHarness(options: HarnessOptions = {}) {
   render();
   return { calls, render, threadId };
 }
+
+describe("escape interrupt", () => {
+  it("interrupts the live turn, like the stop button", () => {
+    overlayHarness.open = false;
+    const { calls } = mountHarness({ hasLiveTurn: true });
+    const event = keydown("Escape");
+    expect(calls.interrupt).toHaveBeenCalledTimes(1);
+    expect(event.defaultPrevented).toBe(true);
+  });
+
+  it("leaves Escape to an open menu or dialog", () => {
+    overlayHarness.open = true;
+    const { calls } = mountHarness({ hasLiveTurn: true });
+    const event = keydown("Escape");
+    expect(calls.interrupt).not.toHaveBeenCalled();
+    expect(event.defaultPrevented).toBe(false);
+  });
+
+  it("does nothing when no turn is live", () => {
+    overlayHarness.open = false;
+    const { calls } = mountHarness();
+    keydown("Escape");
+    expect(calls.interrupt).not.toHaveBeenCalled();
+  });
+});
 
 describe("mod+w chord ownership", () => {
   it("closes the active thread tab on a regular chat surface", () => {
