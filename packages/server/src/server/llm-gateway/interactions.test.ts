@@ -72,6 +72,7 @@ function startUpstream(body: string, delayMs = 0): Promise<Upstream> {
 
 interface Gateway extends TestServer {
   neolixHome: string;
+  ledger: UsageLedger;
 }
 
 async function startGateway(config: GatewayConfig): Promise<Gateway> {
@@ -83,7 +84,7 @@ async function startGateway(config: GatewayConfig): Promise<Gateway> {
   const ledger = new UsageLedger({ neolixHome, logger });
   const app = express();
   app.use(createGatewayRouter({ configStore: store, masker, ledger, logger }));
-  return { ...(await listen(app)), neolixHome };
+  return { ...(await listen(app)), neolixHome, ledger };
 }
 
 function provider(id: string, url: string, protocol: "anthropic" | "openai" = "anthropic") {
@@ -127,11 +128,16 @@ describe("concurrency", () => {
     );
 
     expect(responses.every((response) => response.status === 200)).toBe(true);
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    // Records are appended after each reply is written. Flush waits for those
+    // appends instead of guessing how long the file system will take.
+    await gateway.ledger.flush();
     const lines = readFileSync(path.join(gateway.neolixHome, "gateway-usage.jsonl"), "utf8")
       .trim()
       .split("\n");
     expect(lines).toHaveLength(20);
+    expect(
+      lines.map((line) => JSON.parse(line) as { ok: boolean }).every((entry) => entry.ok),
+    ).toBe(true);
     expect(upstream.requests).toBe(20);
   });
 });
