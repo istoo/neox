@@ -404,6 +404,7 @@ export function makePullRequestHandlers(model: BridgeModel): Record<string, AnyH
           checkoutSource: { kind: "change_request", number: pullRequest.number },
         })) as unknown as {
           workspace?: {
+            id?: string;
             workspaceDirectory?: string;
             gitRuntime?: { currentBranch?: string | null } | null;
           } | null;
@@ -423,6 +424,8 @@ export function makePullRequestHandlers(model: BridgeModel): Record<string, AnyH
         const branch =
           created.workspace?.gitRuntime?.currentBranch?.trim() || pullRequest.headBranch;
         model.rememberWorktree(worktreePath, branch);
+        const workspaceId = created.workspace?.id?.trim();
+        if (workspaceId) model.rememberWorkspace(workspaceId, worktreePath);
         return { pullRequest, branch, worktreePath } satisfies GitPreparePullRequestThreadResult;
       });
     },

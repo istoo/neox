@@ -51,6 +51,7 @@ import {
   type GitCreatePrDialogSubmission,
 } from "./GitCreatePrDialog";
 import { getProviderStartOptions, useAppSettings } from "~/appSettings";
+import { NEOLIX_GIT_FEATURE_BRANCH_UI_ENABLED } from "~/neolixFeatures";
 import { formatClockDuration } from "~/session-logic";
 import { Button } from "~/components/ui/button";
 import { ButtonGroup, ButtonGroupSeparator } from "~/components/ui/button-group";
@@ -296,6 +297,7 @@ function shouldOfferCreatePrCtaFor(
       isDefaultBranch: actionIsDefaultBranch,
       hasOriginRemote,
       defaultBranchName,
+      allowFeatureBranch: NEOLIX_GIT_FEATURE_BRANCH_UI_ENABLED,
     }).kind === "run_action"
   );
 }
@@ -754,6 +756,7 @@ export default function GitActionsControl({
         isDefaultBranch: input?.isDefaultBranchOverride ?? isDefaultBranch,
         hasOriginRemote,
         defaultBranchName,
+        allowFeatureBranch: NEOLIX_GIT_FEATURE_BRANCH_UI_ENABLED,
       });
       if (execution.kind === "open_pr") {
         void openExistingPr();
@@ -1337,6 +1340,7 @@ export default function GitActionsControl({
       isDefaultBranch,
       hasOriginRemote,
       defaultBranchName,
+      allowFeatureBranch: NEOLIX_GIT_FEATURE_BRANCH_UI_ENABLED,
     }),
     [defaultBranchName, gitStatusForActions, hasOriginRemote, isDefaultBranch, isGitActionRunning],
   );
@@ -1976,7 +1980,8 @@ export default function GitActionsControl({
                 ? t("git:createFeatureBranchContinue")
                 : (pendingDefaultBranchActionCopy?.continueLabel ?? t("git:continue"))}
             </Button>
-            {pendingDefaultBranchAction &&
+            {NEOLIX_GIT_FEATURE_BRANCH_UI_ENABLED &&
+            pendingDefaultBranchAction &&
             !requiresFeatureBranchForDefaultBranchAction(pendingDefaultBranchAction.action) ? (
               <Button
                 size="sm"

@@ -187,6 +187,12 @@ export function groupByRequest(config: GatewayConfig, requestedModel: string): G
     const id = autoGroupId(model);
     return groups.find((group) => group.id === id) ?? null;
   }
+  // `provider/model` names one provider's model, never a group. Without this,
+  // a model two providers serve reaches the found group for its bare id and
+  // the named provider is ignored.
+  if (requestedModel.includes("/")) {
+    return null;
+  }
   // A bare id a group goes by is that group, as myna's GroupFor takes it:
   // its id, its slug, the found group's auto-slug, then a group's name.
   const bare = requestedModel.replace(/\[1m\]$/, "");

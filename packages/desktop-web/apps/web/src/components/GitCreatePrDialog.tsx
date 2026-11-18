@@ -146,12 +146,14 @@ export function GitCreatePrDialog({
         )}
       </GitDialogBody>
       <GitDialogActionList>
-        <GitDialogActionRow
-          disabled={!canCreate}
-          icon={<GitPullRequestDraftIcon />}
-          label={t("git:createDraftPR")}
-          onClick={() => submit(true)}
-        />
+        {view.showDraftAction && (
+          <GitDialogActionRow
+            disabled={!canCreate}
+            icon={<GitPullRequestDraftIcon />}
+            label={t("git:createDraftPR")}
+            onClick={() => submit(true)}
+          />
+        )}
         <GitDialogActionRow
           highlighted
           disabled={!canCreate}

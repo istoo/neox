@@ -676,6 +676,7 @@ export function createWsNativeApi(): NativeApi {
       clear: (input) => executionRequest(WS_METHODS.terminalClear, input),
       restart: (input) => executionRequest(WS_METHODS.terminalRestart, input),
       close: (input) => executionRequest(WS_METHODS.terminalClose, input),
+      focusHeartbeat: (input) => executionRequest(WS_METHODS.terminalFocusHeartbeat, input),
       onEvent: terminalEventListeners.subscribe,
     },
     editor: {

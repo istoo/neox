@@ -4,6 +4,7 @@ import {
   ProjectId,
   type NativeApi,
   type TerminalCloseInput,
+  type TerminalFocusHeartbeatInput,
   type TerminalOpenInput,
   type TerminalWriteInput,
   type TerminalEvent,
@@ -15,11 +16,14 @@ import { selectRightDockState, useRightDockStore } from "../rightDockStore";
 import { useStore } from "../store";
 import { dockTerminalThreadId } from "../lib/dockTerminalScope";
 import { afterEach, expect, it, vi } from "vitest";
+import { useMemo, useState, type ReactNode } from "react";
+import TerminalActivityIndicator from "./terminal/TerminalActivityIndicator";
+import { resolveTerminalVisualIdentityMap } from "../terminalVisualIdentity";
 import { page, userEvent } from "vitest/browser";
 import { render } from "vitest-browser-react";
 import ThreadTerminalDrawer from "./ThreadTerminalDrawer";
 import { terminalRuntimeRegistry } from "./terminal/terminalRuntimeRegistry";
-import { useTerminalStateStore } from "../terminalStateStore";
+import { type ThreadTerminalState, useTerminalStateStore } from "../terminalStateStore";
 import { closeTerminalSurface } from "../hooks/useTerminalSurfaceController";
 import { disposeAndCloseTerminalSession } from "./terminal/terminalSession";
 import TerminalViewport from "./terminal/TerminalViewport";
@@ -42,6 +46,7 @@ const api = vi.hoisted(() => ({
     resize: vi.fn(async () => {}),
     ackOutput: vi.fn(async () => {}),
     close: vi.fn<(input: TerminalCloseInput) => Promise<void>>(async () => {}),
+    focusHeartbeat: vi.fn<(input: TerminalFocusHeartbeatInput) => Promise<void>>(async () => {}),
     onEvent: vi.fn<(listener: (event: TerminalEvent) => void) => () => void>(() => () => {}),
   },
 }));
@@ -289,15 +294,199 @@ it("keeps a reopened shell alive when cleanup of the exited shell finishes later
   }
 });
 
+it("reports real terminal focus and clears it on blur or hide", async () => {
+  const threadId = ThreadId.makeUnsafe("focus-heartbeat-terminal");
+  function FocusHarness() {
+    const [visible, setVisible] = useState(false);
+    return (
+      <div style={{ width: 720, height: 420 }}>
+        <button id="show-terminal" onClick={() => setVisible(true)}>
+          Show
+        </button>
+        <button id="hide-terminal" onClick={() => setVisible(false)}>
+          Hide
+        </button>
+        <button id="outside-terminal">Outside</button>
+        <ThreadTerminalDrawer
+          threadId={threadId}
+          activeTerminalId="default"
+          cwd="/tmp"
+          terminalLabelsById={{ default: "Terminal" }}
+          terminalTitleOverridesById={{}}
+          terminalCliKindsById={{}}
+          focusRequestId={0}
+          onTerminalSessionExited={vi.fn()}
+          onTerminalMetadataChange={vi.fn()}
+          onTerminalActivityChange={vi.fn()}
+          isVisible={visible}
+        />
+      </div>
+    );
+  }
+  const view = await render(<FocusHarness />);
+  const lastHeartbeat = () => api.terminal.focusHeartbeat.mock.lastCall?.[0];
+  try {
+    await expect.poll(() => api.terminal.open.mock.calls.length).toBe(1);
+    await vi.waitFor(() =>
+      expect(
+        document.querySelector('aside[aria-label="Terminal"] .xterm-helper-textarea'),
+      ).not.toBeNull(),
+    );
+    expect(
+      api.terminal.focusHeartbeat.mock.calls.some(([input]) => input.terminalId !== undefined),
+    ).toBe(false);
+
+    document.getElementById("show-terminal")!.click();
+    const terminalInput = document.querySelector<HTMLTextAreaElement>(
+      'aside[aria-label="Terminal"] .xterm-helper-textarea',
+    )!;
+    terminalInput.focus();
+    await expect.poll(lastHeartbeat).toEqual({
+      threadId,
+      terminalId: "default",
+      appVisible: true,
+    });
+
+    document.getElementById("outside-terminal")!.focus();
+    await expect.poll(lastHeartbeat).toEqual({ threadId, appVisible: true });
+
+    terminalInput.focus();
+    await expect.poll(lastHeartbeat).toEqual({
+      threadId,
+      terminalId: "default",
+      appVisible: true,
+    });
+    window.dispatchEvent(new Event("blur"));
+    await expect.poll(lastHeartbeat).toEqual({ threadId, appVisible: false });
+    window.dispatchEvent(new Event("focus"));
+    await expect.poll(lastHeartbeat).toEqual({
+      threadId,
+      terminalId: "default",
+      appVisible: true,
+    });
+
+    // Programmatic click changes visibility without moving DOM focus, so the
+    // hide path itself has to clear the daemon's focus mark.
+    document.getElementById("hide-terminal")!.click();
+    await expect.poll(lastHeartbeat).toEqual({ threadId, appVisible: true });
+  } finally {
+    await view.unmount();
+  }
+});
+
+it("keeps the live terminal focused when a previously focused sibling handles window refocus", async () => {
+  const firstThread = ThreadId.makeUnsafe("focus-owner-first");
+  const secondThread = ThreadId.makeUnsafe("focus-owner-second");
+  const drawer = (threadId: ThreadId) => (
+    <ThreadTerminalDrawer
+      threadId={threadId}
+      activeTerminalId="default"
+      cwd="/tmp"
+      terminalLabelsById={{ default: "Terminal" }}
+      terminalTitleOverridesById={{}}
+      terminalCliKindsById={{}}
+      focusRequestId={0}
+      onTerminalSessionExited={vi.fn()}
+      onTerminalMetadataChange={vi.fn()}
+      onTerminalActivityChange={vi.fn()}
+      isVisible
+    />
+  );
+  const view = await render(
+    <div style={{ display: "flex", width: 1000, height: 400 }}>
+      <div style={{ flex: 1 }}>{drawer(firstThread)}</div>
+      <div style={{ flex: 1 }}>{drawer(secondThread)}</div>
+    </div>,
+  );
+  const lastHeartbeat = () => api.terminal.focusHeartbeat.mock.lastCall?.[0];
+  try {
+    await expect.poll(() => api.terminal.open.mock.calls.length).toBe(2);
+    await vi.waitFor(() =>
+      expect(
+        document.querySelectorAll('aside[aria-label="Terminal"] .xterm-helper-textarea'),
+      ).toHaveLength(2),
+    );
+    const inputs = [
+      ...document.querySelectorAll<HTMLTextAreaElement>(
+        'aside[aria-label="Terminal"] .xterm-helper-textarea',
+      ),
+    ];
+    const [firstInput, secondInput] = inputs;
+    window.dispatchEvent(new Event("focus"));
+
+    // Both viewports have reported at some point, and the first-mounted pane is
+    // the live focus when the window comes back.
+    secondInput!.focus();
+    await expect.poll(lastHeartbeat).toEqual({
+      threadId: secondThread,
+      terminalId: "default",
+      appVisible: true,
+    });
+    firstInput!.focus();
+    await expect.poll(lastHeartbeat).toEqual({
+      threadId: firstThread,
+      terminalId: "default",
+      appVisible: true,
+    });
+
+    window.dispatchEvent(new Event("blur"));
+    await expect.poll(() => lastHeartbeat()?.appVisible).toBe(false);
+    expect(lastHeartbeat()?.terminalId).toBeUndefined();
+    window.dispatchEvent(new Event("focus"));
+    // Dispatch is synchronous: a stale second viewport would have overwritten this
+    // by now with a null-terminal heartbeat.
+    expect(lastHeartbeat()).toEqual({
+      threadId: firstThread,
+      terminalId: "default",
+      appVisible: true,
+    });
+  } finally {
+    await view.unmount();
+  }
+});
+
 const dockHostId = ThreadId.makeUnsafe("multiple-dock-terminals");
 const dockProjectId = ProjectId.makeUnsafe("terminal-project");
 
+function dockPaneActivityTrailing(
+  panes: readonly { id: string; kind: string }[],
+  terminalState: ThreadTerminalState | undefined,
+): Record<string, ReactNode> | undefined {
+  if (!terminalState) return undefined;
+  const overrides: Record<string, ReactNode> = {};
+  for (const pane of panes) {
+    if (pane.kind !== "terminal") continue;
+    const terminalId = terminalState.dockTerminalIdsByPaneId?.[pane.id];
+    if (!terminalId) continue;
+    const identity = resolveTerminalVisualIdentityMap({
+      runningTerminalIds: terminalState.runningTerminalIds,
+      terminalAttentionStatesById: terminalState.terminalAttentionStatesById,
+      terminalCliKindsById: terminalState.terminalCliKindsById,
+      terminalIds: [terminalId],
+      terminalLabelsById: terminalState.terminalLabelsById,
+      terminalTitleOverridesById: terminalState.terminalTitleOverridesById,
+    }).get(terminalId);
+    if (identity && identity.state !== "idle") {
+      overrides[pane.id] = <TerminalActivityIndicator state={identity.state} />;
+    }
+  }
+  return Object.keys(overrides).length > 0 ? overrides : undefined;
+}
+
 function TerminalDock() {
   const state = useRightDockStore(selectRightDockState(dockHostId));
+  const dockTerminalState = useTerminalStateStore(
+    (current) => current.terminalStateByThreadId[dockTerminalThreadId(dockHostId)],
+  );
+  const paneTrailingOverrides = useMemo(
+    () => dockPaneActivityTrailing(state.panes, dockTerminalState),
+    [dockTerminalState, state.panes],
+  );
   const store = useRightDockStore.getState();
   return (
     <RightDock
       state={state}
+      {...(paneTrailingOverrides ? { paneTrailingOverrides } : {})}
       minWidth={300}
       defaultWidth="50vw"
       shouldAcceptWidth={() => true}
@@ -413,6 +602,88 @@ it("opens independent shells through the plus menu and keeps siblings interactiv
         terminalId: sessions[0],
       });
     expect(api.terminal.open.mock.calls).toHaveLength(3);
+  } finally {
+    await view.unmount();
+    client.clear();
+    useStore.setState({ projects: previousProjects });
+  }
+});
+
+it("shows each dock terminal's activity on its own tab, including while inactive", async () => {
+  await page.viewport(1280, 800);
+  const previousProjects = useStore.getState().projects;
+  useStore.setState({
+    projects: [
+      {
+        id: dockProjectId,
+        kind: "project",
+        name: "Terminal project",
+        remoteName: "",
+        folderName: "tmp",
+        localName: null,
+        cwd: "/tmp",
+        defaultModelSelection: null,
+        expanded: true,
+        scripts: [],
+      },
+    ],
+  });
+  useRightDockStore.getState().openPane(dockHostId, { kind: "terminal", paneId: "activity-a" });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, enabled: false } } });
+  const view = await render(
+    <QueryClientProvider client={client}>
+      <div style={{ display: "flex", width: 1280, height: 800 }}>
+        <div style={{ flex: 1 }}>Chat</div>
+        <TerminalDock />
+      </div>
+    </QueryClientProvider>,
+  );
+  const scopeId = dockTerminalThreadId(dockHostId);
+  const tabs = page.getByRole("button", { name: "Terminal", exact: true });
+  const indicatorState = (index: number) =>
+    tabs.nth(index).element().querySelector<HTMLElement>("[data-terminal-activity]")?.dataset
+      .terminalActivity ?? null;
+  try {
+    await expect.poll(() => api.terminal.open.mock.calls.length).toBe(1);
+    // Keep the first pane mounted, then make the second one active so the first
+    // exercises the inactive-tab path.
+    useRightDockStore.getState().openPane(dockHostId, { kind: "terminal", paneId: "activity-b" });
+    await expect.poll(() => api.terminal.open.mock.calls.length).toBe(2);
+    const terminalState = useTerminalStateStore.getState().terminalStateByThreadId[scopeId];
+    const inactiveTerminalId = terminalState?.dockTerminalIdsByPaneId?.["activity-a"];
+    expect(inactiveTerminalId).toBeTruthy();
+    // Activity reaches the pane through the same TerminalEvent stream the bridge
+    // feeds, not by writing the store directly.
+    const emitActivity = (
+      activity:
+        | { hasRunningSubprocess: true; agentState: "running" | "attention" | "review" }
+        | { hasRunningSubprocess: false; agentState: null },
+    ) => {
+      api.terminal.onEvent.mock.lastCall![0]({
+        type: "activity",
+        threadId: scopeId,
+        terminalId: inactiveTerminalId!,
+        cliKind: null,
+        createdAt: new Date().toISOString(),
+        ...activity,
+      });
+    };
+    // The second pane is active; activity on the first must still land on its tab.
+    expect(indicatorState(0)).toBeNull();
+    expect(indicatorState(1)).toBeNull();
+
+    emitActivity({ hasRunningSubprocess: true, agentState: "running" });
+    await expect.poll(() => indicatorState(0)).toBe("running");
+    expect(indicatorState(1)).toBeNull();
+
+    emitActivity({ hasRunningSubprocess: true, agentState: "attention" });
+    await expect.poll(() => indicatorState(0)).toBe("attention");
+
+    emitActivity({ hasRunningSubprocess: true, agentState: "review" });
+    await expect.poll(() => indicatorState(0)).toBe("review");
+
+    emitActivity({ hasRunningSubprocess: false, agentState: null });
+    await expect.poll(() => indicatorState(0)).toBeNull();
   } finally {
     await view.unmount();
     client.clear();

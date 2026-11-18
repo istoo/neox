@@ -173,6 +173,18 @@ export class BridgeModel {
     this.projection.rememberWorktree(path, branch);
   }
 
+  /**
+   * Records the workspace a freshly created worktree just registered. The daemon's
+   * workspace_update stream is not subscribed here, so without this the first turn's
+   * create-agent call cannot name the workspace and the daemon mints a second one
+   * (and a stray project) for the same directory.
+   */
+  rememberWorkspace(workspaceId: string, directory: string): void {
+    const trimmed = directory.trim().replace(/\/+$/, "");
+    if (!workspaceId.trim() || !trimmed) return;
+    this.projection.setWorkspace(workspaceId.trim(), { pinnedAt: null, directory: trimmed });
+  }
+
   projectRoot(projectId: string): string | undefined {
     return this.projection.projectRoot(this.local.resolveProjectId(projectId));
   }

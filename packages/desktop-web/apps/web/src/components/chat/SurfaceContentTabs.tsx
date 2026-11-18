@@ -60,6 +60,8 @@ export interface SurfaceContentTab<Key extends string> {
   /** The tab's label, also its tooltip and the name its close button announces. */
   title: string;
   icon: ReactNode;
+  /** Flanks the label, e.g. a terminal's live activity indicator. */
+  trailing?: ReactNode;
   /** Omitted for a tab that cannot switch to anything: its label renders as static text. */
   onSelect?: (() => void) | undefined;
   /** Omitted for a tab that cannot close: no X, and a middle click does nothing. */
@@ -220,6 +222,7 @@ export function SurfaceContentTabs<Key extends string>(props: {
           title: tab.title,
           label: tab.title,
           icon: tab.icon,
+          trailing: tab.trailing,
           closeLabel: t("common:closeNamedItem", { title: tab.title }),
           onSelect: tab.onSelect,
           onClose: onClose

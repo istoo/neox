@@ -89,6 +89,22 @@ Neox 是一个桌面端的 AI 编程工具和智能体编排器。Claude Code、
 > xattr -dr com.apple.quarantine /Applications/Neox.app
 > ```
 
+### macOS 命令行安装
+
+macOS（Apple 芯片或 Intel）也可以不下载 DMG，直接用脚本安装：
+
+```sh
+curl -fsSL https://github.com/istoo/neox/releases/latest/download/install.sh | sh
+```
+
+预发行版把版本标签写进路径：
+
+```sh
+curl -fsSL https://github.com/istoo/neox/releases/download/v0.17.0-beta.1/install.sh | sh
+```
+
+`latest` 只指向稳定版，不会选中预发行版。脚本按当前 CPU 架构下载同一个 Release 里的 ZIP，校验 SHA-512 后解包到 `~/Applications`：稳定版安装为 `Neox.app`，beta 安装为 `Neox Beta.app`。脚本不会覆盖已存在的同名应用（软链也算），不使用 `sudo`，不会启动应用，也不会停止或修改正在运行的旧版。两个安装共用已有应用数据。Neox 目前未签名；首次打开被系统拦下时按上面的说明处理。
+
 ### 更新
 
 | 安装方式                     | 更新方式                             |

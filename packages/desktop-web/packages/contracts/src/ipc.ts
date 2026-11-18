@@ -465,6 +465,7 @@ import type {
   TerminalClearInput,
   TerminalCloseInput,
   TerminalEvent,
+  TerminalFocusHeartbeatInput,
   TerminalOpenInput,
   TerminalResizeInput,
   TerminalRestartInput,
@@ -1422,6 +1423,8 @@ export interface NativeApi {
     clear: (input: TerminalClearInput) => Promise<void>;
     restart: (input: TerminalRestartInput) => Promise<TerminalSessionSnapshot>;
     close: (input: TerminalCloseInput) => Promise<void>;
+    /** Present on servers that clear terminal attention when the page focuses a terminal. */
+    focusHeartbeat?: (input: TerminalFocusHeartbeatInput) => Promise<void>;
     onEvent: (callback: (event: TerminalEvent) => void) => () => void;
   };
   /** Absent on older servers. Core editing remains available without language services. */

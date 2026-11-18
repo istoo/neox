@@ -1,6 +1,6 @@
 {
   "name": "@neolix/relay",
-  "version": "0.17.0-beta.1",
+  "version": "0.17.0-beta.2",
   "description": "Neox relay for bridging daemon and client connections",
   "license": "Apache-2.0",
   "files": [
@@ -36,7 +36,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@neolix/protocol": "0.17.0-beta.1",
+    "@neolix/protocol": "0.17.0-beta.2",
     "@noble/ciphers": "^2.4.0",
     "@noble/curves": "^2.4.0",
     "@noble/hashes": "^2.4.0",

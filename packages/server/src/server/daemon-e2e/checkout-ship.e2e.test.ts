@@ -261,15 +261,15 @@ describe("daemon checkout ship loop", () => {
         expect(archiveResult.error).toBeNull();
         expect(archiveResult.success).toBe(true);
 
-        // Archiving removes the agent from the active list but leaves the
-        // worktree on disk — disk deletion is a separate, explicit step.
+        // The agent's workspace is the only active reference to this Neox-owned
+        // worktree, so archiving it removes the worktree from disk as well.
         const worktreeListAfter = await ctx.client.getNeolixWorktreeList({
           cwd: repoDir,
         });
         expect(
           worktreeListAfter.worktrees.some((entry) => entry.worktreePath === worktree.worktreePath),
-        ).toBe(true);
-        expect(existsSync(worktree.worktreePath)).toBe(true);
+        ).toBe(false);
+        expect(existsSync(worktree.worktreePath)).toBe(false);
 
         const remainingAgents = await ctx.client.fetchAgents();
         expect(remainingAgents.entries.some((entry) => entry.agent.id === agent.id)).toBe(false);

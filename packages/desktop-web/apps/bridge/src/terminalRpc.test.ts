@@ -23,6 +23,7 @@ function makeFakeClient(options: { terminals?: Array<Record<string, unknown>> } 
   const created: Array<{ cwd: string; name: string; options: unknown }> = [];
   const killed: string[] = [];
   const inputs: Array<[string, unknown]> = [];
+  const heartbeats: Array<Record<string, unknown>> = [];
   // Call order matters: the size claim has to reach the daemon before the subscription that
   // triggers the replay snapshot, or the replay is serialized at the old PTY size.
   const calls: string[] = [];
@@ -89,6 +90,9 @@ function makeFakeClient(options: { terminals?: Array<Record<string, unknown>> } 
       killed.push(daemonId);
       return { terminalId: daemonId, success: true, requestId: "r" };
     },
+    sendHeartbeat: (params: Record<string, unknown>) => {
+      heartbeats.push(params);
+    },
   };
 
   return {
@@ -96,6 +100,7 @@ function makeFakeClient(options: { terminals?: Array<Record<string, unknown>> } 
     created,
     killed,
     inputs,
+    heartbeats,
     calls,
     setFeatures: (next: Record<string, boolean>) => {
       features = next;
@@ -198,6 +203,62 @@ describe("terminalRpc", () => {
     });
     expect(events[2]).toMatchObject({ type: "exited", exitCode: 7, exitSignal: null });
     for (const event of events) expect(() => encode(TerminalEvent, event)).not.toThrow();
+  });
+
+  it("reports only a live session's daemon terminal in focus heartbeats", async () => {
+    const fake = makeFakeClient();
+    const handlers = makeHandlers(fake);
+
+    await run<TerminalSessionSnapshot>(handlers[WS_METHODS.terminalOpen], {
+      threadId: THREAD_ID,
+      cwd: "/repo",
+      cols: 100,
+      rows: 30,
+    });
+
+    await run<void>(handlers[WS_METHODS.terminalFocusHeartbeat], {
+      threadId: THREAD_ID,
+      terminalId: "default",
+      appVisible: true,
+    });
+    expect(fake.heartbeats.at(-1)).toMatchObject({
+      deviceType: "web",
+      focusedAgentId: null,
+      focusedTerminalId: "daemon-1",
+      appVisible: true,
+    });
+    expect(fake.heartbeats.at(-1)?.lastActivityAt).toEqual(expect.any(String));
+
+    // A caller-supplied terminal id the bridge never opened clears focus instead
+    // of naming a daemon terminal it does not own.
+    await run<void>(handlers[WS_METHODS.terminalFocusHeartbeat], {
+      threadId: THREAD_ID,
+      terminalId: "forged",
+      appVisible: true,
+    });
+    expect(fake.heartbeats.at(-1)).toMatchObject({
+      focusedTerminalId: null,
+      appVisible: true,
+    });
+
+    await run<void>(handlers[WS_METHODS.terminalFocusHeartbeat], {
+      threadId: THREAD_ID,
+      terminalId: "default",
+      appVisible: false,
+    });
+    expect(fake.heartbeats.at(-1)).toMatchObject({
+      focusedTerminalId: null,
+      appVisible: false,
+    });
+
+    fake.exit();
+    await tick(0);
+    await run<void>(handlers[WS_METHODS.terminalFocusHeartbeat], {
+      threadId: THREAD_ID,
+      terminalId: "default",
+      appVisible: true,
+    });
+    expect(fake.heartbeats.at(-1)).toMatchObject({ focusedTerminalId: null });
   });
 
   it("attaches to a host-owned terminal without creating or killing it", async () => {

@@ -38,11 +38,13 @@ function resolveTerminalVisualStateFromSet(input: {
   if (attentionState === "attention") {
     return "attention";
   }
-  if (input.runningTerminalIdSet.has(input.terminalId)) {
-    return "running";
-  }
+  // A finished turn still reports `hasRunningSubprocess` so the terminal stays
+  // protected from an automatic close; its review prompt outranks that flag.
   if (attentionState === "review") {
     return "review";
+  }
+  if (input.runningTerminalIdSet.has(input.terminalId)) {
+    return "running";
   }
   return "idle";
 }

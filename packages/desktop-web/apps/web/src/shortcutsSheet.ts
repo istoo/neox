@@ -16,6 +16,11 @@ import { NATIVE_EDITOR_ON } from "./betaFeatures";
 import { t } from "./i18n";
 import { isMacPlatform } from "./lib/utils";
 import { formatShortcutLabel, resolveKeybindingForCommand } from "./keybindings";
+import {
+  NEOLIX_DEVICE_UI_ENABLED,
+  NEOLIX_SIDECHAT_UI_ENABLED,
+  NEOLIX_SNOOZE_UI_ENABLED,
+} from "./neolixFeatures";
 import { commandForProjectScript } from "./projectScripts";
 import type { ProjectScript } from "./types";
 
@@ -409,6 +414,21 @@ const AVAILABLE_NOW_DEFINITIONS: readonly ShortcutDefinition[] = [
   },
 ] as const;
 
+// Neox has no snooze scheduler, device backend, or side chat: their surfaces are
+// gated off. Keep those chords out of the reference sheet and the shortcut editor
+// rather than advertising inert bindings.
+const DISABLED_SHORTCUT_COMMANDS: ReadonlySet<KeybindingCommand> = new Set<KeybindingCommand>([
+  ...(NEOLIX_SNOOZE_UI_ENABLED ? [] : (["thread.snooze"] as const)),
+  ...(NEOLIX_DEVICE_UI_ENABLED ? [] : (["device.toggle"] as const)),
+  ...(NEOLIX_SIDECHAT_UI_ENABLED ? [] : (["sidechat.toggle"] as const)),
+]);
+
+const VISIBLE_AVAILABLE_NOW_DEFINITIONS = AVAILABLE_NOW_DEFINITIONS.filter((definition) =>
+  (Array.isArray(definition.command) ? definition.command : [definition.command]).every(
+    (command) => !DISABLED_SHORTCUT_COMMANDS.has(command),
+  ),
+);
+
 const THREAD_JUMP_DEFINITIONS: readonly ShortcutDefinition[] = Array.from(
   { length: 9 },
   (_, index) => ({
@@ -559,7 +579,7 @@ export function listShortcutEditorDefinitions(): ShortcutEditorDefinition[] {
   const definitions: ShortcutEditorDefinition[] = [
     ...singleCommandEditorDefinitions([SIDEBAR_TOGGLE_DEFINITION]),
     ...singleCommandEditorDefinitions(
-      AVAILABLE_NOW_DEFINITIONS.filter(
+      VISIBLE_AVAILABLE_NOW_DEFINITIONS.filter(
         (definition) =>
           Array.isArray(definition.command) ||
           !spaceJumpCommands.has(definition.command as KeybindingCommand),
@@ -591,7 +611,12 @@ export function listShortcutEditorDefinitions(): ShortcutEditorDefinition[] {
       : singleCommandEditorDefinitions(CODE_EDITOR_DEFINITIONS).flatMap((d) => d.commands),
   );
   for (const command of STATIC_KEYBINDING_COMMANDS) {
-    if (covered.has(command) || hidden.has(command) || command.startsWith("terminal.split")) {
+    if (
+      covered.has(command) ||
+      hidden.has(command) ||
+      DISABLED_SHORTCUT_COMMANDS.has(command) ||
+      command.startsWith("terminal.split")
+    ) {
       continue;
     }
     definitions.push({
@@ -612,7 +637,7 @@ function modSlashLabel(platform: string): string {
 export function shortcutSheetCommandLabel(command: KeybindingCommand): string | null {
   for (const definitions of [
     [SIDEBAR_TOGGLE_DEFINITION],
-    AVAILABLE_NOW_DEFINITIONS,
+    VISIBLE_AVAILABLE_NOW_DEFINITIONS,
     CODE_EDITOR_DEFINITIONS,
     WORKSPACE_DEFINITIONS,
     THREAD_JUMP_DEFINITIONS,
@@ -676,7 +701,7 @@ export function buildShortcutSheetSections(
       shortcutLabel: modSlashLabel(options.platform),
     },
     ...definitionsToEntries(
-      AVAILABLE_NOW_DEFINITIONS,
+      VISIBLE_AVAILABLE_NOW_DEFINITIONS,
       options.keybindings,
       options.platform,
       options.context,

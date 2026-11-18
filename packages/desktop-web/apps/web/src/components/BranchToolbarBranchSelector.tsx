@@ -67,6 +67,7 @@ import {
 import { COMPOSER_TOOLBAR_PICKER_TRIGGER_CLASS_NAME } from "./chat/composerPickerStyles";
 import type { ThreadWorkspacePatch } from "../types";
 import { t, useTranslation } from "~/i18n";
+import { errorCodeOf } from "~/i18n/errors";
 
 /**
  * Where the selector is rendered. `toolbar` keeps the compact composer-footer pill;
@@ -145,6 +146,10 @@ async function popStashAndCloseDialog(params: {
 
 const DIRTY_WORKTREE_ERROR_PATTERN =
   /Uncommitted changes block checkout to ([^:\n]+):\s*\n((?:\s*-\s*.+(?:\n|$))+)/;
+// The Neox daemon rejects a branch action on a dirty tree without naming the files:
+// "Working directory has uncommitted changes. Commit or stash before switching branches."
+// Treat it as the same recovery case so the stash recovery toast still appears.
+const NEOX_DIRTY_WORKTREE_PATTERN = /working directory has uncommitted changes/i;
 const STASH_CONFLICT_PATTERN = /Stash could not be applied|Stash applied with merge conflicts/;
 const UNRESOLVED_INDEX_PATTERN = /you need to resolve your current index/i;
 const GIT_INDEX_LOCK_PATTERN =
@@ -164,10 +169,38 @@ function addBranchRecoveryToast(input: Parameters<typeof toastManager.add>[0]) {
   return activeBranchRecoveryToastId;
 }
 
-function parseDirtyWorktreeError(error: unknown): { branch: string; files: string[] } | null {
+export function parseDirtyWorktreeError(
+  error: unknown,
+  fallbackBranch?: string,
+): { branch: string; files: string[] } | null {
   const detail = error instanceof Error ? error.message : String(error);
+  // The web localizes this labeled failure before the recovery code sees it, and the
+  // localized sentence drops the file list. Read the bridge's params instead of the
+  // text so the files still name themselves in the toast.
+  if (errorCodeOf(error) === "neolix.error.git.checkout-blocked-by-changes") {
+    const params = (error as { params?: { branch?: unknown; files?: unknown } } | null)?.params;
+    const branch =
+      typeof params?.branch === "string" && params.branch.trim().length > 0
+        ? params.branch.trim()
+        : fallbackBranch;
+    if (branch) {
+      const files =
+        typeof params?.files === "string"
+          ? params.files
+              .split(",")
+              .map((file) => file.trim())
+              .filter((file) => file.length > 0 && file !== "working tree")
+          : [];
+      return { branch, files };
+    }
+  }
   const match = DIRTY_WORKTREE_ERROR_PATTERN.exec(detail);
-  if (!match?.[1] || !match[2]) return null;
+  if (!match?.[1] || !match[2]) {
+    if (fallbackBranch && NEOX_DIRTY_WORKTREE_PATTERN.test(detail)) {
+      return { branch: fallbackBranch, files: [] };
+    }
+    return null;
+  }
   const files = match[2]
     .split(/\r?\n/)
     .map((line) => line.replace(/^\s*-\s*/, "").trim())
@@ -205,6 +238,9 @@ function isGitIndexWriteError(error: unknown): boolean {
 
 function formatDirtyWorktreeDescription(files: string[]): string {
   const basenames = files.map((file) => file.split("/").pop() ?? file);
+  if (basenames.length === 0) {
+    return t("common:uncommittedChangesCommitOrStashGeneric");
+  }
   if (basenames.length <= 3) {
     return t("common:uncommittedChangesCommitOrStashBeforeSwitching", {
       files: basenames.join(", "),
@@ -295,7 +331,7 @@ function handleCheckoutError(
     });
   };
 
-  const dirtyWorktree = parseDirtyWorktreeError(error);
+  const dirtyWorktree = parseDirtyWorktreeError(error, input.branch);
   if (dirtyWorktree) {
     const copyText = toBranchActionErrorMessage(error);
     addBranchRecoveryToast({
@@ -330,7 +366,7 @@ function handleCheckoutError(
                 });
                 return;
               }
-              if (parseDirtyWorktreeError(stashError)) {
+              if (parseDirtyWorktreeError(stashError, input.branch)) {
                 addBranchRecoveryToast({
                   type: "error",
                   title: t("common:cannotSwitchBranches"),

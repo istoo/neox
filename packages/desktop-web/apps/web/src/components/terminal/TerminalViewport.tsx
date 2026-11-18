@@ -51,6 +51,7 @@ import { matchesFixedShortcut } from "~/fixedShortcuts";
 import { hasOpenDismissibleOverlay } from "~/lib/editableEventTarget";
 import { TerminalSearch } from "../TerminalSearch";
 import { TerminalScrollToBottom } from "../TerminalScrollToBottom";
+import { useTerminalFocusHeartbeat } from "~/hooks/useTerminalFocusHeartbeat";
 import { useTranslation } from "~/i18n";
 
 function serializeRuntimeEnv(runtimeEnv: Record<string, string> | undefined): string {
@@ -295,6 +296,8 @@ export default function TerminalViewport({
       setSearchAddonInstance(null);
     };
   }, [runtimeCwdReady, runtimeKey]);
+
+  useTerminalFocusHeartbeat({ containerRef, threadId, terminalId, isVisible });
 
   useEffect(() => {
     if (!runtimeCwdReady) return;

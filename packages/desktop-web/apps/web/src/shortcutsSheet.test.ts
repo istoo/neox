@@ -3,6 +3,11 @@ import { describe, expect, it } from "vitest";
 import { STATIC_KEYBINDING_COMMANDS } from "@synara/contracts";
 
 import { buildShortcutSheetSections, listShortcutEditorDefinitions } from "./shortcutsSheet";
+import {
+  NEOLIX_DEVICE_UI_ENABLED,
+  NEOLIX_SIDECHAT_UI_ENABLED,
+  NEOLIX_SNOOZE_UI_ENABLED,
+} from "./neolixFeatures";
 import type { ProjectScript } from "./types";
 
 const PROJECT_SCRIPTS: ProjectScript[] = [
@@ -25,7 +30,6 @@ describe("buildShortcutSheetSections", () => {
     }).flatMap((section) => section.entries);
     for (const [command, label, shortcutLabel] of [
       ["thread.archive", "Archive thread", "⌥⇧⌘A"],
-      ["thread.snooze", "Snooze thread", "⌥⇧⌘S"],
       ["thread.markUnread", "Mark thread unread", "⌥⇧⌘U"],
       ["chat.attention.next", "Next chat needing attention", "⌥⌘A"],
     ] as const) {
@@ -36,6 +40,24 @@ describe("buildShortcutSheetSections", () => {
       expect(
         listShortcutEditorDefinitions().find((entry) => entry.commands.includes(command)),
       ).toMatchObject({ label });
+    }
+  });
+
+  it("omits disabled surfaces from the reference and shortcut editor", () => {
+    expect(NEOLIX_SNOOZE_UI_ENABLED).toBe(false);
+    expect(NEOLIX_DEVICE_UI_ENABLED).toBe(false);
+    expect(NEOLIX_SIDECHAT_UI_ENABLED).toBe(false);
+    const entries = buildShortcutSheetSections({
+      keybindings: [],
+      projectScripts: [],
+      platform: "MacIntel",
+      context: { terminalFocus: false, terminalOpen: false, terminalWorkspaceOpen: false },
+    }).flatMap((section) => section.entries);
+    for (const command of ["thread.snooze", "device.toggle", "sidechat.toggle"] as const) {
+      expect(entries.some((entry) => entry.command === command)).toBe(false);
+      expect(
+        listShortcutEditorDefinitions().some((entry) => entry.commands.includes(command)),
+      ).toBe(false);
     }
   });
 
@@ -294,10 +316,15 @@ describe("listShortcutEditorDefinitions", () => {
 
   it("lists every active built-in command exactly once", () => {
     const listed = listShortcutEditorDefinitions().flatMap((definition) => definition.commands);
+    const disabled = new Set<string>([
+      ...(NEOLIX_SNOOZE_UI_ENABLED ? [] : ["thread.snooze"]),
+      ...(NEOLIX_DEVICE_UI_ENABLED ? [] : ["device.toggle"]),
+      ...(NEOLIX_SIDECHAT_UI_ENABLED ? [] : ["sidechat.toggle"]),
+    ]);
 
     expect(listed.toSorted()).toEqual(
       STATIC_KEYBINDING_COMMANDS.filter(
-        (command) => !command.startsWith("terminal.split"),
+        (command) => !command.startsWith("terminal.split") && !disabled.has(command),
       ).toSorted(),
     );
     expect(listed.some((command) => command.startsWith("terminal.split"))).toBe(false);

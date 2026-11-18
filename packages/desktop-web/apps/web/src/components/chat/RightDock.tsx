@@ -95,6 +95,8 @@ interface RightDockProps {
   // Per-pane tab glyph overrides (same shape as label overrides) — e.g. a pull request pane
   // swapping the generic kind icon for its live state glyph.
   paneIconOverrides?: Record<string, ReactNode | undefined>;
+  // Per-pane trailing glyphs, e.g. a terminal tab's live activity indicator.
+  paneTrailingOverrides?: Record<string, ReactNode | undefined>;
   addMenuKinds: readonly RightDockPaneKind[];
   /** Per-kind reason shown on a disabled add-menu row. */
   addMenuDisabledReasons?: Partial<Record<RightDockPaneKind, string>>;
@@ -424,6 +426,7 @@ export function RightDock(props: RightDockProps) {
                 key: pane.id,
                 title: resolveRightDockPaneLabel(pane, props.paneLabelOverrides, t),
                 icon: props.paneIconOverrides?.[pane.id] ?? resolveRightDockPaneIcon(pane),
+                trailing: props.paneTrailingOverrides?.[pane.id],
                 onSelect: onSelectPane ? () => onSelectPane(pane.id) : undefined,
                 onClose: () => props.onClosePane(pane.id),
                 onContextMenu: props.onPaneContextMenu

@@ -392,6 +392,138 @@ test("auto-archiving a created worktree keeps the directory when a sibling works
   }
 });
 
+/**
+ * The offline ship flow never talks to a forge. Origin is a bare repository on
+ * disk and only Git's file transport is allowed; replacing the global/system
+ * config keeps a developer's credential helper or url rewrite out of the test.
+ */
+function installOfflineGitEnvironment(): { restore: () => void } {
+  const envRoot = mkdtempSync(path.join(tmpdir(), "offline-ship-env-"));
+  tempRoots.push(envRoot);
+  const gitConfig = path.join(envRoot, "gitconfig");
+  writeFileSync(gitConfig, "[credential]\n\thelper =\n");
+  const previous = new Map<string, string | undefined>();
+  const setEnv = (key: string, value: string) => {
+    previous.set(key, process.env[key]);
+    process.env[key] = value;
+  };
+  setEnv("HOME", envRoot);
+  setEnv("GIT_CONFIG_GLOBAL", gitConfig);
+  setEnv("GIT_CONFIG_NOSYSTEM", "1");
+  setEnv("GIT_ALLOW_PROTOCOL", "file");
+  setEnv("GIT_TERMINAL_PROMPT", "0");
+  setEnv("GIT_ASKPASS", "/usr/bin/false");
+  setEnv("SSH_ASKPASS", "/usr/bin/false");
+  setEnv("SSH_ASKPASS_REQUIRE", "force");
+  setEnv("GIT_SSH_COMMAND", "false");
+  setEnv("GCM_INTERACTIVE", "0");
+  return {
+    restore: () => {
+      for (const [key, value] of previous) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    },
+  };
+}
+
+function gitResult(cwd: string, args: string[]): string {
+  return execFileSync("git", args, { cwd, encoding: "utf8", stdio: "pipe" }).trim();
+}
+
+function createGitRepoWithBareOrigin(): { repoDir: string; originDir: string } {
+  const repoDir = createGitRepo();
+  const originDir = path.join(path.dirname(repoDir), "origin.git");
+  execFileSync("git", ["init", "--bare", "-b", "main", originDir], { stdio: "pipe" });
+  execFileSync("git", ["remote", "add", "origin", originDir], { cwd: repoDir, stdio: "pipe" });
+  execFileSync("git", ["push", "-u", "origin", "main"], { cwd: repoDir, stdio: "pipe" });
+  return { repoDir, originDir };
+}
+
+// This chains the offline-verifiable ship path through real RPCs: worktree
+// creation, commit, push to a bare origin, merge into base, the immediate
+// post-merge base-diff read that proves the 15s cache was invalidated, and
+// archive of the last workspace reference.
+test("offline ship flow pushes, refreshes the merged base diff, and archives the last reference", async () => {
+  const offlineGit = installOfflineGitEnvironment();
+  try {
+    const { repoDir, originDir } = createGitRepoWithBareOrigin();
+    const branchName = "offline-ship";
+    const created = await ctx.client.createAgent({
+      config: { ...getFullAccessConfig("codex"), cwd: repoDir },
+      worktree: { mode: "branch-off", newBranch: branchName, base: "main" },
+      initialPrompt: "Say done.",
+    });
+    const worktreePath = created.cwd;
+    expect(worktreePath).not.toBe(repoDir);
+    await ctx.client.waitForFinish(created.id, 10_000);
+
+    writeFileSync(path.join(worktreePath, "README.md"), "hello\noffline ship\n");
+    const uncommittedBeforeCommit = await ctx.client.getCheckoutDiff(worktreePath, {
+      mode: "uncommitted",
+    });
+    expect(uncommittedBeforeCommit.error).toBeNull();
+    expect(uncommittedBeforeCommit.files.map((file) => file.path)).toContain("README.md");
+
+    const commit = await ctx.client.checkoutCommit(worktreePath, {
+      message: "offline ship change",
+      addAll: true,
+    });
+    expect(commit).toMatchObject({ success: true, error: null });
+    const uncommittedAfterCommit = await ctx.client.getCheckoutDiff(worktreePath, {
+      mode: "uncommitted",
+    });
+    expect(uncommittedAfterCommit.files).toEqual([]);
+
+    const push = await ctx.client.checkoutPush(worktreePath);
+    expect(push).toMatchObject({ success: true, error: null });
+    const commitHead = gitResult(worktreePath, ["rev-parse", "HEAD"]);
+    expect(gitResult(originDir, ["rev-parse", `refs/heads/${branchName}`])).toBe(commitHead);
+
+    // Seed the 15s base-diff cache before the merge. The next read after the
+    // merge must reflect the merge rather than this cached snapshot.
+    const baseDiffBeforeMerge = await ctx.client.getCheckoutDiff(worktreePath, {
+      mode: "base",
+      baseRef: "main",
+    });
+    expect(baseDiffBeforeMerge.error).toBeNull();
+    expect(baseDiffBeforeMerge.files.map((file) => file.path)).toContain("README.md");
+
+    const merge = await ctx.client.checkoutMerge(worktreePath, {
+      baseRef: "main",
+      strategy: "merge",
+      requireCleanTarget: true,
+    });
+    expect(merge).toMatchObject({ success: true, error: null });
+    const baseDiffAfterMerge = await ctx.client.getCheckoutDiff(worktreePath, {
+      mode: "base",
+      baseRef: "main",
+    });
+    expect(baseDiffAfterMerge.error).toBeNull();
+    expect(baseDiffAfterMerge.files).toEqual([]);
+    expect(gitResult(repoDir, ["show", "main:README.md"])).toBe("hello\noffline ship");
+    expect(gitResult(worktreePath, ["symbolic-ref", "--short", "HEAD"])).toBe(branchName);
+
+    const beforeArchive = await ctx.client.getNeolixWorktreeList({ cwd: repoDir });
+    expect(beforeArchive.error).toBeNull();
+    expect(beforeArchive.worktrees.map((worktree) => worktree.worktreePath)).toContain(
+      worktreePath,
+    );
+
+    const archive = await ctx.client.archiveNeolixWorktree({ worktreePath });
+    expect(archive).toMatchObject({ success: true, error: null });
+    expect(archive.removedAgents).toContain(created.id);
+
+    await expectAgentAbsentFromActiveList(created.id);
+    await expectWorktreeListEmpty(repoDir);
+    await expect.poll(() => existsSync(worktreePath), { timeout: 5000, interval: 100 }).toBe(false);
+    const archived = await ctx.client.fetchAgents({ filter: { includeArchived: true } });
+    expect(archived.entries.map((entry) => entry.agent.id)).toContain(created.id);
+  } finally {
+    offlineGit.restore();
+  }
+}, 60000);
+
 test("create_agent_request rejects legacy git options before creating a worktree", async () => {
   const repoDir = createGitRepo();
 

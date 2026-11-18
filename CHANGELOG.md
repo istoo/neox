@@ -1,11 +1,13 @@
 # Changelog
 
-## 0.17.0-beta.1 - 2026-11-16
+## 0.17.0-beta.2 - 2026-11-19
 
 Neox now runs one interface in the desktop app and in a browser. The desktop shell loads the interface served by the daemon; the mobile app and its React Native client are removed.
 
 ### Added
 
+- Added an `install.sh` to macOS releases that downloads the ZIP for the CPU architecture, verifies its SHA-512, and installs into `~/Applications`
+- Each dock terminal tab shows its own running, attention, or review state, including while the tab is inactive
 - Agent Connect wires installed CLI agents to the model gateway, with per-agent model lists and saved profiles
 - Orchestration skills can be installed, updated, and removed from Settings › Agent skills
 - Workspace setup and teardown, including service ports, appear in the chat dock
@@ -30,6 +32,8 @@ Neox now runs one interface in the desktop app and in a browser. The desktop she
 
 ### Improved
 
+- The diff panel refreshes immediately after a commit, discard, pull, or branch switch instead of showing the cached diff
+- Focusing a terminal clears its attention marker; moving focus away or hiding the page clears the reported focus
 - History opens immediately and fills full counts in the background instead of waiting for a complete scan
 - The desktop window shows a waiting page and a retry page during daemon startup instead of staying blank
 - Settings › Providers uses a master-detail layout with one status line per provider
@@ -39,6 +43,8 @@ Neox now runs one interface in the desktop app and in a browser. The desktop she
 
 ### Changed
 
+- Create PR on the default branch now asks you to create and switch to a branch first
+- Removed the Create draft PR, Commit on new branch, and Checkout feature branch & continue actions
 - The desktop app now opens the interface served by the daemon
 
 ### Breaking
@@ -47,6 +53,11 @@ Neox now runs one interface in the desktop app and in a browser. The desktop she
 
 ### Fixed
 
+- Agents created in a new worktree, including from a pull request, stay in that worktree's workspace instead of creating a duplicate project
+- A pull that would conflict now reports the conflict and leaves the working tree unchanged, naming the conflicting files when git lists them
+- A `provider/model` request now goes to that provider even when another provider serves the same model, instead of to a gateway group for the model
+- When the daemon advertises the provider snapshot, `neox run` rejects an unknown provider before creating a new workspace, so a failed run no longer leaves an empty workspace behind
+- Switching branches with uncommitted changes now offers to stash them even when the daemon reports only a generic uncommitted-changes error
 - Daemon updates show progress instead of appearing stalled
 - Old browser data partitions are cleaned up
 - Plugin sign-in shows the correct success message and no longer crashes when the pane updates

@@ -163,6 +163,9 @@ describe("foundGroups", () => {
     expect(groupByRequest(config, "auto/Kimi-K3[1m]")?.id).toBe("auto-kimi-k3");
     expect(groupByRequest(config, "auto/nope")).toBeNull();
     expect(groupByRequest(config, "gpt-5")).toBeNull();
+    // provider/model is not a bare id: it must reach that provider, not the
+    // group the gateway found for the model.
+    expect(groupByRequest(config, "b/Kimi-K3")).toBeNull();
   });
 
   it("honours the auto-group settings: off, skip, hidden and order", () => {

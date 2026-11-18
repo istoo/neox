@@ -137,6 +137,8 @@ import {
 import { isShortcutDispatchSuspended, resolveShortcutCommand } from "~/keybindings";
 import { isTerminalFocused } from "~/lib/terminalFocus";
 import { PluginIcon, SettingsIcon, TerminalIcon } from "~/lib/icons";
+import TerminalActivityIndicator from "../terminal/TerminalActivityIndicator";
+import { resolveTerminalVisualIdentityMap } from "../../terminalVisualIdentity";
 import { cn } from "~/lib/utils";
 import { useTranslation } from "~/i18n";
 import { useRunningPlugins } from "~/plugins/catalog";
@@ -288,6 +290,30 @@ export function SingleChatSurface(props: {
   const dockTerminalState = useTerminalStateStore(
     (state) => state.terminalStateByThreadId[dockTerminalScopeId],
   );
+  // Each dock terminal owns its activity; the tab shows only that pane's state,
+  // never a sibling's or another chat's terminals in the same cwd.
+  const paneTrailingOverrides = useMemo(() => {
+    if (!dockTerminalState) return undefined;
+    const overrides: Record<string, ReactNode> = {};
+    for (const pane of dockState.panes) {
+      if (pane.kind !== "terminal") continue;
+      const terminalId = dockTerminalState.dockTerminalIdsByPaneId?.[pane.id];
+      if (!terminalId) continue;
+      const identity = resolveTerminalVisualIdentityMap({
+        runningTerminalIds: dockTerminalState.runningTerminalIds,
+        terminalAttentionStatesById: dockTerminalState.terminalAttentionStatesById,
+        terminalCliKindsById: dockTerminalState.terminalCliKindsById,
+        terminalIds: [terminalId],
+        terminalLabelsById: dockTerminalState.terminalLabelsById,
+        terminalTitleOverridesById: dockTerminalState.terminalTitleOverridesById,
+      }).get(terminalId);
+      if (!identity || identity.state === "idle") continue;
+      overrides[pane.id] = (
+        <TerminalActivityIndicator className="text-foreground/75" state={identity.state} />
+      );
+    }
+    return Object.keys(overrides).length > 0 ? overrides : undefined;
+  }, [dockState.panes, dockTerminalState]);
   const terminalProfilesQuery = useQuery({
     queryKey: hostConfigQueryKey,
     queryFn: getHostConfig,
@@ -1457,6 +1483,7 @@ export function SingleChatSurface(props: {
           browserRuntimeMode={floatingBrowserVisible ? "preview" : "live"}
           {...(paneLabelOverrides ? { paneLabelOverrides } : {})}
           {...(paneIconOverrides ? { paneIconOverrides } : {})}
+          {...(paneTrailingOverrides ? { paneTrailingOverrides } : {})}
           onSelectPane={handleSelectDockPane}
           onClosePane={(paneId) => {
             if (dockState.panes.find((pane) => pane.id === paneId)?.kind === "terminal") {
