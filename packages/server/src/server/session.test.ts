@@ -381,6 +381,9 @@ function createSessionForTest(options: SessionForTestOptions = {}): Session {
     // Mirror production: invalidateForge resolves the forge and busts the
     // adapter's cache. The resolved forge here is github, so delegate to it.
     invalidateForge: vi.fn((cwd: string) => github.invalidate({ cwd })),
+    // Production clears the per-cwd diff cache here; this fixture has no cache,
+    // but the method must exist because git mutations call it unconditionally.
+    invalidateCheckoutDiffs: vi.fn(),
     getProjectSlug: vi.fn(),
     ...options.workspaceGitService,
   };
